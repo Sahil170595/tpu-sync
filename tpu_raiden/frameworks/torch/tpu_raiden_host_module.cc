@@ -61,6 +61,9 @@ std::string FormatAddressWithPort(absl::string_view ip, int port) {
   return absl::StrCat(ip, ":", port);
 }
 
+// Test/library role configuration of KVCacheManagerWithTransfer; not part of
+// the TPU serving path (scaffolding ledger A.4 classification; exported to
+// the third-party raiden library surface, 539d7ea).
 class HostKVCacheManager : public KVCacheManagerWithTransfer {
  public:
   HostKVCacheManager(size_t num_layers, size_t num_shards,

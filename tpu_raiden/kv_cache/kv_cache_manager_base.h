@@ -314,16 +314,6 @@ class KVCacheManagerBase : public tpu_raiden::RaidenManagerBase {
   absl::StatusOr<std::optional<tpu_raiden::transport::PoolPushProgressSpec>>
   GetPoolPushProgressSpec(size_t pool_idx, uint64_t uuid) const override;
 
-  void SetBlockChunkRegionValidation(
-      tpu_raiden::transport::BlockChunkRegionValidationMode mode);
-
-  tpu_raiden::transport::BlockChunkRegionValidationMode
-  block_chunk_region_validation_mode() const override;
-
-  absl::Status ValidateBlockChunksInRegions(
-      size_t layer_idx, size_t shard_idx,
-      const std::vector<tpu_raiden::transport::BlockChunk>& chunks) override;
-
   virtual absl::Status RegisterActivePlan(
       uint64_t uuid, const tpu_raiden::rpc::StartTransferRequest& request,
       bool is_sender);
@@ -383,9 +373,6 @@ class KVCacheManagerBase : public tpu_raiden::RaidenManagerBase {
   mutable absl::Mutex pools_mu_;
   mutable std::vector<PoolSpec> pools_;
   bool explicit_pools_ = false;
-  tpu_raiden::transport::BlockChunkRegionValidationMode
-      block_chunk_region_validation_mode_ =
-          tpu_raiden::transport::BlockChunkRegionValidationMode::kDisabled;
 
   // Returns the per-block byte size for a given layer.  Uses the layer's
   // actual physical_size when available (device-backed path); falls back

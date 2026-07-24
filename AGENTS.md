@@ -41,6 +41,7 @@
 *   ALWAYS delegate all design reviews and proposal evaluations to the specialized subagent `tpu-raiden-design-reviewer`.
 *   ALWAYS delegate all feature design and research requests to the specialized subagent `tpu-raiden-designer`.
 *   ALWAYS delegate all Xmanager-related tasks (launching, monitoring, log fetching) to the specialized subagent `tpu-raiden-xmanager-debugger`.
+*   Before launching any XManager experiment, the main agent or the `tpu-raiden-xmanager-debugger` subagent MUST execute `agents/tpu-raiden-xmanager-debugger/find_optimal_xm_pool.py` to identify the best resource allocation and cell for the job. Use the output pool (`--xm_resource_alloc`) and cell (`--cell`) in the launch command to avoid queueing indefinitely in depleted clusters.
 
 ## Work Log Tracking Rules
 

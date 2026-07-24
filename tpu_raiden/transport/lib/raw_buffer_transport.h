@@ -121,7 +121,7 @@ class RawBufferTransport {
 
   RawBufferTransportDelegate* raw_delegate_;
   int local_port_;
-  int server_fd_ = -1;  // owned by listener_thread_
+  std::atomic<int> server_fd_ = -1;  // owned by listener_thread_
   std::string bound_ip_ = "127.0.0.1";
   std::vector<std::string> local_ips_;
   std::atomic<bool> stopping_{false};

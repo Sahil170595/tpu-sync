@@ -361,11 +361,10 @@ void RawBufferTransport::ListenerLoop() {
     pfd.fd = server_fd_;
     pfd.events = POLLIN;
     int ret = poll(&pfd, 1, 50);
-    if (ret < 0) {
+    if (ret <= 0) {
       if (stopping_) break;
       continue;
     }
-    if (ret == 0) continue;
 
     struct sockaddr_in6 client_addr;
     socklen_t clilen = sizeof(client_addr);

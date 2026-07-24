@@ -253,25 +253,26 @@ class KVCacheStore {
              std::vector<std::string>>
   PollRemoteReadStatus();
 
-  // Rebuilds this store's directory from the global registry after an owner
-  // restart. Pulls all entries registered under this store's RaidenId,
-  // restores their host block allocations in the controller, and repopulates
-  // the LRU directory with unpinned HOST entries. Entries closer to expiry
-  // are inserted as least recently used (evicted first); entries that never
-  // expire are the most recent. If the pulled entries exceed the remaining
-  // directory capacity, only the ones with the largest remaining TTL are
-  // recovered. Dropped entries are NOT unregistered here: they stay visible
-  // in the global registry while their host blocks are no longer tracked
-  // locally and may be reallocated, so their registrations become stale
-  // advertisements. Callers recovering into a smaller directory must
-  // unregister every pulled-but-not-recovered entry before serving.
+  // Rebuilds this store's LRU cache after an engine restart from the
+  // crash-persistent KVCacheMetadata table in local shared memory, without
+  // consulting the global registry.
   //
-  // Must be called on a freshly constructed store before it serves traffic
-  // (in particular before any Save or ReadRemote allocates host blocks).
-  // Hashes already present in the directory are skipped.
+  // - Requires a raiden controller, an attached metadata table, and an empty
+  //   LRU cache.
+  // - Allocates the recorded host block IDs in the controller, then
+  //   repopulates the LRU cache with unpinned HOST entries in
+  //   ascending-seq order (oldest first).
+  // - Entries exceeding the LRU cache capacity overflow into eviction
+  //   candidates, keeping their blocks and metadata entries.
+  // - The seq counter resumes past the largest recovered stamp.
+  // - If two blocks claim the same hash, the entry with the largest seq is
+  //   the newest binding and wins; stale ones are not recovered and are
+  //   cleared from the table.
+  // - On any failure the store and the table are left untouched so the
+  //   caller can fall back to a cold start.
   //
   // Returns the number of recovered blocks.
-  absl::StatusOr<size_t> RecoverFromRegistry();
+  absl::StatusOr<size_t> RecoverFromLocalManifest();
 
  private:
   // Registers ValidateAndPinHostBlocks/UnpinHostBlocks as ReadRemote step-6a

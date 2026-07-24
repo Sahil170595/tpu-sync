@@ -863,10 +863,10 @@ absl::StatusOr<size_t> KVCacheStore::RecoverFromRegistry() {
   for (const auto* entry : eligible) {
     block_ids.push_back(entry->block_id);
   }
-  auto restore_status =
-      raiden_controller_->RestoreAllocatedBlockIds(block_ids);
-  if (!restore_status.ok()) {
-    return restore_status;
+  auto allocate_status =
+      raiden_controller_->AllocateTargetBlockIds(block_ids);
+  if (!allocate_status.ok()) {
+    return allocate_status;
   }
 
   for (const auto* entry : eligible) {

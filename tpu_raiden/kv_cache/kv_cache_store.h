@@ -123,7 +123,7 @@ class KVCacheStore {
 
   // Authoritative KVCacheStore API implementations
 
-  // Checks the LRU directory for cached block hashes. Returns a list of all
+  // Checks the LRU cache for cached block hashes. Returns a list of all
   // matched replica pairs (block hash and RaidenBlockID) encountered
   // in sequence prior to the first miss.
   // If enable_global is true, it will query the global registry for any

@@ -21,6 +21,7 @@
 #include <cstring>
 #include <functional>
 #include <future>  // NOLINT(build/c++11)
+#include <limits>
 #include <map>
 #include <memory>
 #include <optional>
@@ -100,6 +101,54 @@ void CoalesceMajorDimCopies(const std::vector<int64_t>& src_offsets,
     }
   }
 }
+
+struct D2hWritePipelinedState {
+  const size_t total_chunks;
+  size_t completed_chunks ABSL_GUARDED_BY(mu) = 0;
+  bool has_failed ABSL_GUARDED_BY(mu) = false;
+  bool promise_fulfilled ABSL_GUARDED_BY(mu) = false;
+
+  mutable absl::Mutex mu;
+  absl::Status first_error ABSL_GUARDED_BY(mu);
+
+  xla::Promise<> promise;
+  raiden::BufferHolders combined_holds;
+
+  explicit D2hWritePipelinedState(size_t n, xla::Promise<> p,
+                                  raiden::BufferHolders h)
+      : total_chunks(n), promise(std::move(p)), combined_holds(std::move(h)) {}
+
+  void SetError(const absl::Status& status) {
+    if (status.ok()) return;
+    absl::MutexLock lock(&mu);
+    if (first_error.ok()) {
+      first_error = status;
+    }
+    has_failed = true;
+    if (!promise_fulfilled) {
+      promise_fulfilled = true;
+      promise.Set(first_error);
+    }
+  }
+
+  void MarkChunkComplete() {
+    absl::MutexLock lock(&mu);
+    completed_chunks++;
+    if (completed_chunks == total_chunks && !promise_fulfilled) {
+      promise_fulfilled = true;
+      if (has_failed) {
+        promise.Set(first_error);
+      } else {
+        promise.Set();
+      }
+    }
+  }
+
+  bool HasFailed() const {
+    absl::MutexLock lock(&mu);
+    return has_failed;
+  }
+};
 
 }  // namespace
 
@@ -246,7 +295,7 @@ KVCacheManagerBase::KVCacheManagerBase(
 
   constexpr size_t kPoolSize = 4;
   dma_pool_ = std::make_unique<NumaThreadPool>(kPoolSize);
-  push_pool_ = std::make_unique<NumaThreadPool>(kPoolSize);
+  push_pool_ = std::make_shared<NumaThreadPool>(kPoolSize);
   pull_pool_ = std::make_unique<NumaThreadPool>(kPoolSize);
 }
 
@@ -315,12 +364,15 @@ KVCacheManagerBase::KVCacheManagerBase(
   }
   constexpr size_t kPoolSize = 4;
   dma_pool_ = std::make_unique<NumaThreadPool>(kPoolSize);
-  push_pool_ = std::make_unique<NumaThreadPool>(kPoolSize);
+  push_pool_ = std::make_shared<NumaThreadPool>(kPoolSize);
   pull_pool_ = std::make_unique<NumaThreadPool>(kPoolSize);
   InitTransportServer();
 }
 
 KVCacheManagerBase::~KVCacheManagerBase() {
+  push_pool_.reset();
+  dma_pool_.reset();
+  pull_pool_.reset();
   buffer_holds_.clear();
   layers_.clear();
   host_block_manager_.reset();
@@ -609,6 +661,104 @@ absl::StatusOr<raiden::PjRtCopyFuture> KVCacheManagerBase::D2h(
       DispatchD2hChunks(src_offsets_major_dim, dst_offsets_major_dim,
                         copy_sizes_major_dim, slot_idx, layer_idx, shard_idx));
   return raiden::JoinPjRtCopyFutures(absl::MakeSpan(logical_futures));
+}
+
+absl::StatusOr<raiden::PjRtCopyFuture> KVCacheManagerBase::D2hWrite(
+    absl::string_view peer, const std::vector<int64_t>& src_offsets_major_dim,
+    const std::vector<int64_t>& dst_offsets_major_dim,
+    const std::vector<int64_t>& copy_sizes_major_dim) {
+  const bool present = !src_offsets_major_dim.empty() ||
+                       !dst_offsets_major_dim.empty() ||
+                       !copy_sizes_major_dim.empty();
+  if (present &&
+      (src_offsets_major_dim.size() != dst_offsets_major_dim.size() ||
+       src_offsets_major_dim.size() != copy_sizes_major_dim.size())) {
+    return absl::InvalidArgumentError(
+        "src_offsets, dst_offsets, and sizes must have the same length");
+  }
+
+  std::vector<int> host_block_ids;
+  host_block_ids.reserve(dst_offsets_major_dim.size());
+  for (int64_t offset : dst_offsets_major_dim) {
+    if (offset < 0 || offset > std::numeric_limits<int>::max()) {
+      return absl::InvalidArgumentError(
+          absl::StrCat("Invalid host block ID: ", offset));
+    }
+    host_block_ids.push_back(static_cast<int>(offset));
+  }
+
+  TF_RETURN_IF_ERROR(ValidateOffsetsAndSizes(
+      src_offsets_major_dim, dst_offsets_major_dim, copy_sizes_major_dim));
+  size_t num_chunks = src_offsets_major_dim.size();
+  if (num_chunks == 0) {
+    return raiden::PjRtCopyFuture(std::vector<raiden::BufferHolder>{});
+  }
+
+  if (num_chunks == 1 || !push_pool_) {
+    ASSIGN_OR_RETURN(auto d2h_future,
+                     D2h(src_offsets_major_dim, dst_offsets_major_dim,
+                         copy_sizes_major_dim));
+    RETURN_IF_ERROR(d2h_future.Await());
+
+    ASSIGN_OR_RETURN(auto h2h_res, H2hWrite(std::string(peer), host_block_ids,
+                                            host_block_ids));
+    return h2h_res.second;
+  }
+
+  auto [promise, aggregate_future] = xla::MakePromise();
+  raiden::BufferHolders all_holds;
+
+  struct ChunkD2h {
+    raiden::PjRtCopyFuture d2h_fut;
+    int host_block_id;
+  };
+  std::vector<ChunkD2h> chunks;
+  chunks.reserve(num_chunks);
+
+  for (size_t i = 0; i < num_chunks; ++i) {
+    ASSIGN_OR_RETURN(auto chunk_futures,
+                     DispatchD2hChunks({src_offsets_major_dim[i]},
+                                       {dst_offsets_major_dim[i]},
+                                       {copy_sizes_major_dim[i]}));
+    raiden::PjRtCopyFuture d2h_fut =
+        raiden::JoinPjRtCopyFutures(absl::MakeSpan(chunk_futures));
+    for (const auto& h : d2h_fut.holds) {
+      all_holds.push_back(h);
+    }
+    chunks.push_back({std::move(d2h_fut), host_block_ids[i]});
+  }
+
+  auto state = std::make_shared<D2hWritePipelinedState>(
+      num_chunks, std::move(promise), std::move(all_holds));
+
+  std::shared_ptr<NumaThreadPool> pool = push_pool_;
+  std::string peer_str(peer);
+  for (size_t i = 0; i < num_chunks; ++i) {
+    int host_block_id = chunks[i].host_block_id;
+    chunks[i].d2h_fut.OnReady([this, pool, state, peer_str,
+                               host_block_id](auto status_or) {
+      if (!status_or.ok()) {
+        state->SetError(status_or.status());
+        state->MarkChunkComplete();
+        return;
+      }
+      pool->Schedule([this, state, peer_str, host_block_id]() {
+        if (state->HasFailed()) {
+          state->MarkChunkComplete();
+          return;
+        }
+        absl::Status status =
+            H2hWriteDirect(peer_str, {host_block_id}, {host_block_id}).status();
+        if (!status.ok()) {
+          state->SetError(status);
+        }
+        state->MarkChunkComplete();
+      });
+    });
+  }
+
+  return raiden::PjRtCopyFuture(std::move(aggregate_future),
+                                state->combined_holds, state);
 }
 
 absl::StatusOr<std::pair<std::vector<int>, raiden::PjRtCopyFuture>>

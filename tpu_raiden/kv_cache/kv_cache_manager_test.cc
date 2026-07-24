@@ -766,6 +766,141 @@ TEST(KVCacheManagerTest, AsymmetricBlockSizesGetBlockChunks) {
   EXPECT_EQ(receiver_chunks[0].ptr, receiver_base + 192);
 }
 
+class TestD2hKVCacheManager : public TestKVCacheManager {
+ public:
+  TestD2hKVCacheManager(size_t num_layers, size_t num_shards,
+                        size_t slice_byte_size, int host_blocks = 0)
+      : TestKVCacheManager(num_layers, num_shards, slice_byte_size,
+                           host_blocks) {}
+
+  absl::StatusOr<raiden::PjRtCopyFuture> D2h(
+      const std::vector<int64_t>& src_offsets_major_dim = {},
+      const std::vector<int64_t>& dst_offsets_major_dim = {},
+      const std::vector<int64_t>& copy_sizes_major_dim = {},
+      std::optional<int64_t> slot_idx = std::nullopt,
+      std::optional<size_t> layer_idx = std::nullopt,
+      std::optional<size_t> shard_idx = std::nullopt) override {
+    d2h_called_ = true;
+    last_src_offsets_ = src_offsets_major_dim;
+    last_dst_offsets_ = dst_offsets_major_dim;
+    last_copy_sizes_ = copy_sizes_major_dim;
+    return raiden::PjRtCopyFuture(std::vector<raiden::BufferHolder>{});
+  }
+
+  absl::StatusOr<std::vector<raiden::PjRtCopyFuture>> DispatchD2hChunks(
+      const std::vector<int64_t>& src_offsets,
+      const std::vector<int64_t>& dst_offsets,
+      const std::vector<int64_t>& copy_sizes,
+      std::optional<int64_t> slot_idx = std::nullopt,
+      std::optional<size_t> layer_idx = std::nullopt,
+      std::optional<size_t> shard_idx = std::nullopt,
+      int64_t device_id = -1) override {
+    dispatch_d2h_chunks_called_ = true;
+    dispatched_src_offsets_.push_back(src_offsets);
+    dispatched_dst_offsets_.push_back(dst_offsets);
+    dispatched_copy_sizes_.push_back(copy_sizes);
+    std::vector<raiden::PjRtCopyFuture> futures;
+    futures.push_back(
+        raiden::PjRtCopyFuture(std::vector<raiden::BufferHolder>{}));
+    return futures;
+  }
+
+  bool d2h_called_ = false;
+  bool dispatch_d2h_chunks_called_ = false;
+  std::vector<int64_t> last_src_offsets_;
+  std::vector<int64_t> last_dst_offsets_;
+  std::vector<int64_t> last_copy_sizes_;
+
+  std::vector<std::vector<int64_t>> dispatched_src_offsets_;
+  std::vector<std::vector<int64_t>> dispatched_dst_offsets_;
+  std::vector<std::vector<int64_t>> dispatched_copy_sizes_;
+};
+
+TEST(KVCacheManagerTest, D2hWriteFailsWithCpuOnlyManager) {
+  KVCacheManagerBase manager(/*num_layers=*/1, /*num_shards=*/1,
+                             /*slice_byte_size=*/128);
+  auto res = manager.D2hWrite("127.0.0.1:8080", {0}, {0}, {1});
+  EXPECT_FALSE(res.ok());
+  EXPECT_EQ(res.status().code(), absl::StatusCode::kFailedPrecondition);
+  EXPECT_THAT(res.status().message(),
+              testing::HasSubstr("requires a device-backed"));
+}
+
+TEST(KVCacheManagerTest, D2hWriteFailsWithInvalidHostBlockId) {
+  TestD2hKVCacheManager manager(/*num_layers=*/1, /*num_shards=*/1,
+                                /*slice_byte_size=*/128, /*host_blocks=*/2);
+  auto res = manager.D2hWrite("127.0.0.1:8080", {0}, {-1}, {1});
+  EXPECT_FALSE(res.ok());
+  EXPECT_EQ(res.status().code(), absl::StatusCode::kInvalidArgument);
+  EXPECT_THAT(res.status().message(),
+              testing::HasSubstr("Invalid host block ID"));
+}
+
+TEST(KVCacheManagerTest, D2hWriteSuccessWithMockD2h) {
+  TestD2hKVCacheManager sender(/*num_layers=*/1, /*num_shards=*/1,
+                               /*slice_byte_size=*/128, /*host_blocks=*/2);
+  TestKVCacheManager receiver(/*num_layers=*/1, /*num_shards=*/1,
+                              /*slice_byte_size=*/128, /*host_blocks=*/2);
+
+  const std::optional<int> receiver_port = receiver.local_port();
+  ASSERT_TRUE(receiver_port.has_value());
+  std::string receiver_peer =
+      absl::StrCat(receiver.local_ip(), ":", *receiver_port);
+
+  std::vector<int64_t> src_offsets = {0};
+  std::vector<int64_t> dst_offsets = {1};
+  std::vector<int64_t> copy_sizes = {1};
+
+  auto res =
+      sender.D2hWrite(receiver_peer, src_offsets, dst_offsets, copy_sizes);
+  ASSERT_TRUE(res.ok()) << res.status().ToString();
+  EXPECT_TRUE(sender.d2h_called_);
+  EXPECT_EQ(sender.last_src_offsets_, src_offsets);
+  EXPECT_EQ(sender.last_dst_offsets_, dst_offsets);
+  EXPECT_EQ(sender.last_copy_sizes_, copy_sizes);
+}
+
+TEST(KVCacheManagerTest, D2hWritePipelinedSuccess) {
+  TestD2hKVCacheManager sender(/*num_layers=*/1, /*num_shards=*/1,
+                               /*slice_byte_size=*/128, /*host_blocks=*/2);
+  TestKVCacheManager receiver(/*num_layers=*/1, /*num_shards=*/1,
+                              /*slice_byte_size=*/128, /*host_blocks=*/2);
+
+  const std::optional<int> receiver_port = receiver.local_port();
+  ASSERT_TRUE(receiver_port.has_value());
+  std::string receiver_peer =
+      absl::StrCat(receiver.local_ip(), ":", *receiver_port);
+
+  uint8_t* sender_buf = sender.GetHostPointer(/*layer_idx=*/0, /*shard_idx=*/0);
+  uint8_t* receiver_buf =
+      receiver.GetHostPointer(/*layer_idx=*/0, /*shard_idx=*/0);
+  ASSERT_NE(sender_buf, nullptr);
+  ASSERT_NE(receiver_buf, nullptr);
+
+  std::memset(sender_buf, 0xAB, 128);
+  std::memset(sender_buf + 128, 0xCD, 128);
+  std::memset(receiver_buf, 0, 256);
+
+  std::vector<int64_t> src_offsets = {0, 1};
+  std::vector<int64_t> dst_offsets = {0, 1};
+  std::vector<int64_t> copy_sizes = {1, 1};
+
+  auto res =
+      sender.D2hWrite(receiver_peer, src_offsets, dst_offsets, copy_sizes);
+  ASSERT_TRUE(res.ok()) << res.status().ToString();
+  EXPECT_TRUE(res->Await().ok());
+
+  EXPECT_TRUE(sender.dispatch_d2h_chunks_called_);
+  EXPECT_EQ(sender.dispatched_src_offsets_.size(), 2);
+  EXPECT_EQ(sender.dispatched_src_offsets_[0], std::vector<int64_t>{0});
+  EXPECT_EQ(sender.dispatched_src_offsets_[1], std::vector<int64_t>{1});
+
+  EXPECT_TRUE(std::all_of(receiver_buf, receiver_buf + 128,
+                          [](uint8_t v) { return v == 0xAB; }));
+  EXPECT_TRUE(std::all_of(receiver_buf + 128, receiver_buf + 256,
+                          [](uint8_t v) { return v == 0xCD; }));
+}
+
 }  // namespace
 }  // namespace kv_cache
 }  // namespace tpu_raiden

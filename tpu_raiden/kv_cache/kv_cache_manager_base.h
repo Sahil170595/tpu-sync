@@ -147,9 +147,7 @@ class KVCacheManagerBase : public tpu_raiden::RaidenManagerBase {
       absl::string_view peer,
       const std::vector<int64_t>& src_offsets_major_dim = {},
       const std::vector<int64_t>& dst_offsets_major_dim = {},
-      const std::vector<int64_t>& copy_sizes_major_dim = {}) {
-    return absl::UnimplementedError("D2hWrite is not implemented");
-  }
+      const std::vector<int64_t>& copy_sizes_major_dim = {});
 
   virtual absl::StatusOr<raiden::PjRtCopyFuture> D2hRead(
       absl::string_view peer,
@@ -402,7 +400,7 @@ class KVCacheManagerBase : public tpu_raiden::RaidenManagerBase {
   }
 
   std::unique_ptr<NumaThreadPool> dma_pool_;
-  std::unique_ptr<NumaThreadPool> push_pool_;
+  std::shared_ptr<NumaThreadPool> push_pool_;
   std::unique_ptr<NumaThreadPool> pull_pool_;
 
   struct CopyWork {
@@ -430,7 +428,7 @@ class KVCacheManagerBase : public tpu_raiden::RaidenManagerBase {
 
   absl::Status OnSingleBlockReceived(int block_id, size_t size_bytes) override;
 
-  absl::StatusOr<std::vector<raiden::PjRtCopyFuture>> DispatchD2hChunks(
+  virtual absl::StatusOr<std::vector<raiden::PjRtCopyFuture>> DispatchD2hChunks(
       const std::vector<int64_t>& src_offsets,
       const std::vector<int64_t>& dst_offsets,
       const std::vector<int64_t>& copy_sizes,

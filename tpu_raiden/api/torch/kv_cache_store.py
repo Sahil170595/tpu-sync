@@ -31,6 +31,7 @@ class BlockStatus(enum.Enum):
   REMOTE = 1
   HOST = 2
   HBM = 3
+  HOST_AND_HBM = 4
 
 
 class RaidenId:
@@ -71,6 +72,16 @@ class RaidenId:
     return (
         f"RaidenId(job='{self.job_name}', replica='{self.job_replica_id}',"
         f" data='{self.data_name}', data_idx={self.data_replica_idx})"
+    )
+
+  def __eq__(self, other: Any) -> bool:
+    if not isinstance(other, RaidenId):
+      return False
+    return (
+        self.job_name == other.job_name
+        and self.job_replica_id == other.job_replica_id
+        and self.data_name == other.data_name
+        and self.data_replica_idx == other.data_replica_idx
     )
 
 
@@ -147,6 +158,10 @@ class KVCacheStore:
       capacity: int,
       global_registry_address: str = "",
       raiden_id: RaidenId | None = None,
+      num_shards: int = 0,
+      shard_size_bytes: int = 0,
+      raiden_orchestrator_address: str = "",
+      raiden_controller_address: str = "",
   ):
     raw_raiden_id = _impl.RaidenId()
     if raiden_id is not None:
@@ -155,6 +170,10 @@ class KVCacheStore:
         capacity=capacity,
         global_registry_address=global_registry_address,
         raiden_id=raw_raiden_id,
+        num_shards=num_shards,
+        shard_size_bytes=shard_size_bytes,
+        raiden_orchestrator_address=raiden_orchestrator_address,
+        raiden_controller_address=raiden_controller_address,
     )
 
   @property
@@ -305,3 +324,21 @@ class KVCacheStore:
         pending: List of block hashes whose remote read is still in progress.
     """
     return self._impl.poll_remote_read_status()
+
+  def save(self, block_hashes: list[bytes]) -> bool:
+    """Saves blocks from device (HBM) to host (DRAM) asynchronously."""
+    return self._impl.save(block_hashes)
+
+  def load(
+      self, block_hashes: list[bytes], device_block_ids: list[int]
+  ) -> bool:
+    """Loads blocks from host (DRAM) to device (HBM) asynchronously."""
+    return self._impl.load(block_hashes, device_block_ids)
+
+  def poll_save_status(self) -> tuple[list[bytes], list[bytes], list[bytes]]:
+    """Polls the status of all active asynchronous Save operations."""
+    return self._impl.poll_save_status()
+
+  def poll_load_status(self) -> tuple[list[bytes], list[bytes], list[bytes]]:
+    """Polls the status of all active asynchronous Load operations."""
+    return self._impl.poll_load_status()

@@ -290,6 +290,37 @@ class KVCacheStoreTest(absltest.TestCase):
     self.assertEqual(del_count, 2)
     self.assertLen(controller.lookup([b"local_1", b"local_2"]), 2)
 
+  def test_save_and_load_mocked(self):
+    controller = kv_cache_store.KVCacheStore(capacity=20)
+    mock_impl = unittest.mock.MagicMock()
+    controller._impl = mock_impl
+
+    hashes = [b"hash_1", b"hash_2"]
+    mock_impl.save.return_value = True
+    self.assertTrue(controller.save(hashes))
+    mock_impl.save.assert_called_with(hashes)
+    mock_impl.save.return_value = False
+    self.assertFalse(controller.save(hashes))
+
+    device_block_ids = [2, 3]
+    mock_impl.load.return_value = True
+    self.assertTrue(controller.load(hashes, device_block_ids))
+    mock_impl.load.assert_called_with(hashes, device_block_ids)
+    mock_impl.load.return_value = False
+    self.assertFalse(controller.load(hashes, device_block_ids))
+
+    mock_impl.poll_save_status.return_value = ([b"hash_1"], [], [b"hash_2"])
+    self.assertEqual(
+        controller.poll_save_status(), ([b"hash_1"], [], [b"hash_2"])
+    )
+    mock_impl.poll_save_status.assert_called_once()
+
+    mock_impl.poll_load_status.return_value = ([], [b"hash_1"], [b"hash_2"])
+    self.assertEqual(
+        controller.poll_load_status(), ([], [b"hash_1"], [b"hash_2"])
+    )
+    mock_impl.poll_load_status.assert_called_once()
+
 
 if __name__ == "__main__":
   absltest.main()

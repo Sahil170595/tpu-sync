@@ -43,6 +43,11 @@ class TestKVCacheManager : public KVCacheManagerBase {
     buffer_holds_.resize(num_layers);
     for (size_t l = 0; l < num_layers; ++l) {
       buffer_holds_[l].holds.resize(num_shards);
+      for (size_t sh = 0; sh < num_shards; ++sh) {
+        layers_[l].shards[sh].device_size =
+            host_blocks > 0 ? host_blocks * bytes_per_block()
+                            : num_layers * bytes_per_block();
+      }
     }
   }
 
@@ -816,6 +821,33 @@ class TestD2hKVCacheManager : public TestKVCacheManager {
   std::vector<std::vector<int64_t>> dispatched_copy_sizes_;
 };
 
+class TestH2dKVCacheManager : public TestKVCacheManager {
+ public:
+  TestH2dKVCacheManager(size_t num_layers, size_t num_shards,
+                        size_t slice_byte_size, int host_blocks = 0)
+      : TestKVCacheManager(num_layers, num_shards, slice_byte_size,
+                           host_blocks) {}
+
+  absl::StatusOr<raiden::PjRtCopyFuture> H2d(
+      const std::vector<int64_t>& src_offsets_major_dim = {},
+      const std::vector<int64_t>& dst_offsets_major_dim = {},
+      const std::vector<int64_t>& copy_sizes_major_dim = {},
+      std::optional<int64_t> slot_idx = std::nullopt,
+      std::optional<size_t> layer_idx = std::nullopt,
+      std::optional<size_t> shard_idx = std::nullopt) override {
+    h2d_called_ = true;
+    last_h2d_src_offsets_ = src_offsets_major_dim;
+    last_h2d_dst_offsets_ = dst_offsets_major_dim;
+    last_h2d_copy_sizes_ = copy_sizes_major_dim;
+    return raiden::PjRtCopyFuture(std::vector<raiden::BufferHolder>{});
+  }
+
+  bool h2d_called_ = false;
+  std::vector<int64_t> last_h2d_src_offsets_;
+  std::vector<int64_t> last_h2d_dst_offsets_;
+  std::vector<int64_t> last_h2d_copy_sizes_;
+};
+
 TEST(KVCacheManagerTest, D2hWriteFailsWithCpuOnlyManager) {
   KVCacheManagerBase manager(/*num_layers=*/1, /*num_shards=*/1,
                              /*slice_byte_size=*/128);
@@ -899,6 +931,172 @@ TEST(KVCacheManagerTest, D2hWritePipelinedSuccess) {
                           [](uint8_t v) { return v == 0xAB; }));
   EXPECT_TRUE(std::all_of(receiver_buf + 128, receiver_buf + 256,
                           [](uint8_t v) { return v == 0xCD; }));
+}
+
+TEST(KVCacheManagerTest, H2dReadSuccess) {
+  TestKVCacheManager sender(/*num_layers=*/1, /*num_shards=*/1,
+                            /*slice_byte_size=*/128, /*host_blocks=*/2);
+  TestKVCacheManager receiver(/*num_layers=*/1, /*num_shards=*/1,
+                              /*slice_byte_size=*/128, /*host_blocks=*/2);
+
+  const std::optional<int> sender_port = sender.local_port();
+  ASSERT_TRUE(sender_port.has_value());
+  std::string sender_peer = absl::StrCat(sender.local_ip(), ":", *sender_port);
+
+  uint8_t* sender_buf = sender.GetHostPointer(/*layer_idx=*/0, /*shard_idx=*/0);
+  ASSERT_NE(sender_buf, nullptr);
+  std::memset(sender_buf, 0xEF, 128);
+
+  uint8_t* receiver_buf =
+      receiver.GetHostPointer(/*layer_idx=*/0, /*shard_idx=*/0);
+  ASSERT_NE(receiver_buf, nullptr);
+  std::memset(receiver_buf, 0, 256);
+
+  // Test empty src_offsets returns OK empty future
+  auto empty_res = receiver.H2dRead(sender_peer, {});
+  ASSERT_TRUE(empty_res.ok()) << empty_res.status().ToString();
+  EXPECT_TRUE(empty_res->Await().ok());
+
+  // Test H2dRead reading sender block 0 into receiver block 0
+  auto res = receiver.H2dRead(sender_peer, /*src_offsets_major_dim=*/{0});
+  ASSERT_TRUE(res.ok()) << res.status().ToString();
+  EXPECT_TRUE(res->Await().ok());
+
+  EXPECT_TRUE(std::all_of(receiver_buf, receiver_buf + 128,
+                          [](uint8_t v) { return v == 0xEF; }));
+}
+
+TEST(KVCacheManagerTest, H2dReadPipelinedSuccess) {
+  TestKVCacheManager sender(/*num_layers=*/1, /*num_shards=*/1,
+                            /*slice_byte_size=*/128, /*host_blocks=*/2);
+  TestKVCacheManager receiver(/*num_layers=*/1, /*num_shards=*/1,
+                              /*slice_byte_size=*/128, /*host_blocks=*/2);
+
+  const std::optional<int> sender_port = sender.local_port();
+  ASSERT_TRUE(sender_port.has_value());
+  std::string sender_peer = absl::StrCat(sender.local_ip(), ":", *sender_port);
+
+  uint8_t* sender_buf = sender.GetHostPointer(/*layer_idx=*/0, /*shard_idx=*/0);
+  uint8_t* receiver_buf =
+      receiver.GetHostPointer(/*layer_idx=*/0, /*shard_idx=*/0);
+  ASSERT_NE(sender_buf, nullptr);
+  ASSERT_NE(receiver_buf, nullptr);
+
+  std::memset(sender_buf, 0x55, 128);
+  std::memset(sender_buf + 128, 0x66, 128);
+  std::memset(receiver_buf, 0, 256);
+
+  std::vector<int64_t> src_offsets = {0, 1};
+  std::vector<int64_t> dst_offsets = {0, 1};
+  std::vector<int64_t> copy_sizes = {1, 1};
+
+  auto res =
+      receiver.H2dRead(sender_peer, src_offsets, dst_offsets, copy_sizes);
+  ASSERT_TRUE(res.ok()) << res.status().ToString();
+  EXPECT_TRUE(res->Await().ok());
+
+  EXPECT_TRUE(std::all_of(receiver_buf, receiver_buf + 128,
+                          [](uint8_t v) { return v == 0x55; }));
+  EXPECT_TRUE(std::all_of(receiver_buf + 128, receiver_buf + 256,
+                          [](uint8_t v) { return v == 0x66; }));
+}
+
+TEST(KVCacheManagerTest, H2dReadCallsH2dForTpuHbmDestination) {
+  TestKVCacheManager sender(/*num_layers=*/1, /*num_shards=*/1,
+                            /*slice_byte_size=*/128, /*host_blocks=*/2);
+  TestH2dKVCacheManager receiver(/*num_layers=*/1, /*num_shards=*/1,
+                                 /*slice_byte_size=*/128, /*host_blocks=*/2);
+
+  const std::optional<int> sender_port = sender.local_port();
+  ASSERT_TRUE(sender_port.has_value());
+  std::string sender_peer = absl::StrCat(sender.local_ip(), ":", *sender_port);
+
+  uint8_t* sender_buf = sender.GetHostPointer(/*layer_idx=*/0, /*shard_idx=*/0);
+  ASSERT_NE(sender_buf, nullptr);
+  std::memset(sender_buf, 0x77, 128);
+
+  auto res = receiver.H2dRead(sender_peer, /*src_offsets_major_dim=*/{0},
+                              /*dst_offsets_major_dim=*/{1},
+                              /*copy_sizes_major_dim=*/{1});
+  ASSERT_TRUE(res.ok()) << res.status().ToString();
+  EXPECT_TRUE(res->Await().ok());
+
+  // H2dRead MUST trigger Stage 2 H2d DMA into TPU HBM destination offset {1}.
+  EXPECT_TRUE(receiver.h2d_called_);
+  EXPECT_EQ(receiver.last_h2d_src_offsets_, std::vector<int64_t>{0});
+  EXPECT_EQ(receiver.last_h2d_dst_offsets_, std::vector<int64_t>{1});
+  EXPECT_EQ(receiver.last_h2d_copy_sizes_, std::vector<int64_t>{1});
+}
+
+TEST(KVCacheManagerTest, H2dWriteSuccess) {
+  TestKVCacheManager sender(/*num_layers=*/1, /*num_shards=*/1,
+                            /*slice_byte_size=*/128, /*host_blocks=*/2);
+  TestKVCacheManager receiver(/*num_layers=*/1, /*num_shards=*/1,
+                              /*slice_byte_size=*/128, /*host_blocks=*/2);
+
+  const std::optional<int> receiver_port = receiver.local_port();
+  ASSERT_TRUE(receiver_port.has_value());
+  std::string receiver_peer =
+      absl::StrCat(receiver.local_ip(), ":", *receiver_port);
+
+  uint8_t* sender_buf = sender.GetHostPointer(/*layer_idx=*/0, /*shard_idx=*/0);
+  uint8_t* receiver_buf =
+      receiver.GetHostPointer(/*layer_idx=*/0, /*shard_idx=*/0);
+  ASSERT_NE(sender_buf, nullptr);
+  ASSERT_NE(receiver_buf, nullptr);
+
+  std::memset(sender_buf, 0xCD, 128);
+  std::memset(receiver_buf, 0, 256);
+
+  std::vector<int64_t> src_offsets = {0};
+  std::vector<int64_t> dst_offsets = {1};
+  std::vector<int64_t> copy_sizes = {1};
+
+  auto res =
+      sender.H2dWrite(receiver_peer, src_offsets, dst_offsets, copy_sizes);
+  ASSERT_TRUE(res.ok()) << res.status().ToString();
+  EXPECT_TRUE(res->Await().ok());
+
+  EXPECT_TRUE(std::all_of(receiver_buf, receiver_buf + 128,
+                          [](uint8_t v) { return v == 0; }));
+  EXPECT_TRUE(std::all_of(receiver_buf + 128, receiver_buf + 256,
+                          [](uint8_t v) { return v == 0xCD; }));
+}
+
+TEST(KVCacheManagerTest, H2dWritePipelinedSuccess) {
+  TestKVCacheManager sender(/*num_layers=*/1, /*num_shards=*/1,
+                            /*slice_byte_size=*/128, /*host_blocks=*/2);
+  TestKVCacheManager receiver(/*num_layers=*/1, /*num_shards=*/1,
+                              /*slice_byte_size=*/128, /*host_blocks=*/2);
+
+  const std::optional<int> receiver_port = receiver.local_port();
+  ASSERT_TRUE(receiver_port.has_value());
+  std::string receiver_peer =
+      absl::StrCat(receiver.local_ip(), ":", *receiver_port);
+
+  uint8_t* sender_buf = sender.GetHostPointer(/*layer_idx=*/0, /*shard_idx=*/0);
+  uint8_t* receiver_buf =
+      receiver.GetHostPointer(/*layer_idx=*/0, /*shard_idx=*/0);
+  ASSERT_NE(sender_buf, nullptr);
+  ASSERT_NE(receiver_buf, nullptr);
+
+  std::memset(sender_buf, 0x33, 128);
+  std::memset(sender_buf + 128, 0x44, 128);
+  std::memset(receiver_buf, 0, 256);
+
+  std::vector<int64_t> src_offsets = {0, 1};
+  std::vector<int64_t> dst_offsets = {0, 1};
+  std::vector<int64_t> copy_sizes = {1, 1};
+
+  auto res =
+      sender.H2dWrite(receiver_peer, src_offsets, dst_offsets, copy_sizes);
+  ASSERT_TRUE(res.ok()) << res.status().ToString();
+  EXPECT_TRUE(res->Await().ok());
+
+  EXPECT_TRUE(std::all_of(receiver_buf, receiver_buf + 128,
+                          [](uint8_t v) { return v == 0x33; }));
+  EXPECT_TRUE(std::all_of(receiver_buf + 128, receiver_buf + 256,
+                          [](uint8_t v) { return v == 0x44; }));
 }
 
 }  // namespace

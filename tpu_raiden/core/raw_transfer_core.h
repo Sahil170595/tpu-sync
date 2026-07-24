@@ -576,6 +576,9 @@ inline absl::StatusOr<PjRtCopyFuture> IssueD2hShard(
     const BufferHoldAndAlias& hold, const std::vector<D2hCopy>& copies) {
   BufferHolders holds{
       BufferHolder{hold.c_hold, hold.common_hold, nullptr, nullptr}};
+  if (hold.buffer == nullptr && hold.c_hold == nullptr) {
+    return PjRtCopyFuture(std::move(holds));
+  }
   if (hold.supports_event()) {
     std::vector<PJRT_Event*> evs;
     evs.reserve(copies.size());
@@ -600,6 +603,9 @@ inline absl::StatusOr<PjRtCopyFuture> IssueH2dShard(
     const BufferHoldAndAlias& hold, const std::vector<H2dCopy>& copies) {
   BufferHolders holds{
       BufferHolder{hold.c_hold, hold.common_hold, nullptr, nullptr}};
+  if (hold.buffer == nullptr && hold.c_hold == nullptr) {
+    return PjRtCopyFuture(std::move(holds));
+  }
   if (hold.supports_event()) {
     std::vector<PJRT_Event*> evs;
     evs.reserve(copies.size());

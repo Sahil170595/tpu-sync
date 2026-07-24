@@ -15,6 +15,7 @@
 #include "tpu_raiden/kv_cache/kv_cache_manager_base.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -62,15 +63,28 @@ namespace {
 absl::Status ValidateOffsetsAndSizes(const std::vector<int64_t>& src_offsets,
                                      const std::vector<int64_t>& dst_offsets,
                                      const std::vector<int64_t>& sizes) {
-  const bool present =
-      !src_offsets.empty() || !dst_offsets.empty() || !sizes.empty();
-  if (present && (src_offsets.size() != dst_offsets.size() ||
-                  src_offsets.size() != sizes.size())) {
+  if (!dst_offsets.empty() && src_offsets.size() != dst_offsets.size()) {
     return absl::InvalidArgumentError(
         "src_offsets, dst_offsets, and sizes must have the same length");
   }
-  for (size_t i = 0; i < src_offsets.size(); ++i) {
-    if (src_offsets[i] < 0 || dst_offsets[i] < 0 || sizes[i] < 0) {
+  if (!sizes.empty() && src_offsets.size() != sizes.size()) {
+    return absl::InvalidArgumentError(
+        "src_offsets, dst_offsets, and sizes must have the same length");
+  }
+  for (int64_t val : src_offsets) {
+    if (val < 0) {
+      return absl::InvalidArgumentError(
+          "copy offsets and sizes must be non-negative");
+    }
+  }
+  for (int64_t val : dst_offsets) {
+    if (val < 0) {
+      return absl::InvalidArgumentError(
+          "copy offsets and sizes must be non-negative");
+    }
+  }
+  for (int64_t val : sizes) {
+    if (val < 0) {
       return absl::InvalidArgumentError(
           "copy offsets and sizes must be non-negative");
     }
@@ -102,52 +116,64 @@ void CoalesceMajorDimCopies(const std::vector<int64_t>& src_offsets,
   }
 }
 
-struct D2hWritePipelinedState {
-  const size_t total_chunks;
-  size_t completed_chunks ABSL_GUARDED_BY(mu) = 0;
-  bool has_failed ABSL_GUARDED_BY(mu) = false;
-  bool promise_fulfilled ABSL_GUARDED_BY(mu) = false;
+struct TransferPipelinedState {
+  size_t total_chunks = 0;
+  std::atomic<size_t> completed_chunks{0};
+  std::atomic<bool> has_failed{false};
+  std::atomic<bool> promise_fulfilled{false};
 
-  mutable absl::Mutex mu;
-  absl::Status first_error ABSL_GUARDED_BY(mu);
+  mutable absl::Mutex err_mu;
+  absl::Status first_error ABSL_GUARDED_BY(err_mu);
 
   xla::Promise<> promise;
   raiden::BufferHolders combined_holds;
 
-  explicit D2hWritePipelinedState(size_t n, xla::Promise<> p,
-                                  raiden::BufferHolders h)
-      : total_chunks(n), promise(std::move(p)), combined_holds(std::move(h)) {}
+  TransferPipelinedState(size_t total_chunks, xla::Promise<> p,
+                         raiden::BufferHolders holds)
+      : total_chunks(total_chunks),
+        promise(std::move(p)),
+        combined_holds(std::move(holds)) {}
 
   void SetError(const absl::Status& status) {
     if (status.ok()) return;
-    absl::MutexLock lock(&mu);
-    if (first_error.ok()) {
-      first_error = status;
+    {
+      absl::MutexLock lock(&err_mu);
+      if (first_error.ok()) {
+        first_error = status;
+      }
     }
-    has_failed = true;
-    if (!promise_fulfilled) {
-      promise_fulfilled = true;
-      promise.Set(first_error);
+    has_failed.store(true, std::memory_order_release);
+    bool expected = false;
+    if (promise_fulfilled.compare_exchange_strong(expected, true)) {
+      absl::Status err;
+      {
+        absl::MutexLock lock(&err_mu);
+        err = first_error;
+      }
+      promise.Set(err);
     }
   }
 
   void MarkChunkComplete() {
-    absl::MutexLock lock(&mu);
-    completed_chunks++;
-    if (completed_chunks == total_chunks && !promise_fulfilled) {
-      promise_fulfilled = true;
-      if (has_failed) {
-        promise.Set(first_error);
-      } else {
-        promise.Set();
+    size_t prev = completed_chunks.fetch_add(1, std::memory_order_acq_rel);
+    if (prev + 1 == total_chunks) {
+      bool expected = false;
+      if (promise_fulfilled.compare_exchange_strong(expected, true)) {
+        if (has_failed.load(std::memory_order_acquire)) {
+          absl::Status err;
+          {
+            absl::MutexLock lock(&err_mu);
+            err = first_error;
+          }
+          promise.Set(err);
+        } else {
+          promise.Set();
+        }
       }
     }
   }
 
-  bool HasFailed() const {
-    absl::MutexLock lock(&mu);
-    return has_failed;
-  }
+  bool HasFailed() const { return has_failed.load(std::memory_order_acquire); }
 };
 
 }  // namespace
@@ -663,6 +689,207 @@ absl::StatusOr<raiden::PjRtCopyFuture> KVCacheManagerBase::D2h(
   return raiden::JoinPjRtCopyFutures(absl::MakeSpan(logical_futures));
 }
 
+absl::StatusOr<raiden::PjRtCopyFuture> KVCacheManagerBase::H2dWrite(
+    absl::string_view peer, const std::vector<int64_t>& src_offsets_major_dim,
+    const std::vector<int64_t>& dst_offsets_major_dim,
+    const std::vector<int64_t>& copy_sizes_major_dim) {
+  const bool present = !src_offsets_major_dim.empty() ||
+                       !dst_offsets_major_dim.empty() ||
+                       !copy_sizes_major_dim.empty();
+  if (present &&
+      (src_offsets_major_dim.size() != dst_offsets_major_dim.size() ||
+       src_offsets_major_dim.size() != copy_sizes_major_dim.size())) {
+    return absl::InvalidArgumentError(
+        "src_offsets, dst_offsets, and sizes must have the same length");
+  }
+
+  std::vector<int> src_block_ids;
+  src_block_ids.reserve(src_offsets_major_dim.size());
+  for (int64_t offset : src_offsets_major_dim) {
+    if (offset < 0 || offset > std::numeric_limits<int>::max()) {
+      return absl::InvalidArgumentError(
+          absl::StrCat("Invalid host block ID: ", offset));
+    }
+    src_block_ids.push_back(static_cast<int>(offset));
+  }
+
+  std::vector<int> dst_block_ids;
+  dst_block_ids.reserve(dst_offsets_major_dim.size());
+  for (int64_t offset : dst_offsets_major_dim) {
+    if (offset < 0 || offset > std::numeric_limits<int>::max()) {
+      return absl::InvalidArgumentError(
+          absl::StrCat("Invalid host block ID: ", offset));
+    }
+    dst_block_ids.push_back(static_cast<int>(offset));
+  }
+
+  TF_RETURN_IF_ERROR(ValidateOffsetsAndSizes(
+      src_offsets_major_dim, dst_offsets_major_dim, copy_sizes_major_dim));
+
+  size_t num_chunks = src_offsets_major_dim.size();
+  if (num_chunks == 0) {
+    return raiden::PjRtCopyFuture(std::vector<raiden::BufferHolder>{});
+  }
+
+  if (num_chunks == 1 || !push_pool_) {
+    ASSIGN_OR_RETURN(auto h2h_res,
+                     H2hWrite(std::string(peer), src_block_ids, dst_block_ids));
+    return h2h_res.second;
+  }
+
+  auto [promise, aggregate_future] = xla::MakePromise();
+  auto state = std::make_shared<TransferPipelinedState>(
+      num_chunks, std::move(promise), raiden::BufferHolders{});
+
+  std::shared_ptr<NumaThreadPool> pool = push_pool_;
+  std::string peer_str(peer);
+  for (size_t i = 0; i < num_chunks; ++i) {
+    int src_block_id = src_block_ids[i];
+    int dst_block_id = dst_block_ids.empty() ? src_block_id : dst_block_ids[i];
+    pool->Schedule([this, state, peer_str, src_block_id, dst_block_id]() {
+      if (state->HasFailed()) {
+        state->MarkChunkComplete();
+        return;
+      }
+      absl::Status status =
+          H2hWriteDirect(peer_str, {src_block_id}, {dst_block_id}).status();
+      if (!status.ok()) {
+        state->SetError(status);
+      }
+      state->MarkChunkComplete();
+    });
+  }
+
+  return raiden::PjRtCopyFuture(std::move(aggregate_future),
+                                state->combined_holds, state);
+}
+
+absl::StatusOr<raiden::PjRtCopyFuture> KVCacheManagerBase::H2dRead(
+    absl::string_view peer, const std::vector<int64_t>& src_offsets_major_dim,
+    const std::vector<int64_t>& dst_offsets_major_dim,
+    const std::vector<int64_t>& copy_sizes_major_dim) {
+  const bool present = !src_offsets_major_dim.empty() ||
+                       !dst_offsets_major_dim.empty() ||
+                       !copy_sizes_major_dim.empty();
+  if (present && !dst_offsets_major_dim.empty() &&
+      src_offsets_major_dim.size() != dst_offsets_major_dim.size()) {
+    return absl::InvalidArgumentError(
+        "src_offsets and dst_offsets must have the same length");
+  }
+  if (present && !copy_sizes_major_dim.empty() &&
+      src_offsets_major_dim.size() != copy_sizes_major_dim.size()) {
+    return absl::InvalidArgumentError(
+        "src_offsets and copy_sizes must have the same length");
+  }
+
+  std::vector<int> src_block_ids;
+  src_block_ids.reserve(src_offsets_major_dim.size());
+  for (int64_t offset : src_offsets_major_dim) {
+    if (offset < 0 || offset > std::numeric_limits<int>::max()) {
+      return absl::InvalidArgumentError(
+          absl::StrCat("Invalid host block ID: ", offset));
+    }
+    src_block_ids.push_back(static_cast<int>(offset));
+  }
+
+  for (int64_t offset : dst_offsets_major_dim) {
+    if (offset < 0 || offset > std::numeric_limits<int>::max()) {
+      return absl::InvalidArgumentError(
+          absl::StrCat("Invalid host block ID: ", offset));
+    }
+  }
+
+  TF_RETURN_IF_ERROR(ValidateOffsetsAndSizes(
+      src_offsets_major_dim, dst_offsets_major_dim, copy_sizes_major_dim));
+
+  size_t num_chunks = src_offsets_major_dim.size();
+  if (num_chunks == 0) {
+    return raiden::PjRtCopyFuture(std::vector<raiden::BufferHolder>{});
+  }
+
+  if (num_chunks == 1 || !pull_pool_) {
+    ASSIGN_OR_RETURN(auto h2h_fut, H2hReadExplicit(std::string(peer),
+                                                   src_block_ids, src_block_ids,
+                                                   /*explicit_dst_ptrs=*/{}));
+    RETURN_IF_ERROR(h2h_fut.Await());
+
+    const std::vector<int64_t>& h2d_dst_offsets = dst_offsets_major_dim.empty()
+                                                      ? src_offsets_major_dim
+                                                      : dst_offsets_major_dim;
+    std::vector<int64_t> h2d_sizes = copy_sizes_major_dim.empty()
+                                         ? std::vector<int64_t>(num_chunks, 1)
+                                         : copy_sizes_major_dim;
+
+    return H2d(src_offsets_major_dim, h2d_dst_offsets, h2d_sizes);
+  }
+
+  auto [promise, aggregate_future] = xla::MakePromise();
+  raiden::BufferHolders all_holds;
+  for (const auto& layer_hold : buffer_holds_) {
+    for (const auto& hold : layer_hold.holds) {
+      all_holds.push_back(raiden::BufferHolder{hold.c_hold, hold.common_hold,
+                                               nullptr, nullptr});
+    }
+  }
+
+  auto state = std::make_shared<TransferPipelinedState>(
+      num_chunks, std::move(promise), std::move(all_holds));
+
+  std::string peer_str(peer);
+  for (size_t i = 0; i < num_chunks; ++i) {
+    int src_block_id = src_block_ids[i];
+    int64_t dst_offset = dst_offsets_major_dim.empty()
+                             ? src_offsets_major_dim[i]
+                             : dst_offsets_major_dim[i];
+    int64_t size = copy_sizes_major_dim.empty() ? 1 : copy_sizes_major_dim[i];
+
+    pull_pool_->Schedule([this, state, peer_str, src_block_id, dst_offset,
+                          size]() {
+      if (state->HasFailed()) {
+        state->MarkChunkComplete();
+        return;
+      }
+
+      auto h2h_fut_or = H2hReadExplicit(
+          peer_str, {src_block_id}, {src_block_id}, /*explicit_dst_ptrs=*/{});
+      if (!h2h_fut_or.ok()) {
+        state->SetError(h2h_fut_or.status());
+        state->MarkChunkComplete();
+        return;
+      }
+
+      absl::Status h2h_status = h2h_fut_or->Await();
+      if (!h2h_status.ok()) {
+        state->SetError(h2h_status);
+        state->MarkChunkComplete();
+        return;
+      }
+
+      if (state->HasFailed()) {
+        state->MarkChunkComplete();
+        return;
+      }
+
+      auto h2d_fut_or = H2d({src_block_id}, {dst_offset}, {size});
+      if (!h2d_fut_or.ok()) {
+        state->SetError(h2d_fut_or.status());
+        state->MarkChunkComplete();
+        return;
+      }
+
+      h2d_fut_or->OnReady([state](auto status_or) {
+        if (!status_or.ok()) {
+          state->SetError(status_or.status());
+        }
+        state->MarkChunkComplete();
+      });
+    });
+  }
+
+  return raiden::PjRtCopyFuture(std::move(aggregate_future),
+                                state->combined_holds, state);
+}
+
 absl::StatusOr<raiden::PjRtCopyFuture> KVCacheManagerBase::D2hWrite(
     absl::string_view peer, const std::vector<int64_t>& src_offsets_major_dim,
     const std::vector<int64_t>& dst_offsets_major_dim,
@@ -728,7 +955,7 @@ absl::StatusOr<raiden::PjRtCopyFuture> KVCacheManagerBase::D2hWrite(
     chunks.push_back({std::move(d2h_fut), host_block_ids[i]});
   }
 
-  auto state = std::make_shared<D2hWritePipelinedState>(
+  auto state = std::make_shared<TransferPipelinedState>(
       num_chunks, std::move(promise), std::move(all_holds));
 
   std::shared_ptr<NumaThreadPool> pool = push_pool_;

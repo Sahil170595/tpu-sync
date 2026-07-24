@@ -40,7 +40,7 @@ from tpu_raiden.rpc import raiden_service_pb2
 
 class DummyWorkerRpcClient(raiden_controller.WorkerRpcClient):
 
-  async def start_transfer(self, target_id, transfer_plan) -> None:
+  async def start_transfer(self, target_id, transfer_plan, address=None) -> None:
     pass
 
 
@@ -52,7 +52,7 @@ class RecordingWorkerRpcClient(raiden_controller.WorkerRpcClient):
     self.event_log = event_log
     self.label = label
 
-  async def start_transfer(self, target_id, transfer_plan) -> None:
+  async def start_transfer(self, target_id, transfer_plan, address=None) -> None:
     self.calls.append((target_id, transfer_plan))
     if self.event_log is not None:
       self.event_log.append((self.label, target_id))
@@ -395,6 +395,14 @@ class RaidenControllerTest(absltest.TestCase):
     self.assertEqual(plan.transfer_pool_indices, list(range(15)))
     self.assertEqual(plan.expected_pushes_per_pool, 64)
     self.assertEqual(plan.dst_device_block_ids, dst_ids)
+    # Single-tag plans carry their one explicit group; the scalar fields are
+    # mirrors of it, not an alternate vocabulary.
+    self.assertLen(plan.pool_groups, 1)
+    (fa_group,) = plan.pool_groups
+    self.assertEqual(fa_group["pool_indices"], list(range(15)))
+    self.assertEqual(fa_group["dst_device_block_ids"], dst_ids)
+    self.assertEqual(fa_group["expected_pushes"], 64)
+    self.assertEqual(fa_group["order_rank"], 0)
     self.assertEqual(client.calls[0][0], dst_unit)
     self.assertEqual({call[0] for call in client.calls[1:]}, set(src_units))
 
@@ -431,14 +439,21 @@ class RaidenControllerTest(absltest.TestCase):
         client._encode_start_transfer(src_units[0], plan)
     )
     encoded = sender_req.start_transfer_request
-    self.assertEqual(encoded.expected_pushes_per_pool, 64)
     self.assertEqual(list(encoded.transfer_pool_indices), list(range(15)))
-    self.assertEqual(list(encoded.src_block_ids), [1000, 1001])
-    self.assertEqual(list(encoded.dst_device_block_ids), dst_ids)
     self.assertEqual(encoded.parallelism, 8)
-    self.assertEqual(encoded.num_tokens, 65536)
     self.assertEqual(encoded.dst_mem_type, raiden_service_pb2.MEMORY_TYPE_HBM)
     self.assertEqual(set(encoded.shard_push_schedules), {0})
+    # The groups are the only wire vocabulary: block ids, extents, and push
+    # accounting have no scalar mirrors.
+    self.assertLen(encoded.pool_groups, 1)
+    self.assertEqual(
+        list(encoded.pool_groups[0].pool_indices), list(range(15))
+    )
+    self.assertEqual(
+        list(encoded.pool_groups[0].dst_device_block_ids), dst_ids
+    )
+    self.assertEqual(encoded.pool_groups[0].expected_pushes, 64)
+    self.assertEqual(encoded.pool_groups[0].order_rank, 0)
 
     receiver_req = raiden_service_pb2.ControlRequest()
     receiver_req.ParseFromString(client._encode_start_transfer(dst_unit, plan))
@@ -733,14 +748,18 @@ class RaidenControllerTest(absltest.TestCase):
     src_address = f"127.0.0.1:{src_controller.port}"
     dst_address = f"127.0.0.1:{dst_controller.port}"
     try:
-      facade = raiden_controller.RaidenControllerClientFacade(dst_address)
+      # The consumer coordinates with the SOURCE controller directly; the
+      # source controller queries destination metadata from the destination
+      # controller and arms the decode worker itself at the control-plane
+      # address the worker's metadata declares.
+      facade = raiden_controller.RaidenControllerClientFacade(src_address)
       self.assertTrue(
           facade.coordinate_transfer(
               src_units=src_units,
               dst_units=[dst_unit],
               req_id="request",
               use_block_chunks=True,
-              is_sender=False,
+              is_sender=True,
               uuid=123,
               src_controller_address=src_address,
               dst_controller_address=dst_address,
@@ -750,115 +769,29 @@ class RaidenControllerTest(absltest.TestCase):
               transfer_pool_tags=["fa"],
           )
       )
-      self.assertLen(dst_client.calls, 1)
-      self.assertLen(src_client.calls, 8)
-      self.assertEqual(events[0], ("destination", dst_unit))
+      # One receiver arm strictly before eight sender dispatches, all issued
+      # by the source controller; the destination controller stays a
+      # metadata directory and never sees the plan.
+      self.assertLen(src_client.calls, 9)
+      self.assertEmpty(dst_client.calls)
+      self.assertEqual(events[0], ("source", dst_unit))
       self.assertTrue(all(label == "source" for label, _ in events[1:]))
-      self.assertIsNotNone(src_controller.get_plan("request"))
-      dst_plan = dst_controller.get_plan("request")
-      self.assertIsNotNone(dst_plan)
+      plan = src_controller.get_plan("request")
+      self.assertIsNotNone(plan)
+      self.assertEqual(plan.worker_rpc_addresses[dst_unit], "10.1.0.1:9000")
+      self.assertIsNone(dst_controller.get_plan("request"))
       entries = []
-      for unit_schedules in dst_plan.shard_push_schedules.values():
+      for unit_schedules in plan.shard_push_schedules.values():
         for entry in unit_schedules[0]:
           entries.append(entry)
       self.assertLen(entries, 254)
       self.assertTrue(any(entry[2] > 0 for entry in entries))
-      self.assertEqual(dst_plan.expected_pushes_per_pool, 64)
+      self.assertEqual(plan.expected_pushes_per_pool, 64)
     finally:
       src_server.stop()
       dst_server.stop()
       src_server._thread.join(timeout=2)
       dst_server._thread.join(timeout=2)
-
-  def test_stage3_receiver_rejects_invalid_interleave_coverage(self):
-    controller, _, _, _, dst_ids, plan = self._build_stage3_plan(
-        num_tokens=65_023, src_page_slice_tokens=256
-    )
-
-    def schedules_with_first_entry_change(
-        *, dst_offset_bytes=None, dst_offset_delta=0, size_delta=0
-    ):
-      schedules = {
-          unit: {0: list(unit_schedules[0])}
-          for unit, unit_schedules in plan.shard_push_schedules.items()
-      }
-      for unit, unit_schedules in schedules.items():
-        for entry_idx, entry in enumerate(unit_schedules[0]):
-          if entry[6] == dst_ids[0] and entry[2] == 0:
-            changed = list(entry)
-            changed[2] = (
-                changed[2] + dst_offset_delta
-                if dst_offset_bytes is None
-                else dst_offset_bytes
-            )
-            changed[4] += size_delta
-            unit_schedules[0][entry_idx] = tuple(changed)
-            return schedules
-      self.fail("Interleaved plan has no entry at destination offset zero")
-
-    def register(schedules):
-      return controller.register_pool_reshard_receiver_plan(
-          src_units=plan.src_units,
-          dst_units=plan.dst_units,
-          req_id=plan.req_id,
-          uuid=plan.uuid,
-          shard_push_schedules=schedules,
-          expected_pushes_per_pool=plan.expected_pushes_per_pool,
-          transfer_pool_indices=plan.transfer_pool_indices,
-          pool_dtype_tags=plan.pool_dtype_tags,
-          dst_device_block_ids=plan.dst_device_block_ids,
-          src_schedule_keys=plan.src_schedule_keys,
-          parallelism=plan.parallelism,
-          num_tokens=plan.num_tokens,
-          dst_expected_extent_bytes=plan.dst_expected_extent_bytes,
-      )
-
-    token_bytes = 1024
-    with self.subTest("gap"):
-      with self.assertRaisesRegex(ValueError, "coverage gap"):
-        register(
-            schedules_with_first_entry_change(
-                dst_offset_delta=token_bytes, size_delta=-token_bytes
-            )
-        )
-    with self.subTest("overlap"):
-      with self.assertRaisesRegex(ValueError, "coverage overlap"):
-        register(schedules_with_first_entry_change(size_delta=token_bytes))
-    with self.subTest("out_of_range"):
-      with self.assertRaisesRegex(ValueError, "exceeds its destination page"):
-        register(
-            schedules_with_first_entry_change(
-                dst_offset_bytes=1023 * token_bytes
-            )
-        )
-
-  def test_stage3_receiver_rejects_tampered_push_count_before_arm(self):
-    controller, client, _, _, _, plan = self._build_stage3_plan(
-        num_tokens=65_023, src_page_slice_tokens=256
-    )
-
-    with self.assertRaisesRegex(
-        ValueError,
-        "expected_pushes_per_pool does not match the received schedules",
-    ):
-      controller.register_pool_reshard_receiver_plan(
-          src_units=plan.src_units,
-          dst_units=plan.dst_units,
-          req_id=plan.req_id,
-          uuid=plan.uuid,
-          shard_push_schedules=plan.shard_push_schedules,
-          expected_pushes_per_pool=plan.expected_pushes_per_pool + 1,
-          transfer_pool_indices=plan.transfer_pool_indices,
-          pool_dtype_tags=plan.pool_dtype_tags,
-          dst_device_block_ids=plan.dst_device_block_ids,
-          src_schedule_keys=plan.src_schedule_keys,
-          parallelism=plan.parallelism,
-          num_tokens=plan.num_tokens,
-          dst_expected_extent_bytes=plan.dst_expected_extent_bytes,
-      )
-
-    self.assertEmpty(client.calls)
-    self.assertIsNone(controller.get_plan(plan.req_id))
 
   def test_stage3_geometry_edges(self):
     _, _, _, _, dst_ids, tail_plan = self._build_stage3_plan(num_tokens=65024)
@@ -979,26 +912,10 @@ class RaidenControllerTest(absltest.TestCase):
     self.assertTrue(all(entry[4] == 262_144 for entry in entries))
     self.assertTrue(
         all(entry[7:] == (0, 0, 1, 0) for entry in entries))
-
-    # The destination controller independently converts the physical
-    # schedules back to compact-live coverage and accepts the exact union.
-    receiver_future = controller.register_pool_reshard_receiver_plan(
-        src_units=plan.src_units,
-        dst_units=plan.dst_units,
-        req_id=plan.req_id,
-        uuid=plan.uuid,
-        shard_push_schedules=plan.shard_push_schedules,
-        expected_pushes_per_pool=plan.expected_pushes_per_pool,
-        transfer_pool_indices=plan.transfer_pool_indices,
-        pool_dtype_tags=plan.pool_dtype_tags,
-        dst_device_block_ids=plan.dst_device_block_ids,
-        src_schedule_keys=plan.src_schedule_keys,
-        parallelism=plan.parallelism,
-        num_tokens=plan.num_tokens,
-        dst_expected_extent_bytes=plan.dst_expected_extent_bytes,
-    )
-    asyncio.run(receiver_future.wait())
-    self.assertLen(client.calls, 1)
+    # The receiving worker's executor independently converts these physical
+    # schedules back to compact-live coverage at arm time (the C++
+    # receiver-coverage validation, exercised in
+    # kv_cache_manager_with_transfer_pool_reshard_test).
 
   def test_stage3_fa_filter_and_gdn_skip_accounting(self):
     _, _, _, _, _, plan = self._build_stage3_plan(include_gdn=True)
@@ -1232,7 +1149,7 @@ class RaidenControllerTest(absltest.TestCase):
 
     class FailingReceiverWorkerRpcClient(raiden_controller.WorkerRpcClient):
 
-      async def start_transfer(self, target_id, transfer_plan) -> None:
+      async def start_transfer(self, target_id, transfer_plan, address=None) -> None:
         calls.append(target_id)
         if target_id in transfer_plan.dst_units:
           raise RuntimeError("receiver arm failed")
@@ -1263,6 +1180,44 @@ class RaidenControllerTest(absltest.TestCase):
     self.assertTrue(
         controller.cancel_request_blocks_if_unclaimed("request", 123)
     )
+
+  def test_register_transfer_schedule_pool_shape_retired_legacy_reachable(self):
+    controller = raiden_controller.RaidenController(port=0)
+    server = raiden_controller.RaidenControllerServer(controller)
+    server.start()
+    facade = raiden_controller.RaidenControllerClientFacade(
+        f"127.0.0.1:{server.port}"
+    )
+    try:
+      # A pre-P2 peer's pool-shaped registration hits the crafted fail-closed
+      # rejection (and must not trip over the P3-reserved scalar mirrors).
+      req = facade._raiden_proto_module.ControlRequest(
+          command=(
+              facade._raiden_proto_module.ControlRequest.COMMAND_REGISTER_TRANSFER_SCHEDULE
+          ),
+      )
+      req.start_transfer_request.uuid = 5
+      req.start_transfer_request.req_id = "old-peer"
+      req.start_transfer_request.transfer_pool_indices.append(0)
+      with self.assertRaisesRegex(RuntimeError, "retired"):
+        facade._send_raiden_protobuf_rpc(req)
+
+      # The deliberately retained legacy (non-pool) registration still
+      # reaches its branch: whatever it reports, it is not the reshard
+      # rejection and not a reserved-field crash.
+      try:
+        facade.register_transfer_schedule(
+            src_units=[raiden_controller.RaidenId("job", "0", "data", 0)],
+            dst_units=[raiden_controller.RaidenId("job", "1", "data", 0)],
+            req_id="legacy-registration",
+            uuid=7,
+        )
+      except RuntimeError as exc:
+        self.assertNotIn("retired", str(exc))
+        self.assertNotIn("expected_pushes_per_pool", str(exc))
+    finally:
+      server.stop()
+      server._thread.join(timeout=2)
 
   def test_raw_legacy_release_without_force_is_rejected(self):
     controller = raiden_controller.RaidenController(port=0)
@@ -1669,7 +1624,7 @@ class RaidenControllerTest(absltest.TestCase):
 
     class MockWorkerClient(raiden_controller.WorkerRpcClient):
 
-      async def start_transfer(self, orchestrator_id, plan) -> None:
+      async def start_transfer(self, orchestrator_id, plan, address=None) -> None:
         recorded_actions.append(("start", [orchestrator_id]))
 
     mock_client = MockWorkerClient()
@@ -1789,7 +1744,7 @@ class RaidenControllerTest(absltest.TestCase):
       def get_worker_endpoints(self):
         return self.endpoints
 
-      async def start_transfer(self, target_id, transfer_plan) -> None:
+      async def start_transfer(self, target_id, transfer_plan, address=None) -> None:
         is_sender = transfer_plan.is_sender
         recorded_calls.append((target_id, is_sender))
 
@@ -1862,7 +1817,7 @@ class RaidenControllerTest(absltest.TestCase):
   def test_greedy_tree_broadcast_exception_propagation(self):
     class MockFailureWorkerClient(raiden_controller.WorkerRpcClient):
 
-      async def start_transfer(self, target_id, transfer_plan) -> None:
+      async def start_transfer(self, target_id, transfer_plan, address=None) -> None:
         if target_id.job_replica_id == "1":
           raise RuntimeError("Simulated start_transfer failure")
 

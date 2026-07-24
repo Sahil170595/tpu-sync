@@ -72,7 +72,14 @@ class BlockTransportDelegate : public lib::RawBufferTransportDelegate {
  public:
   ~BlockTransportDelegate() override = default;
 
-  virtual bool use_block_chunks(uint64_t uuid) const { return false; }
+  // Explicit-destination (op=6) pushes normally ride a registered transfer
+  // plan. Legacy uniform-layer delegates accept plan-less explicit pushes
+  // (the ad-hoc H2H contract); pool-mode delegates reject them so that a
+  // mis-addressed push cannot resolve chunks against a bystander pool's
+  // host mirror.
+  virtual bool AcceptsPlanlessExplicitPush(uint64_t uuid) const {
+    return true;
+  }
 
   // The transport address space is historically one block array per manager
   // layer. Explicit pool tables widen that address space to one block array

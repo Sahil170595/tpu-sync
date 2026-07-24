@@ -32,6 +32,7 @@
 #include <cstdint>
 #include <limits>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "absl/status/status.h"
@@ -382,6 +383,126 @@ absl::StatusOr<std::vector<PoolBlockCopyExtent>> ComputePoolBlockCopyExtents(
         std::max(previous_end, extent_end) - previous.offset_bytes;
   }
   return merged;
+}
+
+absl::StatusOr<std::vector<PoolLiveSegment>> ExpandPoolLiveSegments(
+    const PoolSpec& pool) {
+  constexpr int64_t kMaxLiveSegments = 1 << 20;
+  const int64_t block_stride = pool.block_stride_bytes;
+  if (block_stride <= 0) {
+    return absl::InvalidArgumentError(
+        absl::StrCat("pool ", pool.tag, " has non-positive block stride"));
+  }
+  std::vector<std::pair<int64_t, int64_t>> intervals;
+  for (const RegionSpec& region : pool.regions) {
+    if (region.offset_bytes < 0 || region.stride_bytes < 0 ||
+        region.unit_bytes < 0 || region.num_units < 0) {
+      return absl::InvalidArgumentError(
+          absl::StrCat("pool ", pool.tag, " has negative region geometry"));
+    }
+    if (region.units_per_stride <= 0) {
+      return absl::InvalidArgumentError(absl::StrCat(
+          "pool ", pool.tag, " has non-positive units_per_stride"));
+    }
+    if (MulWillOverflow(region.unit_bytes, region.units_per_stride)) {
+      return absl::InvalidArgumentError(
+          absl::StrCat("pool ", pool.tag, " region byte geometry overflows"));
+    }
+    const int64_t packed_bytes = region.unit_bytes * region.units_per_stride;
+    if (region.num_units > 0 && packed_bytes <= 0) {
+      return absl::InvalidArgumentError(
+          absl::StrCat("pool ", pool.tag, " has an empty live region"));
+    }
+    if (region.num_units > 1 && region.stride_bytes <= 0) {
+      return absl::InvalidArgumentError(absl::StrCat(
+          "pool ", pool.tag, " has a non-positive region stride"));
+    }
+    if (region.num_units > 0 && region.stride_bytes < packed_bytes) {
+      return absl::InvalidArgumentError(absl::StrCat(
+          "pool ", pool.tag, " has overlapping units within one region"));
+    }
+    if (static_cast<int64_t>(intervals.size()) + region.num_units >
+        kMaxLiveSegments) {
+      return absl::InvalidArgumentError(absl::StrCat(
+          "pool ", pool.tag, " exceeds the live-region expansion bound"));
+    }
+    if (region.num_units > 0 && region.stride_bytes == packed_bytes) {
+      // Units abut: the whole region is one physical run.
+      if (MulWillOverflow(region.num_units, packed_bytes)) {
+        return absl::InvalidArgumentError(
+            absl::StrCat("pool ", pool.tag, " region byte geometry overflows"));
+      }
+      const int64_t end = region.offset_bytes + region.num_units * packed_bytes;
+      if (end > block_stride) {
+        return absl::InvalidArgumentError(absl::StrCat(
+            "pool ", pool.tag, " live region exceeds its block stride: end=",
+            end, ", stride=", block_stride));
+      }
+      intervals.emplace_back(region.offset_bytes, end);
+      continue;
+    }
+    for (int64_t unit = 0; unit < region.num_units; ++unit) {
+      if (MulWillOverflow(unit, region.stride_bytes)) {
+        return absl::InvalidArgumentError(
+            absl::StrCat("pool ", pool.tag, " region byte geometry overflows"));
+      }
+      const int64_t start = region.offset_bytes + unit * region.stride_bytes;
+      const int64_t end = start + packed_bytes;
+      if (end > block_stride) {
+        return absl::InvalidArgumentError(absl::StrCat(
+            "pool ", pool.tag, " live region exceeds its block stride: end=",
+            end, ", stride=", block_stride));
+      }
+      intervals.emplace_back(start, end);
+    }
+  }
+
+  std::sort(intervals.begin(), intervals.end());
+  std::vector<std::pair<int64_t, int64_t>> physical;
+  for (const auto& [start, end] : intervals) {
+    if (!physical.empty() && start < physical.back().second) {
+      return absl::InvalidArgumentError(absl::StrCat(
+          "pool ", pool.tag, " has overlapping live regions at byte ", start));
+    }
+    if (!physical.empty() && start == physical.back().second) {
+      physical.back().second = end;
+    } else {
+      physical.emplace_back(start, end);
+    }
+  }
+
+  std::vector<PoolLiveSegment> segments;
+  segments.reserve(physical.size());
+  int64_t logical_offset = 0;
+  for (const auto& [start, end] : physical) {
+    segments.push_back(PoolLiveSegment{.logical_offset = logical_offset,
+                                       .physical_offset = start,
+                                       .size = end - start});
+    logical_offset += end - start;
+  }
+  return segments;
+}
+
+absl::StatusOr<std::pair<int64_t, int64_t>> PhysicalLiveRangeToLogical(
+    absl::Span<const PoolLiveSegment> segments, int64_t physical_offset,
+    int64_t size) {
+  if (physical_offset < 0 || size <= 0) {
+    return absl::InvalidArgumentError(
+        "physical live range offset/size is invalid");
+  }
+  const int64_t physical_end = physical_offset + size;
+  for (const PoolLiveSegment& segment : segments) {
+    const int64_t segment_end = segment.physical_offset + segment.size;
+    if (segment.physical_offset <= physical_offset &&
+        physical_end <= segment_end) {
+      const int64_t logical =
+          segment.logical_offset + physical_offset - segment.physical_offset;
+      return std::make_pair(logical, logical + size);
+    }
+  }
+  return absl::InvalidArgumentError(absl::StrCat(
+      "physical range [", physical_offset, ", ", physical_end,
+      ") crosses padding or lies outside declared live regions"));
 }
 
 tpu_raiden::rpc::RegionSpecProto ToProto(const RegionSpec& region) {

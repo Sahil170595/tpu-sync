@@ -397,7 +397,6 @@ class KVCacheManagerWithTransfer : public kv_cache::KVCacheManagerBase {
     bool failed = false;
     bool finalizing = false;
     std::chrono::steady_clock::time_point deadline;
-    std::vector<int64_t> source_block_ids;
     rpc::StartTransferRequest plan;
     std::vector<raiden::PjRtCopyFuture> d2h_futures;
   };
@@ -413,6 +412,15 @@ class KVCacheManagerWithTransfer : public kv_cache::KVCacheManagerBase {
   absl::Status ValidatePoolReshardPlan(
       const rpc::StartTransferRequest& plan,
       absl::Span<const int64_t> local_block_ids, bool is_sender);
+  // Receiver-only byte accounting over the plan's group structure: group
+  // pools must share one live-region map, declared extents must be
+  // prefix-shaped, every destination block's compact-live bytes must be
+  // covered exactly once up to its extent, and the group's expected push
+  // count must equal the recomputation from the received schedules. This
+  // is the trust boundary between a planner defect and silent decode
+  // corruption; the arming worker validates for itself.
+  absl::Status ValidatePoolReshardReceiverCoverage(
+      const rpc::StartTransferRequest& plan);
   void StartPoolReshardPush(uint64_t uuid, size_t pool_idx);
   void FinishPoolReshardSend(uint64_t uuid, const absl::Status& status);
   void FinishPoolReshardRecvPool(uint64_t uuid, size_t pool_idx,

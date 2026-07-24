@@ -1493,13 +1493,10 @@ absl::StatusOr<raiden::PjRtCopyFuture> KVCacheManagerBase::H2dPoolBlocks(
                         /*device_to_host=*/false);
 }
 
-bool KVCacheManagerBase::use_block_chunks(uint64_t uuid) const {
+bool KVCacheManagerBase::AcceptsPlanlessExplicitPush(uint64_t uuid) const {
+  if (!explicit_pools_) return true;
   absl::MutexLock l(plans_mu_);
-  auto it = active_plans_.find(uuid);
-  if (it == active_plans_.end()) {
-    return false;
-  }
-  return it->second.request.use_block_chunks();
+  return active_plans_.contains(uuid);
 }
 
 absl::StatusOr<std::optional<tpu_raiden::transport::PoolPushProgressSpec>>
@@ -1508,7 +1505,7 @@ KVCacheManagerBase::GetPoolPushProgressSpec(size_t pool_idx,
   absl::MutexLock l(plans_mu_);
   auto it = active_plans_.find(uuid);
   if (it == active_plans_.end() ||
-      it->second.request.expected_pushes_per_pool() == 0) {
+      it->second.request.pool_groups_size() == 0) {
     return std::nullopt;
   }
 
@@ -1526,21 +1523,19 @@ KVCacheManagerBase::GetPoolPushProgressSpec(size_t pool_idx,
         "pool ", pool_idx, " is not in the active plan's transfer set"));
   }
 
-  size_t expected_pushes =
-      static_cast<size_t>(request.expected_pushes_per_pool());
   for (const auto& group : request.pool_groups()) {
     const auto& indices = group.pool_indices();
     if (std::find(indices.begin(), indices.end(),
                   static_cast<int32_t>(pool_idx)) != indices.end()) {
-      expected_pushes = static_cast<size_t>(group.expected_pushes());
-      break;
+      return tpu_raiden::transport::PoolPushProgressSpec{
+          .expected_pushes = static_cast<size_t>(group.expected_pushes()),
+          .expected_pools =
+              static_cast<size_t>(request.transfer_pool_indices_size()),
+      };
     }
   }
-  return tpu_raiden::transport::PoolPushProgressSpec{
-      .expected_pushes = expected_pushes,
-      .expected_pools =
-          static_cast<size_t>(request.transfer_pool_indices_size()),
-  };
+  return absl::InvalidArgumentError(absl::StrCat(
+      "pool ", pool_idx, " is not in any of the plan's pool groups"));
 }
 
 absl::StatusOr<std::vector<raiden::PjRtCopyFuture>>
@@ -1834,18 +1829,19 @@ absl::Status KVCacheManagerBase::RegisterActivePlan(
   // data resolved by the controller; raiden validates consistency (indices
   // resolve against this manager's pool table, explicit or implicit) and
   // never tag policy.
-  if (request.expected_pushes_per_pool() < 0) {
-    return absl::InvalidArgumentError(
-        "expected_pushes_per_pool must be non-negative");
-  }
-  const bool has_pool_progress = request.expected_pushes_per_pool() > 0;
   const bool has_transfer_pools = request.transfer_pool_indices_size() > 0;
-  if (has_pool_progress != has_transfer_pools) {
+  if (has_transfer_pools != (request.pool_groups_size() > 0)) {
     return absl::InvalidArgumentError(
-        "expected_pushes_per_pool and transfer_pool_indices must either both "
-        "be set or both be absent");
+        "pool-addressed plans must declare pool_groups partitioning their "
+        "transfer_pool_indices");
   }
-  if (has_pool_progress) {
+  if (has_transfer_pools) {
+    for (const auto& group : request.pool_groups()) {
+      if (group.expected_pushes() <= 0) {
+        return absl::InvalidArgumentError(
+            "every pool group must expect a positive push count");
+      }
+    }
     if (request.req_id().empty()) {
       return absl::InvalidArgumentError(
           "pool-keyed transfer plans require a non-empty req_id");
@@ -2000,9 +1996,9 @@ KVCacheManagerBase::GetBlockChunks(size_t layer_idx, size_t shard_idx,
 
   bool is_sender = plan.is_sender;
 
-  // Multi-tag plans scope every entry to one pool group; an entry only
-  // resolves chunks for pools of its own group. Single-tag plans carry no
-  // groups and keep the legacy replay (every entry, every transfer pool).
+  // Pool reshard plans scope every entry to one pool group; an entry only
+  // resolves chunks for pools of its own group. Only LEGACY (non-pool)
+  // chunked plans carry no groups; they keep the whole-plan replay.
   const auto entry_targets_pool = [&request,
                                    layer_idx](const auto& entry) -> bool {
     if (request.pool_groups_size() == 0) {

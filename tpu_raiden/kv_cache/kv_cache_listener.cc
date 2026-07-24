@@ -23,6 +23,7 @@
 #include <cerrno>
 #include <cstdint>
 #include <cstring>
+#include <set>
 #include <string>
 #include <thread>  // NOLINT
 #include <vector>
@@ -46,8 +47,8 @@ bool HasPoolReshardFields(
   // sends partially populated pool plans to PoolReshardPush /
   // PoolReshardRegisterRecv so their validation fails closed instead of
   // silently taking the legacy path.
-  return request.expected_pushes_per_pool() != 0 ||
-         !request.transfer_pool_indices().empty();
+  return !request.transfer_pool_indices().empty() ||
+         request.pool_groups_size() > 0;
 }
 
 }  // namespace
@@ -185,8 +186,17 @@ void KVCacheListener::ConnectionWorker(int client_fd) {
       if (is_pool_reshard && start_req.is_sender()) {
         LOG(INFO) << "C++ KVCacheListener received pool START_TRANSFER "
                      "(Sender)";
-        const std::vector<int64_t> src_block_ids(
-            start_req.src_block_ids().begin(), start_req.src_block_ids().end());
+        // The sender's local block list is the union of its schedule
+        // entries' source blocks; the wire carries no scalar mirror of it.
+        std::set<int64_t> src_id_set;
+        for (const auto& [schedule_key, schedule] :
+             start_req.shard_push_schedules()) {
+          for (const auto& entry : schedule.entries()) {
+            src_id_set.insert(static_cast<int64_t>(entry.src_block_id()));
+          }
+        }
+        const std::vector<int64_t> src_block_ids(src_id_set.begin(),
+                                                 src_id_set.end());
         absl::Status status = engine_->PoolReshardPush(start_req, src_block_ids,
                                                        start_req.parallelism());
         if (!status.ok()) {
@@ -197,9 +207,14 @@ void KVCacheListener::ConnectionWorker(int client_fd) {
       } else if (is_pool_reshard) {
         LOG(INFO) << "C++ KVCacheListener received pool START_TRANSFER "
                      "(Receiver)";
-        const std::vector<int64_t> chip_block_ids(
-            start_req.dst_device_block_ids().begin(),
-            start_req.dst_device_block_ids().end());
+        // The flat destination list is the groups' concatenation; the wire
+        // carries no scalar mirror of it.
+        std::vector<int64_t> chip_block_ids;
+        for (const auto& group : start_req.pool_groups()) {
+          chip_block_ids.insert(chip_block_ids.end(),
+                                group.dst_device_block_ids().begin(),
+                                group.dst_device_block_ids().end());
+        }
         absl::Status status =
             engine_->PoolReshardRegisterRecv(start_req, chip_block_ids);
         if (!status.ok()) {

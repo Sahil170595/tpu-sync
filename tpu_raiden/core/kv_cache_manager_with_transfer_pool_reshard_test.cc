@@ -92,13 +92,20 @@ rpc::StartTransferRequest ValidPlan(
   plan.set_req_id("pool_reshard_req_" + std::to_string(uuid));
   plan.set_dst_mem_type(rpc::MEMORY_TYPE_HBM);
   plan.set_use_block_chunks(true);
-  plan.set_expected_pushes_per_pool(1);
+  plan.set_parallelism(1);
   for (int32_t pool_idx : transferred_pools) {
     plan.add_transfer_pool_indices(pool_idx);
   }
   for (const std::string& tag : dtype_tags) {
     plan.add_pool_dtype_tags(tag);
   }
+  auto* group = plan.add_pool_groups();
+  for (int32_t pool_idx : transferred_pools) {
+    group->add_pool_indices(pool_idx);
+  }
+  group->add_dst_device_block_ids(0);
+  group->set_expected_pushes(1);
+  group->add_dst_expected_extent_bytes(16);
   auto* entry = (*plan.mutable_shard_push_schedules())[0].add_entries();
   entry->set_dst_peer("127.0.0.1:1");
   entry->set_dst_shard_idx(0);
@@ -203,10 +210,10 @@ TEST(PoolReshardValidationTest, RejectsMissingIdentityAndPoolFields) {
                 "transfer_pool_indices");
 
   plan = ValidPlan(/*uuid=*/1007);
-  plan.set_expected_pushes_per_pool(0);
+  plan.clear_pool_groups();
   ExpectInvalid(manager.ValidatePoolReshardPlan(plan, std::vector<int64_t>{0},
                                                 /*is_sender=*/false),
-                "expected_pushes_per_pool");
+                "must declare pool_groups");
 
   plan = ValidPlan(/*uuid=*/1008);
   plan.set_use_block_chunks(false);
@@ -326,18 +333,221 @@ TEST(PoolReshardValidationTest,
                 "source span exceeds declared pool 0 live regions");
 }
 
+rpc::ShardPushEntryProto* AddEntry(rpc::StartTransferRequest& plan,
+                                   int32_t schedule_key, int64_t dst_block_id,
+                                   int64_t dst_offset, int64_t size,
+                                   int32_t group_idx = 0) {
+  auto* entry =
+      (*plan.mutable_shard_push_schedules())[schedule_key].add_entries();
+  entry->set_dst_peer("127.0.0.1:1");
+  entry->set_dst_shard_idx(0);
+  entry->set_src_block_id(0);
+  entry->set_dst_block_id(dst_block_id);
+  entry->set_src_offset_bytes(0);
+  entry->set_dst_offset_bytes(dst_offset);
+  entry->set_size_bytes(size);
+  entry->set_src_stride_bytes(0);
+  entry->set_dst_stride_bytes(0);
+  entry->set_count(1);
+  entry->set_pool_group(group_idx);
+  return entry;
+}
+
+TEST(PoolReshardReceiverCoverageTest, RejectsCoverageGap) {
+  TestManager manager;
+  ASSERT_TRUE(manager.RegisterPools({DensePool("fa")}).ok());
+  rpc::StartTransferRequest plan = ValidPlan(/*uuid=*/1101);
+  plan.mutable_pool_groups(0)->clear_dst_expected_extent_bytes();
+  plan.mutable_pool_groups(0)->add_dst_expected_extent_bytes(48);
+  AddEntry(plan, 0, /*dst_block_id=*/0, /*dst_offset=*/32, /*size=*/16);
+
+  ExpectInvalid(manager.ValidatePoolReshardPlan(plan, std::vector<int64_t>{0},
+                                                /*is_sender=*/false),
+                "coverage gap");
+  EXPECT_TRUE(manager
+                  .ValidatePoolReshardPlan(plan, std::vector<int64_t>{0},
+                                           /*is_sender=*/true)
+                  .ok());
+}
+
+TEST(PoolReshardReceiverCoverageTest, RejectsCoverageOverlap) {
+  TestManager manager;
+  ASSERT_TRUE(manager.RegisterPools({DensePool("fa")}).ok());
+  rpc::StartTransferRequest plan = ValidPlan(/*uuid=*/1102);
+  plan.mutable_pool_groups(0)->clear_dst_expected_extent_bytes();
+  plan.mutable_pool_groups(0)->add_dst_expected_extent_bytes(24);
+  AddEntry(plan, 0, /*dst_block_id=*/0, /*dst_offset=*/8, /*size=*/16);
+
+  ExpectInvalid(manager.ValidatePoolReshardPlan(plan, std::vector<int64_t>{0},
+                                                /*is_sender=*/false),
+                "coverage overlap");
+}
+
+TEST(PoolReshardReceiverCoverageTest, RejectsShortCoverage) {
+  TestManager manager;
+  ASSERT_TRUE(manager.RegisterPools({DensePool("fa")}).ok());
+  rpc::StartTransferRequest plan = ValidPlan(/*uuid=*/1103);
+  plan.mutable_pool_groups(0)->clear_dst_expected_extent_bytes();
+  plan.mutable_pool_groups(0)->add_dst_expected_extent_bytes(24);
+
+  ExpectInvalid(manager.ValidatePoolReshardPlan(plan, std::vector<int64_t>{0},
+                                                /*is_sender=*/false),
+                "does not cover the exact live bytes");
+}
+
+TEST(PoolReshardReceiverCoverageTest, RejectsNonPrefixExtents) {
+  TestManager manager;
+  ASSERT_TRUE(manager.RegisterPools({DensePool("fa")}).ok());
+  rpc::StartTransferRequest plan = ValidPlan(/*uuid=*/1104);
+  auto* group = plan.mutable_pool_groups(0);
+  group->add_dst_device_block_ids(1);
+  group->clear_dst_expected_extent_bytes();
+  group->add_dst_expected_extent_bytes(16);
+  group->add_dst_expected_extent_bytes(16);
+  AddEntry(plan, 0, /*dst_block_id=*/1, /*dst_offset=*/0, /*size=*/16);
+
+  ExpectInvalid(
+      manager.ValidatePoolReshardPlan(plan, std::vector<int64_t>{0, 1},
+                                      /*is_sender=*/false),
+      "except the final one");
+}
+
+TEST(PoolReshardReceiverCoverageTest, RejectsMissingExtents) {
+  TestManager manager;
+  ASSERT_TRUE(manager.RegisterPools({DensePool("fa")}).ok());
+  rpc::StartTransferRequest plan = ValidPlan(/*uuid=*/1105);
+  plan.mutable_pool_groups(0)->clear_dst_expected_extent_bytes();
+
+  ExpectInvalid(manager.ValidatePoolReshardPlan(plan, std::vector<int64_t>{0},
+                                                /*is_sender=*/false),
+                "require dst_expected_extent_bytes");
+}
+
+TEST(PoolReshardReceiverCoverageTest, RejectsMissingParallelism) {
+  TestManager manager;
+  ASSERT_TRUE(manager.RegisterPools({DensePool("fa")}).ok());
+  rpc::StartTransferRequest plan = ValidPlan(/*uuid=*/1106);
+  plan.set_parallelism(0);
+
+  ExpectInvalid(manager.ValidatePoolReshardPlan(plan, std::vector<int64_t>{0},
+                                                /*is_sender=*/false),
+                "positive parallelism");
+}
+
+TEST(PoolReshardReceiverCoverageTest, RejectsExpectedPushMismatch) {
+  TestManager manager;
+  ASSERT_TRUE(manager.RegisterPools({DensePool("fa")}).ok());
+  rpc::StartTransferRequest plan = ValidPlan(/*uuid=*/1107);
+  plan.mutable_pool_groups(0)->set_expected_pushes(2);
+
+  ExpectInvalid(manager.ValidatePoolReshardPlan(plan, std::vector<int64_t>{0},
+                                                /*is_sender=*/false),
+                "do not match the received schedules");
+}
+
+TEST(PoolReshardReceiverCoverageTest, RejectsWriteBeyondDeclaredLiveTail) {
+  // Two live runs of 32 bytes each (compact-live size 64) with padding in
+  // between: a write that FITS the physical regions can still exceed the
+  // block's declared compact-live extent.
+  TestManager manager;
+  kv_cache::PoolSpec pool = DensePool("fa");
+  pool.regions = {
+      kv_cache::RegionSpec{
+          .name = "run_0",
+          .offset_bytes = 0,
+          .stride_bytes = 32,
+          .unit_bytes = 32,
+          .num_units = 1,
+          .units_per_stride = 1,
+      },
+      kv_cache::RegionSpec{
+          .name = "run_1",
+          .offset_bytes = 64,
+          .stride_bytes = 32,
+          .unit_bytes = 32,
+          .num_units = 1,
+          .units_per_stride = 1,
+      },
+  };
+  ASSERT_TRUE(manager.RegisterPools({pool}).ok());
+  rpc::StartTransferRequest plan = ValidPlan(/*uuid=*/1108);
+  plan.mutable_pool_groups(0)->clear_dst_expected_extent_bytes();
+  plan.mutable_pool_groups(0)->add_dst_expected_extent_bytes(40);
+  plan.mutable_shard_push_schedules()->at(0).clear_entries();
+  AddEntry(plan, 0, /*dst_block_id=*/0, /*dst_offset=*/0, /*size=*/32);
+  AddEntry(plan, 0, /*dst_block_id=*/0, /*dst_offset=*/64, /*size=*/16);
+
+  ExpectInvalid(manager.ValidatePoolReshardPlan(plan, std::vector<int64_t>{0},
+                                                /*is_sender=*/false),
+                "declared live tail");
+
+  // The same physical writes bounded to the declared 40 compact-live bytes
+  // pass: [0, 32) in run_0 plus [64, 72) = compact [32, 40) in run_1.
+  plan.mutable_shard_push_schedules()->at(0).mutable_entries(1)->set_size_bytes(
+      8);
+  EXPECT_TRUE(manager
+                  .ValidatePoolReshardPlan(plan, std::vector<int64_t>{0},
+                                           /*is_sender=*/false)
+                  .ok());
+}
+
+TEST(PoolReshardReceiverCoverageTest, GroupScopesDestinationBlocks) {
+  TestManager manager;
+  ASSERT_TRUE(
+      manager.RegisterPools({DensePool("fa", 128), DensePool("gdn", 64)}).ok());
+  rpc::StartTransferRequest plan = ValidPlan(
+      /*uuid=*/1109, /*dtype_tags=*/{"bf16", "bf16"},
+      /*transferred_pools=*/{0, 1});
+  plan.clear_pool_groups();
+  plan.mutable_shard_push_schedules()->at(0).clear_entries();
+  AddEntry(plan, 0, /*dst_block_id=*/2, /*dst_offset=*/0, /*size=*/16,
+           /*group_idx=*/0);
+  AddEntry(plan, 0, /*dst_block_id=*/3, /*dst_offset=*/0, /*size=*/8,
+           /*group_idx=*/1);
+  auto* fa_group = plan.add_pool_groups();
+  fa_group->add_pool_indices(0);
+  fa_group->add_dst_device_block_ids(2);
+  fa_group->set_expected_pushes(1);
+  fa_group->add_dst_expected_extent_bytes(16);
+  auto* state_group = plan.add_pool_groups();
+  state_group->add_pool_indices(1);
+  state_group->add_dst_device_block_ids(3);
+  state_group->set_expected_pushes(1);
+  state_group->add_dst_expected_extent_bytes(8);
+  state_group->set_order_rank(1);
+
+  EXPECT_TRUE(manager
+                  .ValidatePoolReshardPlan(plan, std::vector<int64_t>{2, 3},
+                                           /*is_sender=*/false)
+                  .ok());
+
+  // An entry naming a destination block of the OTHER group is rejected even
+  // though the id exists in the plan's flat destination list.
+  AddEntry(plan, 0, /*dst_block_id=*/2, /*dst_offset=*/0, /*size=*/8,
+           /*group_idx=*/1);
+  ExpectInvalid(
+      manager.ValidatePoolReshardPlan(plan, std::vector<int64_t>{2, 3},
+                                      /*is_sender=*/false),
+      "outside its group");
+}
+
 TEST(PoolReshardValidationTest, RejectsBlockIdsOutsideDeclaredPool) {
   TestManager manager;
   ASSERT_TRUE(manager.RegisterPools({DensePool("fa")}).ok());
   rpc::StartTransferRequest plan = ValidPlan(/*uuid=*/1017);
-
+  plan.mutable_pool_groups(0)->set_dst_device_block_ids(0, 9);
   ExpectInvalid(manager.ValidatePoolReshardPlan(plan, std::vector<int64_t>{9},
                                                 /*is_sender=*/false),
                 "out of range for pool");
+
+  plan = ValidPlan(/*uuid=*/1018);
+  ExpectInvalid(manager.ValidatePoolReshardPlan(plan, std::vector<int64_t>{8},
+                                                /*is_sender=*/false),
+                "must concatenate to the plan's local block ids");
   ExpectInvalid(
       manager.ValidatePoolReshardPlan(plan, std::vector<int64_t>{0, 0},
                                       /*is_sender=*/false),
-      "unique");
+      "must cover the plan's local block ids");
   ExpectInvalid(manager.ValidatePoolReshardPlan(plan, std::vector<int64_t>{},
                                                 /*is_sender=*/false),
                 "must not be empty");

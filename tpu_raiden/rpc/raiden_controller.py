@@ -478,25 +478,6 @@ def _translate_live_copy(
   return chunks
 
 
-def _physical_live_range_to_logical(
-    segments: typing.Sequence[tuple[int, int, int]],
-    physical_offset: int,
-    size: int,
-) -> tuple[int, int]:
-  """Returns a compact-live interval for one gap-free physical range."""
-  if physical_offset < 0 or size <= 0:
-    raise ValueError("Physical live range offset/size is invalid")
-  physical_end = physical_offset + size
-  for logical_start, physical_start, segment_size in segments:
-    segment_end = physical_start + segment_size
-    if physical_start <= physical_offset and physical_end <= segment_end:
-      logical = logical_start + physical_offset - physical_start
-      return logical, logical + size
-  raise ValueError(
-      "Physical range crosses padding or lies outside declared live regions"
-  )
-
-
 def _pool_geometry_signature(pool: Any) -> tuple[Any, ...]:
   """Returns the registration fields that define one pool's byte geometry."""
   return (
@@ -694,7 +675,10 @@ class WorkerRpcClient:
       sock.close()
 
   async def start_transfer(
-      self, target_id: RaidenId, transfer_plan: TransferPlan
+      self,
+      target_id: RaidenId,
+      transfer_plan: TransferPlan,
+      address: Optional[str] = None,
   ) -> None:
     """Connects to remote Worker servicer and dispatches encoded collective transfer commands.
 
@@ -702,6 +686,10 @@ class WorkerRpcClient:
       target_id: Target participating worker RaidenId.
       transfer_plan: Distributed transfer execution plan mapping source and
         destination topology.
+      address: Explicit worker control-plane address. When given, the local
+        endpoint registry is bypassed — a remote planning controller learned
+        the address from the worker's registered metadata rather than from
+        local self-registration.
 
     Raises:
       RuntimeError: If remote servicer socket connection fails, or if remote
@@ -713,7 +701,7 @@ class WorkerRpcClient:
         return
     except NotImplementedError:
       return
-    addr = await self._resolve_endpoint(target_id)
+    addr = address or await self._resolve_endpoint(target_id)
     resp_bytes = await self._send_rpc(addr, payload)
     self._verify_response(resp_bytes)
 
@@ -769,13 +757,9 @@ class WorkerRpcClient:
         use_block_chunks=transfer_plan.use_block_chunks,
         expected_block_count=transfer_plan.expected_block_count,
         req_id=transfer_plan.req_id,
-        expected_pushes_per_pool=transfer_plan.expected_pushes_per_pool,
         transfer_pool_indices=transfer_plan.transfer_pool_indices,
         pool_dtype_tags=transfer_plan.pool_dtype_tags,
-        src_block_ids=transfer_plan.src_block_ids.get(target_id, []),
-        dst_device_block_ids=transfer_plan.dst_device_block_ids,
         parallelism=transfer_plan.parallelism,
-        num_tokens=transfer_plan.num_tokens,
     )
     for group in transfer_plan.pool_groups:
       group_proto = start_req.pool_groups.add()
@@ -2372,7 +2356,7 @@ class RaidenController:
         num_tokens=max(int(num_tokens or 0), 0),
         skipped_pool_counts=skipped_pool_counts,
         dst_expected_extent_bytes=flat_extents,
-        pool_groups=pool_groups if len(requested_tags) > 1 else [],
+        pool_groups=pool_groups,
     )
 
   async def _execute_slice_broadcast(
@@ -2618,44 +2602,11 @@ class RaidenController:
 
     async def _execute_pool_reshard() -> None:
       if not is_sender:
-        if not src_controller_address:
-          raise ValueError(
-              "src_controller_address is required for destination-coordinated "
-              "pool resharding"
-          )
-        if not dst_controller_address:
-          raise ValueError(
-              "dst_controller_address is required so the source controller "
-              "can arm the receiver"
-          )
-        src_facade = RaidenControllerClientFacade(
-            src_controller_address,
-            name_resolver=self.worker_rpc_client.name_resolver,
+        raise ValueError(
+            "Pool reshard coordination must target the source controller: "
+            "the consumer coordinates with src_controller_address directly "
+            "(the destination-side relay is retired)"
         )
-        loop = asyncio.get_running_loop()
-        success = await loop.run_in_executor(
-            None,
-            lambda: src_facade.coordinate_transfer(
-                src_units=src_units,
-                dst_units=dst_units,
-                req_id=req_id,
-                use_block_chunks=True,
-                is_sender=True,
-                uuid=uuid,
-                dst_controller_address=dst_controller_address,
-                src_controller_address=src_controller_address,
-                dst_mem_type=RaidenMemoryType.HBM,
-                dst_device_block_ids=list(dst_device_block_ids),
-                num_tokens=num_tokens,
-                transfer_pool_tags=list(transfer_pool_tags),
-                dst_block_counts=list(dst_block_counts or ()),
-            ),
-        )
-        if not success:
-          raise RuntimeError(
-              "Source controller rejected the pool reshard request"
-          )
-        return
 
       controller_start_ns = time.monotonic_ns()
       plan_build_start_ns = controller_start_ns
@@ -2680,62 +2631,26 @@ class RaidenController:
       plan_build_end_ns = time.monotonic_ns()
 
       # Receivers must be armed before any sender can put bytes on the wire.
+      # The planning controller arms the destination workers directly at the
+      # control-plane addresses their registered metadata declares; the
+      # armed worker's executor independently re-validates byte coverage,
+      # extents, and push accounting for itself (the trust boundary lives
+      # with the party that owns the arming).
       receiver_arm_start_ns = time.monotonic_ns()
-      if dst_controller_address:
-        dst_facade = RaidenControllerClientFacade(
-            dst_controller_address,
-            name_resolver=self.worker_rpc_client.name_resolver,
+      try:
+        await asyncio.gather(*[
+            self.worker_rpc_client.start_transfer(
+                unit,
+                final_plan,
+                address=final_plan.worker_rpc_addresses.get(unit),
+            )
+            for unit in final_plan.dst_units
+        ])
+      except Exception:
+        self._abandon_request_blocks_claim(
+            req_id, uuid, final_plan.request_block_claim_owner
         )
-        loop = asyncio.get_running_loop()
-        try:
-          success = await loop.run_in_executor(
-              None,
-              lambda: dst_facade.register_transfer_schedule(
-                  src_units=final_plan.src_units,
-                  dst_units=final_plan.dst_units,
-                  req_id=final_plan.req_id,
-                  use_block_chunks=True,
-                  is_sender=False,
-                  expected_block_count=final_plan.expected_block_count,
-                  uuid=final_plan.uuid,
-                  shard_push_schedules=final_plan.shard_push_schedules,
-                  dst_mem_type=final_plan.dst_mem_type,
-                  expected_pushes_per_pool=(
-                      final_plan.expected_pushes_per_pool
-                  ),
-                  transfer_pool_indices=final_plan.transfer_pool_indices,
-                  pool_dtype_tags=final_plan.pool_dtype_tags,
-                  dst_device_block_ids=final_plan.dst_device_block_ids,
-                  src_schedule_keys=final_plan.src_schedule_keys,
-                  parallelism=final_plan.parallelism,
-                  num_tokens=final_plan.num_tokens,
-                  dst_expected_extent_bytes=(
-                      final_plan.dst_expected_extent_bytes
-                  ),
-                  pool_groups=final_plan.pool_groups,
-              ),
-          )
-        except Exception:
-          self._abandon_request_blocks_claim(
-              req_id, uuid, final_plan.request_block_claim_owner
-          )
-          raise
-        if not success:
-          self._abandon_request_blocks_claim(
-              req_id, uuid, final_plan.request_block_claim_owner
-          )
-          raise RuntimeError("Destination controller failed to arm receivers")
-      else:
-        try:
-          await asyncio.gather(*[
-              self.worker_rpc_client.start_transfer(unit, final_plan)
-              for unit in final_plan.dst_units
-          ])
-        except Exception:
-          self._abandon_request_blocks_claim(
-              req_id, uuid, final_plan.request_block_claim_owner
-          )
-          raise
+        raise
       receiver_arm_ack_ns = time.monotonic_ns()
 
       with self._lock:
@@ -2787,392 +2702,6 @@ class RaidenController:
     future = RaidenFuture(
         session_id=session_id, transfer_task=_execute_pool_reshard()
     )
-    with self._lock:
-      self._active_tasks[req_id] = future
-    return future
-
-  def register_pool_reshard_receiver_plan(
-      self,
-      *,
-      src_units: list[RaidenId],
-      dst_units: list[RaidenId],
-      req_id: str,
-      uuid: int,
-      shard_push_schedules: dict[
-          RaidenId,
-          dict[int, typing.Sequence[tuple[str, int, int, int, int, int, int]]],
-      ],
-      expected_pushes_per_pool: int,
-      transfer_pool_indices: typing.Sequence[int],
-      pool_dtype_tags: typing.Sequence[str],
-      dst_device_block_ids: typing.Sequence[int],
-      src_schedule_keys: dict[RaidenId, int],
-      parallelism: int,
-      num_tokens: int,
-      dst_expected_extent_bytes: typing.Sequence[int] = (),
-      pool_groups: typing.Sequence[dict] = (),
-  ) -> RaidenFuture:
-    """Independently validates and arms a source-generated receiver plan.
-
-    The destination controller trusts nothing: it re-derives coverage and
-    accounting from its own registration and the received schedules, and only
-    an arm acknowledgement permits the source controller to dispatch senders.
-    Pool selection is validated for consistency (indices resolve against the
-    local manifest), never for policy — no tag value means anything here.
-
-    The plan's declared per-block extents are validated against the local
-    manifest (prefix-shaped: all blocks full except an optional partial
-    tail), then the entries' expanded byte coverage is swept against
-    exactly those extents — no token arithmetic. num_tokens is opaque
-    audit metadata.
-
-    Args:
-      src_units: Sequence of source RaidenIds.
-      dst_units: Sequence of destination RaidenIds.
-      req_id: The request ID.
-      uuid: The request UUID.
-      shard_push_schedules: Decoded source schedules.
-      expected_pushes_per_pool: Expected pushes per pool.
-      transfer_pool_indices: Selected pool indices.
-      pool_dtype_tags: Expected pool dtype tags.
-      dst_device_block_ids: Destination physical block IDs.
-      src_schedule_keys: Contiguous source ordinals.
-      parallelism: Parallelism factor.
-      num_tokens: Opaque audit metadata (never consumed for validation).
-      dst_expected_extent_bytes: Expected destination coverage end per
-        destination block, in dst_device_block_ids order.
-
-    Returns:
-      A RaidenFuture to await execution.
-    """
-    if not req_id:
-      raise ValueError("req_id must not be empty for pool resharding")
-    if uuid <= 0:
-      raise ValueError("uuid must be positive for pool resharding")
-    if len(dst_units) != 1:
-      raise ValueError("Receiver plan requires exactly one destination")
-    if not src_units or not shard_push_schedules:
-      raise ValueError("Receiver plan must contain source schedules")
-    if expected_pushes_per_pool <= 0:
-      raise ValueError("expected_pushes_per_pool must be positive")
-    if parallelism <= 0:
-      raise ValueError("parallelism must be positive")
-    if not dst_expected_extent_bytes:
-      raise ValueError("Receiver plans require dst_expected_extent_bytes")
-    dst_ids = [int(block_id) for block_id in dst_device_block_ids]
-    if not dst_ids or any(block_id < 0 for block_id in dst_ids):
-      raise ValueError(
-          "destination block IDs must be non-empty and non-negative"
-      )
-    if set(src_schedule_keys) != set(src_units):
-      raise ValueError("Every source must have an explicit schedule key")
-    if set(src_schedule_keys.values()) != set(range(len(src_units))):
-      raise ValueError(
-          "Source schedule keys must be contiguous source ordinals"
-      )
-    if set(shard_push_schedules) != set(src_units):
-      raise ValueError("Every source must have one decoded push schedule")
-
-    dst_metadata = self._get_local_metadata(dst_units)
-    dst_meta = self._metadata_by_unit(dst_metadata, dst_units)[dst_units[0]]
-    if not dst_meta.pools:
-      raise ValueError("Receiver requires an explicit pool manifest")
-    expected_dtype_tags = [str(pool.dtype_tag) for pool in dst_meta.pools]
-    if list(pool_dtype_tags) != expected_dtype_tags:
-      raise ValueError("Receiver pool dtype tags do not match registration")
-    selected_indices = [int(index) for index in transfer_pool_indices]
-    if not selected_indices:
-      raise ValueError("Receiver plan must select at least one pool")
-    if len(set(selected_indices)) != len(selected_indices):
-      raise ValueError("Receiver plan pool indices must be unique")
-    if any(
-        index < 0 or index >= len(dst_meta.pools) for index in selected_indices
-    ):
-      raise ValueError("Receiver plan pool index is out of range")
-    page_tokens = int(dst_meta.page_tokens)
-    if page_tokens <= 0:
-      raise ValueError(
-          "Receiver requires explicit positive destination page geometry"
-      )
-
-    # Normalize to groups: legacy single-tag plans (no pool_groups)
-    # validate as one implicit group mirroring the scalar plan fields;
-    # multi-tag plans validate each group against its own pools,
-    # destination block-id space, and extents, with entries partitioned
-    # by their declared group index.
-    groups = [dict(group) for group in pool_groups] or [{
-        "pool_indices": list(selected_indices),
-        "dst_device_block_ids": list(dst_ids),
-        "expected_pushes": int(expected_pushes_per_pool),
-        "dst_expected_extent_bytes": [
-            int(extent) for extent in dst_expected_extent_bytes
-        ],
-        "order_rank": 0,
-    }]
-    union_indices = [
-        int(idx) for group in groups for idx in group["pool_indices"]
-    ]
-    if sorted(union_indices) != sorted(selected_indices):
-      raise ValueError(
-          "Group pool indices do not partition the plan's selected pools"
-      )
-    flat_group_dst = [
-        int(bid) for group in groups for bid in group["dst_device_block_ids"]
-    ]
-    if flat_group_dst != dst_ids:
-      raise ValueError(
-          "Group destination blocks do not concatenate to the plan's "
-          "destination block list"
-      )
-    flat_group_extents = [
-        int(extent)
-        for group in groups
-        for extent in group["dst_expected_extent_bytes"]
-    ]
-    if flat_group_extents != [int(e) for e in dst_expected_extent_bytes]:
-      raise ValueError(
-          "Group extents do not concatenate to the plan's extents"
-      )
-    if int(groups[0]["expected_pushes"]) != int(expected_pushes_per_pool):
-      raise ValueError(
-          "expected_pushes_per_pool must mirror the first group"
-      )
-
-    dst_peers = set(dst_meta.shards)
-    group_states = []
-    for group_idx, group in enumerate(groups):
-      group_dst_ids = [int(bid) for bid in group["dst_device_block_ids"]]
-      if len(set(group_dst_ids)) != len(group_dst_ids):
-        raise ValueError(
-            f"Group {group_idx} destination block IDs must be unique"
-        )
-      group_pool_indices = [int(idx) for idx in group["pool_indices"]]
-      destination_page_bytes = set()
-      destination_live_segment_maps = set()
-      for pool_idx in group_pool_indices:
-        pool = dst_meta.pools[pool_idx]
-        live_segments = _pool_live_segments(pool)
-        live_bytes = sum(size for _, _, size in live_segments)
-        if live_bytes <= 0:
-          raise ValueError(
-              f"Receiver pool {pool_idx} has invalid byte geometry"
-          )
-        destination_page_bytes.add(live_bytes)
-        destination_live_segment_maps.add(live_segments)
-        if any(
-            block_id >= int(pool.num_blocks) for block_id in group_dst_ids
-        ):
-          raise ValueError(
-              f"Destination block id is out of range for pool {pool_idx}"
-          )
-      if len(destination_page_bytes) != 1:
-        raise ValueError(
-            "All selected receiver pools must have one byte geometry"
-        )
-      if len(destination_live_segment_maps) != 1:
-        raise ValueError(
-            "All selected receiver pools must have one live-region map"
-        )
-      page_bytes = next(iter(destination_page_bytes))
-      live_segments = next(iter(destination_live_segment_maps))
-
-      # The declared extents are validated against the local manifest
-      # before any entry is examined: prefix-shaped coverage (every block
-      # full except an optional partial tail) is the only accepted form.
-      extents_g = [int(extent) for extent in group["dst_expected_extent_bytes"]]
-      if len(extents_g) != len(group_dst_ids):
-        raise ValueError(
-            "Byte-span receiver plan extents do not match the destination "
-            f"block count: got {len(extents_g)}, "
-            f"expected {len(group_dst_ids)}"
-        )
-      for ordinal, extent in enumerate(extents_g):
-        if not 0 < extent <= page_bytes:
-          raise ValueError(
-              f"Byte-span extent {extent} for destination block ordinal "
-              f"{ordinal} is outside (0, {page_bytes}]"
-          )
-        if ordinal != len(extents_g) - 1 and extent != page_bytes:
-          raise ValueError(
-              "Byte-span extents must cover every destination block fully "
-              "except the final one"
-          )
-      group_states.append({
-          "dst_ids": group_dst_ids,
-          "extents": extents_g,
-          "live_segments": live_segments,
-          "ordinals": {
-              block_id: ordinal
-              for ordinal, block_id in enumerate(group_dst_ids)
-          },
-          "coverage": {block_id: [] for block_id in group_dst_ids},
-          "pairs_by_unit": {},
-          "expected_pushes": int(group["expected_pushes"]),
-      })
-
-    entry_count = 0
-    expanded_repeats = 0
-    for src_unit, unit_schedules in shard_push_schedules.items():
-      if set(unit_schedules) != {0}:
-        raise ValueError(
-            f"Sender {src_unit} must use exactly local schedule key 0"
-        )
-      entries = unit_schedules[0]
-      for entry in entries:
-        entry_count += 1
-        if entry[0] not in dst_peers:
-          raise ValueError(
-              f"Schedule targets an unregistered destination peer {entry[0]}"
-          )
-        group_idx = int(entry[10]) if len(entry) > 10 else 0
-        if not 0 <= group_idx < len(group_states):
-          raise ValueError(
-              f"Receiver entry declares an unknown pool group {group_idx}"
-          )
-        state = group_states[group_idx]
-        dst_shard_idx = int(entry[1])
-        dst_offset_bytes = int(entry[2])
-        src_offset_bytes = int(entry[3])
-        size_bytes = int(entry[4])
-        src_block_id = int(entry[5])
-        dst_block_id = int(entry[6])
-        src_stride_bytes = int(entry[7])
-        dst_stride_bytes = int(entry[8])
-        count = int(entry[9])
-        if dst_block_id not in state["coverage"]:
-          raise ValueError(
-              "Receiver entry targets an unregistered destination block"
-          )
-        if (
-            dst_shard_idx != 0
-            or dst_offset_bytes < 0
-            or src_offset_bytes < 0
-            or size_bytes <= 0
-            or src_block_id < 0
-        ):
-          raise ValueError(
-              "Receiver entries must be positive writes with non-negative "
-              "offsets and block IDs"
-          )
-        if count <= 0 or src_stride_bytes < 0 or dst_stride_bytes < 0:
-          raise ValueError(
-              "Byte-span receiver entries must have positive count and "
-              "non-negative strides"
-          )
-        expanded_repeats += count
-        if expanded_repeats > 1 << 20:
-          raise ValueError(
-              "Byte-span receiver plan exceeds the repeat expansion bound"
-          )
-        dst_page_ordinal = state["ordinals"][dst_block_id]
-        expected_bytes = state["extents"][dst_page_ordinal]
-        for repeat in range(count):
-          physical_start = dst_offset_bytes + repeat * dst_stride_bytes
-          try:
-            repeat_start, repeat_end = _physical_live_range_to_logical(
-                state["live_segments"], physical_start, size_bytes
-            )
-          except ValueError as exc:
-            raise ValueError(
-                "Receiver entry exceeds its destination page or crosses "
-                "padding/live bounds"
-            ) from exc
-          if repeat_end > expected_bytes:
-            raise ValueError(
-                "Receiver entry exceeds its destination page or live tail"
-            )
-          state["coverage"][dst_block_id].append((repeat_start, repeat_end))
-        state["pairs_by_unit"].setdefault(src_unit, set()).add(
-            (entry[0], src_block_id, dst_block_id)
-        )
-    if entry_count == 0:
-      raise ValueError("Receiver plan contains no entries")
-    for group_idx, state in enumerate(group_states):
-      calculated_pushes = sum(
-          min(parallelism, len(pairs))
-          for pairs in state["pairs_by_unit"].values()
-      )
-      if calculated_pushes != state["expected_pushes"]:
-        raise ValueError(
-            "expected_pushes_per_pool does not match the received "
-            f"schedules for group {group_idx}"
-        )
-      for dst_page_ordinal, dst_block_id in enumerate(state["dst_ids"]):
-        expected_bytes = state["extents"][dst_page_ordinal]
-        covered_until = 0
-        for start_bytes, end_bytes in sorted(
-            state["coverage"][dst_block_id]
-        ):
-          if start_bytes != covered_until:
-            relation = "overlap" if start_bytes < covered_until else "gap"
-            raise ValueError(
-                "Receiver schedule has a destination coverage "
-                f"{relation} for block {dst_block_id}"
-            )
-          covered_until = end_bytes
-        if covered_until != expected_bytes:
-          raise ValueError(
-              "Receiver schedule does not cover the exact live bytes for "
-              f"destination block {dst_block_id}"
-          )
-
-    rpc_addresses = self.worker_rpc_client.get_worker_endpoints()
-    for unit in dst_units:
-      if not rpc_addresses.get(unit):
-        raise ValueError(f"Missing control-plane endpoint for {unit}")
-    plan = TransferPlan(
-        src_units=list(src_units),
-        dst_units=list(dst_units),
-        plan={},
-        shard_push_schedules=shard_push_schedules,
-        worker_rpc_addresses=dict(rpc_addresses),
-        worker_data_addresses={dst_units[0]: list(dst_meta.shards)},
-        uuid=uuid,
-        dst_mem_type=RaidenMemoryType.HBM,
-        use_block_chunks=True,
-        is_sender=False,
-        expected_block_count=len(dst_ids),
-        req_id=req_id,
-        expected_pushes_per_pool=expected_pushes_per_pool,
-        transfer_pool_indices=list(transfer_pool_indices),
-        pool_dtype_tags=list(pool_dtype_tags),
-        dst_device_block_ids=dst_ids,
-        src_schedule_keys=dict(src_schedule_keys),
-        parallelism=parallelism,
-        num_tokens=num_tokens,
-        dst_expected_extent_bytes=[int(e) for e in dst_expected_extent_bytes],
-        pool_groups=[dict(group) for group in pool_groups],
-    )
-    with self._lock:
-      session_id = len(self._active_transfers)
-
-    async def _arm_receivers() -> None:
-      receiver_arm_start_ns = time.monotonic_ns()
-      await asyncio.gather(*[
-          self.worker_rpc_client.start_transfer(unit, plan)
-          for unit in dst_units
-      ])
-      receiver_arm_end_ns = time.monotonic_ns()
-      with self._lock:
-        self._active_transfers[req_id] = plan
-      logging.info(
-          "%s",
-          json.dumps(
-              {
-                  "event": "raiden_pool_reshard_receivers_armed",
-                  "req_id": req_id,
-                  "uuid": uuid,
-                  "num_tokens": num_tokens,
-                  "destination_pages": len(dst_ids),
-                  "receiver_arm_rpc_ms": (
-                      (receiver_arm_end_ns - receiver_arm_start_ns) / 1_000_000
-                  ),
-              },
-              sort_keys=True,
-          ),
-      )
-
-    future = RaidenFuture(session_id, _arm_receivers())
     with self._lock:
       self._active_tasks[req_id] = future
     return future
@@ -3233,8 +2762,8 @@ class RaidenController:
     ):
       if shard_push_schedules:
         raise ValueError(
-            "Prepared reshard schedules must use "
-            "register_pool_reshard_receiver_plan"
+            "Pool reshard requests never carry prepared schedules; the "
+            "planning controller builds and arms them itself"
         )
       return self._start_pool_reshard_transfer(
           src_units=src_units,
@@ -4063,9 +3592,10 @@ class RaidenControllerServer:
             ):
               dst_mem_type = RaidenMemoryType.HBM
 
-            num_tokens = None
-            if coord_req.num_tokens > 0 or coord_req.dst_device_block_ids:
-              num_tokens = coord_req.num_tokens
+            # Reshard requests are recognized by their destination block
+            # list; num_tokens was retired from the wire (planning is fully
+            # byte-derived).
+            num_tokens = 0 if coord_req.dst_device_block_ids else None
 
             future = self._controller.start_transfer(
                 src_units=srcs,
@@ -4317,70 +3847,16 @@ class RaidenControllerServer:
                   for entry in schedule_proto.entries
               ]
 
-            def decode_pool_groups(request_proto):
-              return [
-                  {
-                      "pool_indices": list(group.pool_indices),
-                      "dst_device_block_ids": list(group.dst_device_block_ids),
-                      "expected_pushes": int(group.expected_pushes),
-                      "dst_expected_extent_bytes": list(
-                          group.dst_expected_extent_bytes),
-                      "order_rank": int(group.order_rank),
-                  }
-                  for group in request_proto.pool_groups
-              ]
-
-            is_pool_reshard = bool(
-                start_req.expected_pushes_per_pool
-                or start_req.transfer_pool_indices
-            )
-            if is_pool_reshard:
-              if start_req.is_sender:
-                raise ValueError(
-                    "Inter-controller reshard schedule registration must target"
-                    " receivers"
-                )
-              if not start_req.use_block_chunks:
-                raise ValueError(
-                    "Reshard receiver schedule requires use_block_chunks=true"
-                )
-              if dst_mem_type != RaidenMemoryType.HBM:
-                raise ValueError(
-                    "Reshard receiver schedule requires dst_mem_type=HBM"
-                )
-              expected_keys = set(range(len(srcs)))
-              actual_keys = set(start_req.shard_push_schedules)
-              if actual_keys != expected_keys:
-                raise ValueError(
-                    "Reshard schedule map keys must match source list"
-                    f" ordinals: got={sorted(actual_keys)},"
-                    f" expected={sorted(expected_keys)}"
-                )
-              shard_push_schedules = {
-                  src_unit: {
-                      0: decode_entries(start_req.shard_push_schedules[ordinal])
-                  }
-                  for ordinal, src_unit in enumerate(srcs)
-              }
-              future = self._controller.register_pool_reshard_receiver_plan(
-                  src_units=srcs,
-                  dst_units=dsts,
-                  req_id=start_req.req_id,
-                  uuid=start_req.uuid,
-                  shard_push_schedules=shard_push_schedules,
-                  expected_pushes_per_pool=(start_req.expected_pushes_per_pool),
-                  transfer_pool_indices=list(start_req.transfer_pool_indices),
-                  pool_dtype_tags=list(start_req.pool_dtype_tags),
-                  dst_device_block_ids=list(start_req.dst_device_block_ids),
-                  src_schedule_keys={
-                      src_unit: ordinal for ordinal, src_unit in enumerate(srcs)
-                  },
-                  parallelism=start_req.parallelism,
-                  num_tokens=start_req.num_tokens,
-                  dst_expected_extent_bytes=list(
-                      start_req.dst_expected_extent_bytes
-                  ),
-                  pool_groups=decode_pool_groups(start_req),
+            if start_req.transfer_pool_indices or start_req.pool_groups:
+              # Fail closed for pre-P2 peers: the planning controller now
+              # arms destination workers directly and the worker's executor
+              # owns receiver-side validation; there is no inter-controller
+              # receiver-plan registration to accept. (Same pool-plan
+              # discriminator as the worker listener's HasPoolReshardFields.)
+              raise ValueError(
+                  "Inter-controller reshard schedule registration is "
+                  "retired: the planning controller arms destination "
+                  "workers directly"
               )
             else:
               shard_push_schedules = {}
@@ -4735,8 +4211,9 @@ class RaidenControllerClientFacade:
     )
     if dst_device_block_ids is not None:
       coord_req.dst_device_block_ids.extend(dst_device_block_ids)
-    if num_tokens is not None:
-      coord_req.num_tokens = num_tokens
+    # num_tokens is accepted for caller compatibility but retired from the
+    # wire: planning and receiver validation are fully byte-derived.
+    del num_tokens
     if transfer_pool_tags is not None:
       coord_req.transfer_pool_tags.extend(transfer_pool_tags)
     if dst_block_counts:
@@ -4775,15 +4252,6 @@ class RaidenControllerClientFacade:
       src_controller_address: Optional[str] = None,
       shard_push_schedules: Optional[dict] = None,
       dst_mem_type: RaidenMemoryType = RaidenMemoryType.DRAM,
-      expected_pushes_per_pool: int = 0,
-      transfer_pool_indices: Optional[typing.Sequence[int]] = None,
-      pool_dtype_tags: Optional[typing.Sequence[str]] = None,
-      dst_device_block_ids: Optional[typing.Sequence[int]] = None,
-      src_schedule_keys: Optional[dict[RaidenId, int]] = None,
-      parallelism: int = 0,
-      num_tokens: int = 0,
-      dst_expected_extent_bytes: Optional[typing.Sequence[int]] = None,
-      pool_groups: Optional[typing.Sequence[dict]] = None,
   ) -> bool:
     """Inter-controller RPC to register computed push schedules and prepare receivers."""
     start_req = self._raiden_proto_module.StartTransferRequest(
@@ -4795,51 +4263,16 @@ class RaidenControllerClientFacade:
         uuid=uuid,
         req_id=req_id if req_id else "",
         dst_mem_type=int(dst_mem_type),
-        expected_pushes_per_pool=expected_pushes_per_pool,
-        parallelism=parallelism,
-        num_tokens=num_tokens,
     )
-    if transfer_pool_indices is not None:
-      start_req.transfer_pool_indices.extend(transfer_pool_indices)
-    if pool_dtype_tags is not None:
-      start_req.pool_dtype_tags.extend(pool_dtype_tags)
-    if dst_device_block_ids is not None:
-      start_req.dst_device_block_ids.extend(dst_device_block_ids)
-    if dst_expected_extent_bytes:
-      start_req.dst_expected_extent_bytes.extend(dst_expected_extent_bytes)
-    for group in pool_groups or ():
-      group_proto = start_req.pool_groups.add()
-      group_proto.pool_indices.extend(
-          int(idx) for idx in group["pool_indices"])
-      group_proto.dst_device_block_ids.extend(
-          int(bid) for bid in group["dst_device_block_ids"])
-      group_proto.expected_pushes = int(group["expected_pushes"])
-      group_proto.dst_expected_extent_bytes.extend(
-          int(e) for e in group["dst_expected_extent_bytes"])
-      group_proto.order_rank = int(group.get("order_rank", 0))
-
-    if src_schedule_keys is not None:
-      if set(src_schedule_keys) != set(src_units):
-        raise ValueError("Every source must have an explicit schedule key")
-      if len(set(src_schedule_keys.values())) != len(src_schedule_keys):
-        raise ValueError("Source schedule keys must be unique")
-
     if shard_push_schedules:
       for src_unit, push_schedules in shard_push_schedules.items():
         num_src_shards = len(push_schedules)
         for shard_idx, schedule in push_schedules.items():
-          if src_schedule_keys is not None:
-            if num_src_shards != 1:
-              raise ValueError(
-                  "Explicit source schedule keys require one local shard"
-              )
-            key_idx = src_schedule_keys[src_unit]
-          else:
-            key_idx = (
-                int(src_unit.job_replica_id)
-                if (len(src_units) > 1 and num_src_shards == 1)
-                else shard_idx
-            )
+          key_idx = (
+              int(src_unit.job_replica_id)
+              if (len(src_units) > 1 and num_src_shards == 1)
+              else shard_idx
+          )
           schedule_proto = self._raiden_proto_module.ShardPushScheduleProto()
           for entry_tuple in schedule:
             (

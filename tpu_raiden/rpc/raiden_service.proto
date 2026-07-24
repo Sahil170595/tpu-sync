@@ -142,33 +142,22 @@ message StartTransferRequest {
   // the receiving manager has explicitly registered pools, the tags must match
   // the local pools' dtype tags at plan registration.
   repeated string pool_dtype_tags = 10;
-  // Pool-keyed receive accounting. Each listed transfer pool expects this
-  // many independent push streams (summed across senders) before its
-  // completion callback fires. Zero preserves the legacy header-declared
-  // (header.reserved) accounting.
-  int32 expected_pushes_per_pool = 11;
+  // Retired scalar mirrors of the pool-group fields (expected pushes,
+  // block-id lists, extents, and audit num_tokens): a pool reshard plan is
+  // a list of groups, and entries name their group. The per-pool block ids
+  // derive from group entries; the flat destination list is the groups'
+  // concatenation.
+  reserved 11, 13, 14, 16, 17;
   // Canonical pool indices moved by this plan, resolved by the controller
-  // from the consumer's requested pool tags. Unselected pools are never
-  // armed; raiden attaches no meaning to any tag name.
+  // from the consumer's requested pool tags. Non-empty selects the pool
+  // executor; the groups below must partition exactly this set. Unselected
+  // pools are never armed; raiden attaches no meaning to any tag name.
   repeated int32 transfer_pool_indices = 12;
-  // Block-granular arguments consumed by the pool executor. The controller
-  // emits only the IDs relevant to the worker receiving this command.
-  repeated int64 src_block_ids = 13;
-  repeated int64 dst_device_block_ids = 14;
   int32 parallelism = 15;
-  int64 num_tokens = 16;
-  // Byte-span reshard plans: the expected destination coverage end per
-  // entry of dst_device_block_ids. Non-empty selects the byte-level
-  // receiver validation (no token arithmetic); empty preserves the legacy
-  // token/state validation driven by num_tokens.
-  repeated int64 dst_expected_extent_bytes = 17;
-  // Multi-tag transfers: one group per requested pool tag, in request
-  // order. Each group scopes its schedule entries (ShardPushEntryProto.
-  // pool_group) to its own pools, destination block-id space, and receive
-  // accounting. Empty preserves the legacy single-tag semantics where
-  // every entry replays over every transfer pool and the scalar
-  // expected_pushes_per_pool / dst_device_block_ids /
-  // dst_expected_extent_bytes fields apply.
+  // One group per requested pool tag, in request order — mandatory for
+  // pool reshard plans. Each group scopes its schedule entries
+  // (ShardPushEntryProto.pool_group) to its own pools, destination
+  // block-id space, extents, and receive accounting.
   repeated PoolGroupProto pool_groups = 18;
 }
 

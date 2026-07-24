@@ -289,6 +289,13 @@ absl::Status BlockTransport::HandleIncomingPush(int client_fd,
     pool_progress_spec = *candidate;
   }
 
+  if (header.op == 6 && !pool_progress_spec.has_value() &&
+      !block_delegate_->AcceptsPlanlessExplicitPush(header.uuid)) {
+    return absl::FailedPreconditionError(absl::StrCat(
+        "explicit-destination push for uuid ", header.uuid,
+        " has no registered plan on this pool-mode worker"));
+  }
+
   std::vector<int> allocated_ids;
 
   std::vector<int> src_block_ids;

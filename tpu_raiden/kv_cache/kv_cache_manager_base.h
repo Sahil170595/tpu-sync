@@ -309,7 +309,7 @@ class KVCacheManagerBase : public tpu_raiden::RaidenManagerBase {
       size_t pool_idx, absl::Span<const int64_t> block_ids,
       std::optional<size_t> shard_idx = std::nullopt);
 
-  bool use_block_chunks(uint64_t uuid) const override;
+  bool AcceptsPlanlessExplicitPush(uint64_t uuid) const override;
 
   absl::StatusOr<std::optional<tpu_raiden::transport::PoolPushProgressSpec>>
   GetPoolPushProgressSpec(size_t pool_idx, uint64_t uuid) const override;

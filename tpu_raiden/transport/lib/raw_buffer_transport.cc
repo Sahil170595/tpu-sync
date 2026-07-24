@@ -49,6 +49,87 @@ namespace tpu_raiden::transport::lib {
 using ::peregrine::ReadExact;
 using ::peregrine::WriteExact;
 
+namespace {
+absl::Status InternalError(absl::string_view msg, int _errno) {
+  return absl::InternalError(absl::StrCat(msg, ": ", std::strerror(_errno)));
+}
+
+absl::StatusOr<std::pair<int, int>> CreateTcpIPv4Socket(const int port) {
+  const int fd = socket(AF_INET, SOCK_STREAM, /*protocol=*/0);
+  if (fd < 0) {
+    const int last_errno = errno;
+    return InternalError("tcp/ipv4 create socket", last_errno);
+  }
+  int opt = 1;
+  if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
+    const int last_errno = errno;
+    close(fd);
+    return InternalError("tcp/ipv4 setsockopt SO_REUSEADDR", last_errno);
+  }
+  struct sockaddr_in sa;
+  socklen_t len = sizeof(sa);
+  std::memset(&sa, 0, sizeof(sa));
+  sa.sin_family = AF_INET;
+  sa.sin_addr.s_addr = INADDR_ANY;
+  sa.sin_port = htons(port);
+  if (bind(fd, reinterpret_cast<struct sockaddr*>(&sa), sizeof(sa)) < 0) {
+    const int last_errno = errno;
+    close(fd);
+    return InternalError("tcp/ipv4 bind", last_errno);
+  }
+  if (getsockname(fd, reinterpret_cast<struct sockaddr*>(&sa), &len) < 0) {
+    const int last_errno = errno;
+    close(fd);
+    return InternalError("tcp/ipv4 getsockname", last_errno);
+  }
+  DCHECK_GE(fd, 0);
+  return std::make_pair(fd, ntohs(sa.sin_port));
+}
+
+absl::StatusOr<std::pair<int, int>> CreateTcpIPv6Socket(const int port) {
+  const int fd = socket(AF_INET6, SOCK_STREAM, /*protocol=*/0);
+  if (fd < 0) {
+    const int last_errno = errno;
+    return InternalError("tcp/ipv6 create socket", last_errno);
+  }
+  int opt = 1;
+  if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
+    const int last_errno = errno;
+    close(fd);
+    return InternalError("tcp/ipv6 setsockopt SO_REUSEADDR", last_errno);
+  }
+  int v6only = 0;
+  if (setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &v6only, sizeof(v6only)) < 0) {
+    LOG(WARNING) << "Failed to set IPV6_V6ONLY=0: " << std::strerror(errno);
+  }
+  struct sockaddr_in6 sa;
+  socklen_t len = sizeof(sa);
+  std::memset(&sa, 0, sizeof(sa));
+  sa.sin6_family = AF_INET6;
+  sa.sin6_addr = in6addr_any;
+  sa.sin6_port = htons(port);
+  if (bind(fd, reinterpret_cast<struct sockaddr*>(&sa), sizeof(sa)) < 0) {
+    const int last_errno = errno;
+    close(fd);
+    return InternalError("tcp/ipv6 bind", last_errno);
+  }
+  if (getsockname(fd, reinterpret_cast<struct sockaddr*>(&sa), &len) < 0) {
+    const int last_errno = errno;
+    close(fd);
+    return InternalError("tcp/ipv6 getsockname", last_errno);
+  }
+  DCHECK_GE(fd, 0);
+  return std::make_pair(fd, ntohs(sa.sin6_port));
+}
+
+absl::StatusOr<std::pair<int, int>> CreateSocket(const int port) {
+  const auto fd_port = CreateTcpIPv6Socket(port);
+  return fd_port.ok() ? fd_port : CreateTcpIPv4Socket(port);
+}
+
+inline bool IsSocketValid(int fd) { return fcntl(fd, F_GETFD) >= 0; }
+}  // namespace
+
 RawBufferTransport::RawBufferTransport(
     RawBufferTransportDelegate* delegate, int local_port,
     const std::vector<std::string>& local_ips)
@@ -56,66 +137,19 @@ RawBufferTransport::RawBufferTransport(
       local_port_(local_port),
       bound_ip_(local_ips.empty() ? "127.0.0.1" : local_ips[0]),
       local_ips_(local_ips) {
-  // 1. Setup server_fd_ (Always use IPv6 wildcard to listen on all interfaces)
-  server_fd_ = socket(AF_INET6, SOCK_STREAM, 0);
-  if (server_fd_ < 0) {
-    // Fallback to IPv4 wildcard if IPv6 is not supported
-    server_fd_ = socket(AF_INET, SOCK_STREAM, 0);
-    if (server_fd_ < 0) {
-      throw std::runtime_error("Failed to create server socket: " +
-                               std::string(std::strerror(errno)));
-    }
-    int opt = 1;
-    if (setsockopt(server_fd_, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) <
-        0) {
-      throw std::runtime_error("Failed to set SO_REUSEADDR: " +
-                               std::string(std::strerror(errno)));
-    }
-    struct sockaddr_in serv_addr;
-    std::memset(&serv_addr, 0, sizeof(serv_addr));
-    serv_addr.sin_family = AF_INET;
-    serv_addr.sin_addr.s_addr = INADDR_ANY;
-    serv_addr.sin_port = htons(local_port_);
-    if (bind(server_fd_, reinterpret_cast<struct sockaddr*>(&serv_addr),
-             sizeof(serv_addr)) < 0) {
-      throw std::runtime_error(
-          "Failed to bind IPv4 server socket to wildcard:" +
-          std::to_string(local_port_) + ": " + std::strerror(errno));
-    }
-    socklen_t addr_len = sizeof(serv_addr);
-    if (getsockname(server_fd_, reinterpret_cast<struct sockaddr*>(&serv_addr),
-                    &addr_len) == 0) {
-      local_port_ = ntohs(serv_addr.sin_port);
-    }
-  } else {
-    int opt = 1;
-    if (setsockopt(server_fd_, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) <
-        0) {
-      throw std::runtime_error("Failed to set SO_REUSEADDR: " +
-                               std::string(std::strerror(errno)));
-    }
-    int v6only = 0;
-    if (setsockopt(server_fd_, IPPROTO_IPV6, IPV6_V6ONLY, &v6only,
-                   sizeof(v6only)) < 0) {
-      LOG(WARNING) << "Failed to set IPV6_V6ONLY=0: " << std::strerror(errno);
-    }
-    struct sockaddr_in6 serv_addr;
-    std::memset(&serv_addr, 0, sizeof(serv_addr));
-    serv_addr.sin6_family = AF_INET6;
-    serv_addr.sin6_addr = in6addr_any;
-    serv_addr.sin6_port = htons(local_port_);
-    if (bind(server_fd_, reinterpret_cast<struct sockaddr*>(&serv_addr),
-             sizeof(serv_addr)) < 0) {
-      throw std::runtime_error(
-          "Failed to bind IPv6 server socket to wildcard:" +
-          std::to_string(local_port_) + ": " + std::strerror(errno));
-    }
-    socklen_t addr_len = sizeof(serv_addr);
-    if (getsockname(server_fd_, reinterpret_cast<struct sockaddr*>(&serv_addr),
-                    &addr_len) == 0) {
-      local_port_ = ntohs(serv_addr.sin6_port);
-    }
+  // 1. Setup server listening socket.
+  const absl::StatusOr<std::pair<int, int>> fd_port = CreateSocket(local_port_);
+  if (!fd_port.ok()) {
+    throw std::runtime_error(
+        absl::StrCat("Failed to create server tcp listening socket: ",
+                     fd_port.status().message()));
   }
+
+  server_fd_ = fd_port->first;
+  local_port_ = fd_port->second;
+  DCHECK_GE(server_fd_, 0);
+  DCHECK(1 <= local_port_ && local_port_ <= 65535);
+  DCHECK(IsSocketValid(server_fd_));
 
   if (listen(server_fd_, 128) < 0) {
     LOG(FATAL) << "Failed to listen on server socket: " << std::strerror(errno);
@@ -131,6 +165,7 @@ RawBufferTransport::~RawBufferTransport() {
   // 1. Listener side:
   // 1.1 Shutdown on all active sockets to unblock the threads.
   if (server_fd_ >= 0) {
+    DCHECK(IsSocketValid(server_fd_));
     shutdown(server_fd_, SHUT_RDWR);
   }
   {
@@ -321,7 +356,7 @@ void RawBufferTransport::ConnectionWorker(int client_fd) {
 
 void RawBufferTransport::ListenerLoop() {
   while (!stopping_) {
-    DCHECK_GE(server_fd_, 0);
+    DCHECK(IsSocketValid(server_fd_));
     struct pollfd pfd;
     pfd.fd = server_fd_;
     pfd.events = POLLIN;
@@ -356,9 +391,10 @@ void RawBufferTransport::ListenerLoop() {
         std::thread([this, client_fd]() { ConnectionWorker(client_fd); }));
   }
 
-  DCHECK_GE(server_fd_, 0);
+  DCHECK(IsSocketValid(server_fd_));
   close(server_fd_);
   server_fd_ = -1;
+  DCHECK(!IsSocketValid(server_fd_));
 }
 
 absl::Status RawBufferTransport::PullBuffer(

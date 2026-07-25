@@ -220,6 +220,13 @@ grpc::Status WorkerServiceImpl::TransferBuffers(
     copy_sizes.assign(src_offsets.size(), 1);
   }
 
+  // Host staging (bridge) offsets for 2-stage remote transfers -- the middle
+  // hop of the data flow. Required for remote H2D read/write and remote D2H
+  // write; the transfer manager rejects those transfers when it is missing.
+  std::vector<int64_t> staging_host_offsets(
+      transfer.staging_host_offsets().begin(),
+      transfer.staging_host_offsets().end());
+
   std::vector<RaidenTransferEndpoint> dst_remote_descriptors;
   if (transfer.dst_buffers_size() > 0 &&
       transfer.dst_buffers(0).remote_descriptors_size() > 0) {
@@ -256,7 +263,9 @@ grpc::Status WorkerServiceImpl::TransferBuffers(
     } else if (transfer.dst_buffers_size() > 0 &&
                !transfer.dst_buffers(0).remote_address().empty()) {
       std::string dst_peer = transfer.dst_buffers(0).remote_address();
-      future_or = transfer_manager_.D2hWrite(dst_peer, src_offsets, dst_offsets,
+      // Flow order: local device src -> local host staging -> remote host dst.
+      future_or = transfer_manager_.D2hWrite(dst_peer, src_offsets,
+                                             staging_host_offsets, dst_offsets,
                                              copy_sizes);
     } else {
       future_or = transfer_manager_.D2h(src_offsets, dst_offsets, copy_sizes);
@@ -265,12 +274,16 @@ grpc::Status WorkerServiceImpl::TransferBuffers(
     if (transfer.src_buffers_size() > 0 &&
         !transfer.src_buffers(0).remote_address().empty()) {
       std::string src_peer = transfer.src_buffers(0).remote_address();
-      future_or = transfer_manager_.H2dRead(src_peer, src_offsets, dst_offsets,
+      // Flow order: remote host src -> local host staging -> local device dst.
+      future_or = transfer_manager_.H2dRead(src_peer, src_offsets,
+                                            staging_host_offsets, dst_offsets,
                                             copy_sizes);
     } else if (transfer.dst_buffers_size() > 0 &&
                !transfer.dst_buffers(0).remote_address().empty()) {
       std::string dst_peer = transfer.dst_buffers(0).remote_address();
-      future_or = transfer_manager_.H2dWrite(dst_peer, src_offsets, dst_offsets,
+      // Flow order: local host src -> remote host staging -> remote device dst.
+      future_or = transfer_manager_.H2dWrite(dst_peer, src_offsets,
+                                             staging_host_offsets, dst_offsets,
                                              copy_sizes);
     } else {
       future_or = transfer_manager_.H2d(src_offsets, dst_offsets, copy_sizes);

@@ -326,7 +326,7 @@ TEST_F(RaidenControllerTest, TransferBuffersValidationMismatchedCopySizes) {
 
   auto status = controller
                     .TransferBuffers({src_buf1, src_buf2}, {dst_buf1, dst_buf2},
-                                     copy_sizes)
+                                     /*staging_host_buffers=*/{}, copy_sizes)
                     .Await();
   EXPECT_FALSE(status.ok());
   EXPECT_EQ(status.code(), absl::StatusCode::kInvalidArgument);
@@ -431,7 +431,8 @@ TEST_F(RaidenControllerTest, TransferBuffersD2HSuccess) {
 
   auto status = controller
                     .TransferBuffers("worker_0", {src_buf1, src_buf2},
-                                     {dst_buf1, dst_buf2}, copy_sizes)
+                                     {dst_buf1, dst_buf2},
+                                     /*staging_host_buffers=*/{}, copy_sizes)
                     .Await();
   ASSERT_TRUE(status.ok());
   EXPECT_EQ(mock_mgr.d2h_calls, 1);
@@ -1147,6 +1148,51 @@ TEST_F(RaidenControllerTest, TransferBuffersLocalDramToRemoteHbmSuccess) {
   EXPECT_EQ(mock_mgr.last_peer, "remote_host:9090");
   EXPECT_THAT(mock_mgr.last_src_offsets, ElementsAre(0));
   EXPECT_THAT(mock_mgr.last_dst_offsets, ElementsAre(1));
+}
+
+TEST_F(RaidenControllerTest, TransferBuffersStagingBuffersReachWorker) {
+  MockTransferManager mock_mgr;
+  test_server_->service->SetTransferManager(KVManagerHolder(&mock_mgr));
+
+  RaidenController controller(unit_, /*num_blocks=*/5, /*num_shards=*/1,
+                              /*shard_size_bytes=*/512, orchestrator_address_,
+                              "");
+  RegisterAndInitWorker(controller, "worker_0", test_server_->server_address);
+
+  Buffer src_buf(0, {}, std::nullopt, rpc::MEMORY_TYPE_DRAM);
+  Buffer dst_buf(1, {}, "remote_host:9090", rpc::MEMORY_TYPE_HBM);
+  // Staging buffers are plain host-DRAM buffers whose index is the staging
+  // host block id; only the ids travel on the wire (staging_host_offsets).
+  Buffer staging_buf(3, {}, std::nullopt, rpc::MEMORY_TYPE_DRAM);
+
+  auto status =
+      controller.TransferBuffers({src_buf}, {dst_buf}, {staging_buf}).Await();
+  ASSERT_TRUE(status.ok());
+  EXPECT_EQ(mock_mgr.h2d_write_calls, 1);
+  EXPECT_THAT(mock_mgr.last_src_offsets, ElementsAre(0));
+  EXPECT_THAT(mock_mgr.last_staging_offsets, ElementsAre(3));
+  EXPECT_THAT(mock_mgr.last_dst_offsets, ElementsAre(1));
+}
+
+TEST_F(RaidenControllerTest, TransferBuffersRejectsNonDramStagingBuffer) {
+  MockTransferManager mock_mgr;
+  test_server_->service->SetTransferManager(KVManagerHolder(&mock_mgr));
+
+  RaidenController controller(unit_, /*num_blocks=*/5, /*num_shards=*/1,
+                              /*shard_size_bytes=*/512, orchestrator_address_,
+                              "");
+  RegisterAndInitWorker(controller, "worker_0", test_server_->server_address);
+
+  Buffer src_buf(0, {}, std::nullopt, rpc::MEMORY_TYPE_DRAM);
+  Buffer dst_buf(1, {}, "remote_host:9090", rpc::MEMORY_TYPE_HBM);
+  Buffer staging_buf(3, {}, std::nullopt, rpc::MEMORY_TYPE_HBM);
+
+  auto status =
+      controller.TransferBuffers({src_buf}, {dst_buf}, {staging_buf}).Await();
+  EXPECT_FALSE(status.ok());
+  EXPECT_EQ(status.code(), absl::StatusCode::kInvalidArgument);
+  EXPECT_THAT(status.message(), HasSubstr("Staging buffer must be host DRAM"));
+  EXPECT_EQ(mock_mgr.h2d_write_calls, 0);
 }
 
 TEST_F(RaidenControllerTest, TransferBuffersLocalHbmToRemoteDramSuccess) {

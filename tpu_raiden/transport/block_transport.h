@@ -170,6 +170,20 @@ class BlockTransportDelegate : public lib::RawBufferTransportDelegate {
     return absl::OkStatus();
   }
 
+  // Arms a receiver-side H2D plan delivered in-band by an op-7 push ("push +
+  // H2D plan"): after the network payload lands in the host staging blocks,
+  // the receiver copies staging -> device per the pairs. Streams of one push
+  // each carry their subset of pairs; implementations must merge idempotently
+  // (keyed by uuid). expected_streams is the push's total stream count
+  // (header.reserved). Default: fail closed for delegates without a device
+  // copy path.
+  virtual absl::Status ArmRecvH2dFromWire(
+      uint64_t uuid, const std::vector<int>& staging_block_ids,
+      const std::vector<int>& device_block_ids, int expected_streams) {
+    return absl::UnimplementedError(
+        "Receiver does not support in-band H2D plans (op 7)");
+  }
+
   virtual absl::Status OnBlocksReceived(const std::vector<int>& block_ids,
                                         uint64_t uuid = 0) {
     return OnDataReceived();
@@ -218,21 +232,25 @@ class BlockTransport : public lib::RawBufferTransport {
                  int parallelism = 1);
   ~BlockTransport() override;
 
-  // Asynchronous Scatter-Gather Push
+  // Asynchronous Scatter-Gather Push.
+  // dst_device_block_ids (optional): when non-empty (parallel to
+  // dst_block_ids), the push is op 7 ("push + H2D plan") and the receiver
+  // copies each landed host staging block into the paired device block.
   void AsyncPush(
       const std::vector<std::string>& peers,
       const std::vector<int>& src_block_ids,
       const std::vector<int>& dst_block_ids, int parallelism,
       MajorOrder major_order, uint64_t uuid, int layer_idx,
-      std::function<void(absl::StatusOr<std::vector<int>>)> on_complete);
+      std::function<void(absl::StatusOr<std::vector<int>>)> on_complete,
+      const std::vector<int>& dst_device_block_ids = {});
 
-  // Synchronous Scatter-Gather Push (op = 1 / op = 6)
+  // Synchronous Scatter-Gather Push (op = 1 / op = 6 / op = 7, see AsyncPush)
   absl::StatusOr<std::vector<int>> SyncPush(
       const std::vector<std::string>& peers,
       const std::vector<int>& src_block_ids,
       const std::vector<int>& dst_block_ids = {}, int parallelism = 1,
       MajorOrder major_order = MajorOrder::kLayerMajor, uint64_t uuid = 0,
-      int layer_idx = -1);
+      int layer_idx = -1, const std::vector<int>& dst_device_block_ids = {});
 
   // Synchronous Scatter-Gather Pull (op = 2)
   // When explicit_dst_ptrs is supplied it contains one base pointer per
@@ -278,7 +296,8 @@ class BlockTransport : public lib::RawBufferTransport {
                       std::vector<int>& allocated_ids,
                       std::vector<absl::Status>& statuses,
                       MajorOrder major_order, uint64_t uuid = 0,
-                      int layer_idx = -1, int parallelism = 1);
+                      int layer_idx = -1, int parallelism = 1,
+                      const std::vector<int>& dst_device_block_ids = {});
 
   void H2hReadWorker(int stream_idx, absl::string_view peer,
                      absl::string_view local_ip, size_t local_block_offset,

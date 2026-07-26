@@ -245,7 +245,8 @@ void RaidenManagerBase::SetExternalHostPointers(
 absl::StatusOr<std::vector<int>> RaidenManagerBase::H2hWriteDirect(
     const std::vector<std::string>& peers,
     const std::vector<int>& src_block_ids,
-    const std::vector<int>& dst_block_ids, uint64_t uuid, int layer_idx) {
+    const std::vector<int>& dst_block_ids, uint64_t uuid, int layer_idx,
+    const std::vector<int>& dst_device_block_ids) {
   InitTransportServer();
   absl::MutexLock lock(server_init_mu_);
   if (!server_) {
@@ -253,7 +254,7 @@ absl::StatusOr<std::vector<int>> RaidenManagerBase::H2hWriteDirect(
   }
   return server_->SyncPush(peers, src_block_ids, dst_block_ids, parallelism_,
                            tpu_raiden::transport::MajorOrder::kLayerMajor, uuid,
-                           layer_idx);
+                           layer_idx, dst_device_block_ids);
 }
 
 void RaidenManagerBase::H2hWriteDirectAsync(

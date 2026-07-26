@@ -17,12 +17,15 @@
 #include <cstdint>
 #include <cstring>
 #include <optional>
+#include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include "absl/status/status.h"
+#include "absl/synchronization/mutex.h"
 #include "absl/strings/str_cat.h"
 #include "tpu_raiden/kv_cache/kv_cache_manager_base.h"
 #include "tpu_raiden/rpc/raiden_service.pb.h"
@@ -835,17 +838,32 @@ class TestH2dKVCacheManager : public TestKVCacheManager {
       std::optional<int64_t> slot_idx = std::nullopt,
       std::optional<size_t> layer_idx = std::nullopt,
       std::optional<size_t> shard_idx = std::nullopt) override {
+    absl::MutexLock lock(h2d_mu_);
     h2d_called_ = true;
+    ++h2d_call_count_;
     last_h2d_src_offsets_ = src_offsets_major_dim;
     last_h2d_dst_offsets_ = dst_offsets_major_dim;
     last_h2d_copy_sizes_ = copy_sizes_major_dim;
+    h2d_layer_calls_.push_back(layer_idx);
+    // Order-independent record of every staging->device pair, per call.
+    for (size_t i = 0; i < src_offsets_major_dim.size() &&
+                       i < dst_offsets_major_dim.size();
+         ++i) {
+      h2d_pairs_.insert({src_offsets_major_dim[i], dst_offsets_major_dim[i]});
+    }
     return raiden::PjRtCopyFuture(std::vector<raiden::BufferHolder>{});
   }
 
+  void set_parallelism_for_test(int p) { parallelism_ = p; }
+
+  mutable absl::Mutex h2d_mu_;
   bool h2d_called_ = false;
+  int h2d_call_count_ = 0;
   std::vector<int64_t> last_h2d_src_offsets_;
   std::vector<int64_t> last_h2d_dst_offsets_;
   std::vector<int64_t> last_h2d_copy_sizes_;
+  std::vector<std::optional<size_t>> h2d_layer_calls_;
+  std::set<std::pair<int64_t, int64_t>> h2d_pairs_;
 };
 
 TEST(KVCacheManagerTest, D2hWriteFailsWithCpuOnlyManager) {
@@ -1042,8 +1060,8 @@ TEST(KVCacheManagerTest, H2dReadCallsH2dForTpuHbmDestination) {
 TEST(KVCacheManagerTest, H2dWriteSuccess) {
   TestKVCacheManager sender(/*num_layers=*/1, /*num_shards=*/1,
                             /*slice_byte_size=*/128, /*host_blocks=*/2);
-  TestKVCacheManager receiver(/*num_layers=*/1, /*num_shards=*/1,
-                              /*slice_byte_size=*/128, /*host_blocks=*/2);
+  TestH2dKVCacheManager receiver(/*num_layers=*/1, /*num_shards=*/1,
+                                 /*slice_byte_size=*/128, /*host_blocks=*/2);
 
   const std::optional<int> receiver_port = receiver.local_port();
   ASSERT_TRUE(receiver_port.has_value());
@@ -1061,7 +1079,7 @@ TEST(KVCacheManagerTest, H2dWriteSuccess) {
 
   std::vector<int64_t> src_host_offsets = {0};
   std::vector<int64_t> dst_host_offsets = {1};  // remote staging (bridge)
-  std::vector<int64_t> dst_device_offsets = {0};
+  std::vector<int64_t> dst_device_offsets = {5};
   std::vector<int64_t> copy_sizes = {1};
 
   auto res = sender.H2dWrite(receiver_peer, src_host_offsets, dst_host_offsets,
@@ -1069,17 +1087,74 @@ TEST(KVCacheManagerTest, H2dWriteSuccess) {
   ASSERT_TRUE(res.ok()) << res.status().ToString();
   EXPECT_TRUE(res->Await().ok());
 
+  // Network stage: payload landed byte-exact in the explicit remote staging
+  // block {1}; block {0} untouched.
   EXPECT_TRUE(std::all_of(receiver_buf, receiver_buf + 128,
                           [](uint8_t v) { return v == 0; }));
   EXPECT_TRUE(std::all_of(receiver_buf + 128, receiver_buf + 256,
                           [](uint8_t v) { return v == 0xCD; }));
+
+  // Remote H2D stage: fired automatically from the in-band plan, from the
+  // staging block into the device destination (all layers). This is the full
+  // pipeline triggered by the single H2dWrite() call.
+  absl::MutexLock lock(receiver.h2d_mu_);
+  EXPECT_TRUE(receiver.h2d_called_);
+  EXPECT_EQ(receiver.h2d_call_count_, 1);
+  EXPECT_EQ(receiver.last_h2d_src_offsets_, dst_host_offsets);
+  EXPECT_EQ(receiver.last_h2d_dst_offsets_, dst_device_offsets);
+  EXPECT_EQ(receiver.last_h2d_copy_sizes_, std::vector<int64_t>{1});
+  ASSERT_EQ(receiver.h2d_layer_calls_.size(), 1u);
+  EXPECT_EQ(receiver.h2d_layer_calls_[0], std::nullopt);
+}
+
+// A receiver whose device copy fails must FAIL the sender's whole H2dWrite
+// future (no silent staging-only success): the remote H2D error propagates
+// back through the transport ack path.
+class TestFailingH2dKVCacheManager : public TestKVCacheManager {
+ public:
+  using TestKVCacheManager::TestKVCacheManager;
+
+  absl::StatusOr<raiden::PjRtCopyFuture> H2d(
+      const std::vector<int64_t>& src_offsets_major_dim = {},
+      const std::vector<int64_t>& dst_offsets_major_dim = {},
+      const std::vector<int64_t>& copy_sizes_major_dim = {},
+      std::optional<int64_t> slot_idx = std::nullopt,
+      std::optional<size_t> layer_idx = std::nullopt,
+      std::optional<size_t> shard_idx = std::nullopt) override {
+    return absl::FailedPreconditionError(
+        "receiver has no device backing for H2D");
+  }
+};
+
+TEST(KVCacheManagerTest, H2dWriteFailsWhenReceiverH2dFails) {
+  TestKVCacheManager sender(/*num_layers=*/1, /*num_shards=*/1,
+                            /*slice_byte_size=*/128, /*host_blocks=*/2);
+  TestFailingH2dKVCacheManager receiver(/*num_layers=*/1, /*num_shards=*/1,
+                                        /*slice_byte_size=*/128,
+                                        /*host_blocks=*/2);
+
+  const std::optional<int> receiver_port = receiver.local_port();
+  ASSERT_TRUE(receiver_port.has_value());
+  std::string receiver_peer =
+      absl::StrCat(receiver.local_ip(), ":", *receiver_port);
+
+  uint8_t* sender_buf = sender.GetHostPointer(/*layer_idx=*/0, /*shard_idx=*/0);
+  ASSERT_NE(sender_buf, nullptr);
+  std::memset(sender_buf, 0xCD, 128);
+
+  auto res = sender.H2dWrite(receiver_peer, /*src_host=*/{0},
+                             /*dst_host(staging)=*/{1}, /*dst_device=*/{0},
+                             /*copy_sizes=*/{1});
+  if (res.ok()) {
+    EXPECT_FALSE(res->Await().ok());
+  }
 }
 
 TEST(KVCacheManagerTest, H2dWritePipelinedSuccess) {
   TestKVCacheManager sender(/*num_layers=*/1, /*num_shards=*/1,
                             /*slice_byte_size=*/128, /*host_blocks=*/2);
-  TestKVCacheManager receiver(/*num_layers=*/1, /*num_shards=*/1,
-                              /*slice_byte_size=*/128, /*host_blocks=*/2);
+  TestH2dKVCacheManager receiver(/*num_layers=*/1, /*num_shards=*/1,
+                                 /*slice_byte_size=*/128, /*host_blocks=*/2);
 
   const std::optional<int> receiver_port = receiver.local_port();
   ASSERT_TRUE(receiver_port.has_value());
@@ -1098,7 +1173,7 @@ TEST(KVCacheManagerTest, H2dWritePipelinedSuccess) {
 
   std::vector<int64_t> src_host_offsets = {0, 1};
   std::vector<int64_t> dst_host_offsets = {0, 1};  // remote staging (bridge)
-  std::vector<int64_t> dst_device_offsets = {0, 1};
+  std::vector<int64_t> dst_device_offsets = {6, 9};
   std::vector<int64_t> copy_sizes = {1, 1};
 
   auto res = sender.H2dWrite(receiver_peer, src_host_offsets, dst_host_offsets,
@@ -1106,10 +1181,87 @@ TEST(KVCacheManagerTest, H2dWritePipelinedSuccess) {
   ASSERT_TRUE(res.ok()) << res.status().ToString();
   EXPECT_TRUE(res->Await().ok());
 
+  // Network stage byte-exact into the explicit staging blocks.
   EXPECT_TRUE(std::all_of(receiver_buf, receiver_buf + 128,
                           [](uint8_t v) { return v == 0x33; }));
   EXPECT_TRUE(std::all_of(receiver_buf + 128, receiver_buf + 256,
                           [](uint8_t v) { return v == 0x44; }));
+
+  // Remote H2D stage: single layer -> one H2d call covering BOTH
+  // staging->device pairs (order-independent).
+  absl::MutexLock lock(receiver.h2d_mu_);
+  EXPECT_TRUE(receiver.h2d_called_);
+  EXPECT_EQ(receiver.h2d_call_count_, 1);
+  EXPECT_EQ(receiver.h2d_pairs_,
+            (std::set<std::pair<int64_t, int64_t>>{{0, 6}, {1, 9}}));
+}
+
+// Full-pipeline data-correctness test: multiple layers, multiple blocks,
+// multi-stream push (parallelism 2). Every (layer, block) region carries a
+// distinct byte pattern; verifies (a) every staging block is byte-exact after
+// the network stage, (b) the receiver fired exactly one H2D per layer, each
+// covering every staging->device pair with the correct pairing.
+TEST(KVCacheManagerTest, H2dWriteMultiLayerMultiStreamByteExact) {
+  constexpr size_t kLayers = 2;
+  constexpr int kBlocks = 3;
+  constexpr size_t kBlockBytes = 128;
+  TestH2dKVCacheManager sender(kLayers, /*num_shards=*/1, kBlockBytes,
+                               /*host_blocks=*/kBlocks);
+  TestH2dKVCacheManager receiver(kLayers, /*num_shards=*/1, kBlockBytes,
+                                 /*host_blocks=*/kBlocks);
+  sender.set_parallelism_for_test(2);
+
+  const std::optional<int> receiver_port = receiver.local_port();
+  ASSERT_TRUE(receiver_port.has_value());
+  std::string receiver_peer =
+      absl::StrCat(receiver.local_ip(), ":", *receiver_port);
+
+  // Distinct pattern per (layer, block): 0xA0 + l*16 + k.
+  for (size_t l = 0; l < kLayers; ++l) {
+    uint8_t* sbuf = sender.GetHostPointer(l, /*shard_idx=*/0);
+    uint8_t* rbuf = receiver.GetHostPointer(l, /*shard_idx=*/0);
+    ASSERT_NE(sbuf, nullptr);
+    ASSERT_NE(rbuf, nullptr);
+    std::memset(rbuf, 0, kBlocks * kBlockBytes);
+    for (int k = 0; k < kBlocks; ++k) {
+      std::memset(sbuf + k * kBlockBytes,
+                  static_cast<int>(0xA0 + l * 16 + k), kBlockBytes);
+    }
+  }
+
+  std::vector<int64_t> src_host_offsets = {0, 1, 2};
+  std::vector<int64_t> dst_host_offsets = {2, 0, 1};  // permuted staging
+  std::vector<int64_t> dst_device_offsets = {10, 11, 12};
+  std::vector<int64_t> copy_sizes = {1, 1, 1};
+
+  auto res = sender.H2dWrite(receiver_peer, src_host_offsets, dst_host_offsets,
+                             dst_device_offsets, copy_sizes);
+  ASSERT_TRUE(res.ok()) << res.status().ToString();
+  ASSERT_TRUE(res->Await().ok());
+
+  // (a) Byte-exact landing: sender block k (pattern 0xA0+l*16+k) must sit in
+  // receiver staging block dst_host_offsets[k], for every layer.
+  for (size_t l = 0; l < kLayers; ++l) {
+    uint8_t* rbuf = receiver.GetHostPointer(l, /*shard_idx=*/0);
+    for (int k = 0; k < kBlocks; ++k) {
+      const uint8_t want = static_cast<uint8_t>(0xA0 + l * 16 + k);
+      uint8_t* region = rbuf + dst_host_offsets[k] * kBlockBytes;
+      EXPECT_TRUE(std::all_of(region, region + kBlockBytes,
+                              [want](uint8_t v) { return v == want; }))
+          << "layer " << l << " sender block " << k << " staging block "
+          << dst_host_offsets[k];
+    }
+  }
+
+  // (b) Exactly ONE H2D at network-complete, covering all layers (no layer
+  // restriction) and every staging->device pair with correct pairing.
+  absl::MutexLock lock(receiver.h2d_mu_);
+  EXPECT_EQ(receiver.h2d_call_count_, 1);
+  ASSERT_EQ(receiver.h2d_layer_calls_.size(), 1u);
+  EXPECT_EQ(receiver.h2d_layer_calls_[0], std::nullopt);
+  EXPECT_EQ(receiver.h2d_pairs_, (std::set<std::pair<int64_t, int64_t>>{
+                                     {2, 10}, {0, 11}, {1, 12}}));
+  EXPECT_EQ(receiver.last_h2d_src_offsets_.size(), 3u);
 }
 
 // Anti-clobber regression: the local staging block for H2dRead is the

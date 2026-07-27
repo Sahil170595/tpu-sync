@@ -57,6 +57,22 @@ py_test(
     ],
 )
 
+py_test(
+    name = "kv_cache_store_recovery_e2e_test",
+    srcs = ["kv_cache_store_recovery_e2e_test.py"],
+    deps = [
+        ":kv_cache_store",
+        ":kv_cache_manager_jax_py",
+        "@com_google_absl_py//absl/flags",
+        "@com_google_absl_py//absl/testing:absltest",
+        "@com_google_absl_py//absl:app",
+        "@jax//jax",
+        "@pypi//numpy",
+        # buildcleaner: keep
+        "//tpu_raiden/frameworks/jax:_raw_transfer",
+    ],
+)
+
 py_library(
     name = "weight_synchronizer_jax_py",
     srcs = ["weight_synchronizer.py"],

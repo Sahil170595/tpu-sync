@@ -377,6 +377,7 @@ absl::Status RaidenController::DeallocateBuffers(
 absl::StatusOr<proto::TransferBuffersRequest>
 RaidenController::BuildTransferBuffersRequest(
     absl::Span<const Buffer> src_buffers, absl::Span<const Buffer> dst_buffers,
+    absl::Span<const Buffer> staging_host_buffers,
     absl::Span<const int64_t> copy_sizes) {
   if (src_buffers.empty() || src_buffers.size() != dst_buffers.size()) {
     return absl::InvalidArgumentError(
@@ -416,6 +417,15 @@ RaidenController::BuildTransferBuffersRequest(
   for (int64_t size : copy_sizes) {
     transfer->add_copy_sizes(size);
   }
+  for (const auto& buf : staging_host_buffers) {
+    if (buf.index() < 0) {
+      return absl::InvalidArgumentError(absl::StrCat(
+          "Staging host buffer has invalid negative index: ", buf.index()));
+    }
+    auto* added_buf = transfer->add_staging_host_buffers();
+    *added_buf = buf.ToProto();
+    added_buf->set_index(buf.index());
+  }
 
   return request;
 }
@@ -423,9 +433,10 @@ RaidenController::BuildTransferBuffersRequest(
 tsl::Future<> RaidenController::TransferBuffers(
     absl::string_view worker_id, absl::Span<const Buffer> src_buffers,
     absl::Span<const Buffer> dst_buffers,
+    absl::Span<const Buffer> staging_host_buffers,
     absl::Span<const int64_t> copy_sizes) {
-  auto request_or =
-      BuildTransferBuffersRequest(src_buffers, dst_buffers, copy_sizes);
+  auto request_or = BuildTransferBuffersRequest(
+      src_buffers, dst_buffers, staging_host_buffers, copy_sizes);
   if (!request_or.ok()) {
     return tsl::Future<>(request_or.status());
   }
@@ -447,6 +458,7 @@ tsl::Future<> RaidenController::TransferBuffers(
 
 tsl::Future<> RaidenController::TransferBuffers(
     absl::Span<const Buffer> src_buffers, absl::Span<const Buffer> dst_buffers,
+    absl::Span<const Buffer> staging_host_buffers,
     absl::Span<const int64_t> copy_sizes) {
   if (src_buffers.empty() || src_buffers.size() != dst_buffers.size()) {
     return tsl::Future<>(absl::InvalidArgumentError(
@@ -455,6 +467,75 @@ tsl::Future<> RaidenController::TransferBuffers(
   if (!copy_sizes.empty() && copy_sizes.size() != src_buffers.size()) {
     return tsl::Future<>(absl::InvalidArgumentError(
         "copy_sizes, if provided, must match the length of src_buffers"));
+  }
+
+  // 1. Identify if a transfer is crossing node boundaries (remote vs local).
+  //    A buffer is considered remote if it has remote worker endpoints
+  //    or a remote address populated. We check both source and destination
+  //    buffers because a transfer could act as a push (remote destination)
+  //    or pull (remote source).
+  bool is_src_remote = false;
+  bool is_dst_remote = false;
+  for (const auto& buf : src_buffers) {
+    if (!buf.remote_worker_endpoints().empty() || buf.remote_address().has_value()) {
+      is_src_remote = true;
+      break;
+    }
+  }
+  for (const auto& buf : dst_buffers) {
+    if (!buf.remote_worker_endpoints().empty() || buf.remote_address().has_value()) {
+      is_dst_remote = true;
+      break;
+    }
+  }
+  bool is_remote = is_src_remote || is_dst_remote;
+
+  std::optional<std::vector<int>> auto_allocated_staging_ids;
+  std::vector<Buffer> local_staging_buffers;
+  absl::Span<const Buffer> request_staging = staging_host_buffers;
+
+  if (is_remote) {
+    bool src_is_hbm = src_buffers.front().memory_type() == rpc::MEMORY_TYPE_HBM;
+    bool dst_is_hbm = dst_buffers.front().memory_type() == rpc::MEMORY_TYPE_HBM;
+
+    // 2. Determine if a staging host block is required.
+    //    For cross-node transfers involving TPU HBM (High Bandwidth Memory), direct
+    //    HBM-to-HBM transfers across the network are not supported. Thus, the node
+    //    must stage data in its host DRAM before sending or after receiving.
+    //    - If the source is local and resides in HBM, or the destination is local
+    //      and resides in HBM, we need a local host staging buffer.
+    //    - Conversely, if the source is remote and in HBM, or the destination is
+    //      remote and in HBM, the remote node will need a host staging buffer.
+    bool local_host_staging_required = (!is_src_remote && src_is_hbm) || (!is_dst_remote && dst_is_hbm);
+    bool remote_host_staging_required = (is_src_remote && src_is_hbm) || (is_dst_remote && dst_is_hbm);
+
+    if (local_host_staging_required && request_staging.empty()) {
+      // 3a. Safeguard logic: Auto-allocating local staging blocks.
+      //     If local staging blocks are required but none were explicitly provided,
+      //     we can safely auto-allocate them from the controller's pool because
+      //     this controller manages the local resources.
+      auto host_blocks_or = this->AllocateBlockIds(src_buffers.size());
+      if (!host_blocks_or.ok()) {
+        return tsl::Future<>(host_blocks_or.status());
+      }
+      auto_allocated_staging_ids = *host_blocks_or;
+      local_staging_buffers.reserve(auto_allocated_staging_ids->size());
+      for (int id : *auto_allocated_staging_ids) {
+        local_staging_buffers.emplace_back(
+            id, std::vector<BufferShard>{}, std::nullopt, rpc::MEMORY_TYPE_DRAM);
+      }
+      request_staging = local_staging_buffers;
+    }
+
+    if (remote_host_staging_required && request_staging.empty()) {
+      // 3b. Safeguard logic: Returning error for missing remote blocks.
+      //     If remote staging blocks are required but none were provided, we must
+      //     return an error. We cannot auto-allocate them from here because this
+      //     controller doesn't manage the remote peer's block IDs and memory pool.
+      //     The caller must pre-allocate them on the remote worker and supply them.
+      return tsl::Future<>(absl::InvalidArgumentError(
+          "Remote transfer requires remote host staging blocks, but none were provided."));
+    }
   }
 
   auto workers = worker_registry_->GetRegisteredWorkers();
@@ -523,8 +604,10 @@ tsl::Future<> RaidenController::TransferBuffers(
 
     if (worker_src.empty()) continue;
 
-    auto req_or =
-        BuildTransferBuffersRequest(worker_src, worker_dst, worker_copy_sizes);
+    // Every worker owns a shard of every block, so the (host) staging offsets
+    // are identical across workers.
+    auto req_or = BuildTransferBuffersRequest(
+        worker_src, worker_dst, request_staging, worker_copy_sizes);
     if (!req_or.ok()) {
       return tsl::Future<>(req_or.status());
     }
@@ -538,7 +621,18 @@ tsl::Future<> RaidenController::TransferBuffers(
         "No active WorkerServiceClient available for TransferBuffers"));
   }
 
-  return tsl::JoinFutures(absl::MakeSpan(worker_futures));
+  auto aggregate_future = tsl::JoinFutures(absl::MakeSpan(worker_futures));
+  if (auto_allocated_staging_ids.has_value()) {
+    auto [promise, future] = tsl::MakePromise<>();
+    aggregate_future.OnReady(
+        [this, promise = std::move(promise), ids = *auto_allocated_staging_ids](absl::Status status) mutable {
+          (void)this->DeallocateBlockIds(ids);
+          promise.Set(std::move(status));
+        });
+    return future;
+  }
+
+  return aggregate_future;
 }
 
 absl::StatusOr<std::string> RaidenController::ResolvePeerController(

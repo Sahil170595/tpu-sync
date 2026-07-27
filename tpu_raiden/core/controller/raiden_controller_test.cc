@@ -326,7 +326,7 @@ TEST_F(RaidenControllerTest, TransferBuffersValidationMismatchedCopySizes) {
 
   auto status = controller
                     .TransferBuffers({src_buf1, src_buf2}, {dst_buf1, dst_buf2},
-                                     copy_sizes)
+                                     /*staging_host_buffers=*/{}, copy_sizes)
                     .Await();
   EXPECT_FALSE(status.ok());
   EXPECT_EQ(status.code(), absl::StatusCode::kInvalidArgument);
@@ -431,7 +431,8 @@ TEST_F(RaidenControllerTest, TransferBuffersD2HSuccess) {
 
   auto status = controller
                     .TransferBuffers("worker_0", {src_buf1, src_buf2},
-                                     {dst_buf1, dst_buf2}, copy_sizes)
+                                     {dst_buf1, dst_buf2},
+                                     /*staging_host_buffers=*/{}, copy_sizes)
                     .Await();
   ASSERT_TRUE(status.ok());
   EXPECT_EQ(mock_mgr.d2h_calls, 1);
@@ -1140,7 +1141,12 @@ TEST_F(RaidenControllerTest, TransferBuffersLocalDramToRemoteHbmSuccess) {
   dst_buffers[0].set_memory_type(rpc::MEMORY_TYPE_HBM);
   dst_buffers[0].set_remote_address("remote_host:9090");
 
-  auto status = controller.TransferBuffers(src_buffers, dst_buffers).Await();
+  auto alloc_staging = controller.AllocateBuffers(1);
+  ASSERT_TRUE(alloc_staging.ok());
+  auto staging_buffers = *alloc_staging;
+  staging_buffers[0].set_memory_type(rpc::MEMORY_TYPE_DRAM);
+
+  auto status = controller.TransferBuffers(src_buffers, dst_buffers, staging_buffers).Await();
   ASSERT_TRUE(status.ok());
   EXPECT_EQ(mock_mgr.h2d_write_calls, 1);
   EXPECT_EQ(mock_mgr.h2d_calls, 0);
@@ -1200,7 +1206,12 @@ TEST_F(RaidenControllerTest, TransferBuffersRemoteHbmToLocalDramSuccess) {
   auto dst_buffers = *alloc_dst;
   dst_buffers[0].set_memory_type(rpc::MEMORY_TYPE_DRAM);
 
-  auto status = controller.TransferBuffers(src_buffers, dst_buffers).Await();
+  auto alloc_staging = controller.AllocateBuffers(1);
+  ASSERT_TRUE(alloc_staging.ok());
+  auto staging_buffers = *alloc_staging;
+  staging_buffers[0].set_memory_type(rpc::MEMORY_TYPE_DRAM);
+
+  auto status = controller.TransferBuffers(src_buffers, dst_buffers, staging_buffers).Await();
   ASSERT_TRUE(status.ok());
   EXPECT_EQ(mock_mgr.d2h_read_calls, 1);
   EXPECT_EQ(mock_mgr.d2h_calls, 0);

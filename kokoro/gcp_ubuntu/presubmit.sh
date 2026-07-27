@@ -100,7 +100,7 @@ BAZEL_COMMAND_FLAGS=(
   "--host_cxxopt=-std=c++20"
   "--remote_cache=https://storage.googleapis.com/${CACHE_BUCKET}"
   "--google_default_credentials"
-  "--remote_download_minimal"
+  "--remote_download_outputs=toplevel"
   "--spawn_strategy=standalone"
   "--strategy=standalone"
   "--jobs=${BAZEL_JOBS}"

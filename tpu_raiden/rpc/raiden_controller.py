@@ -1121,6 +1121,7 @@ class RaidenController:
       raise ValueError("request_registry_ttl_s must be positive")
     self._request_registry_ttl_s = request_registry_ttl_s
     self.worker_rpc_client = worker_rpc_client or WorkerRpcClient()
+    self._registered_variables = {}
 
   def register_work_unit(
       self,
@@ -1136,6 +1137,7 @@ class RaidenController:
       page_tokens: Optional[int] = None,
       transfer_parallelism: Optional[int] = None,
       transfer_rank: Optional[int] = None,
+      variables: Optional[typing.Sequence[Any]] = None,
   ) -> None:
     """Registers physical worker shard Data addresses and optional Control-Plane RPC endpoint."""
     has_metadata = (
@@ -1219,6 +1221,7 @@ class RaidenController:
           self._registered_page_tokens,
           self._registered_transfer_parallelism,
           self._registered_transfer_ranks,
+          self._registered_variables,
       ):
         registry.pop(unit, None)
       if mesh_shape is not None:
@@ -1235,6 +1238,8 @@ class RaidenController:
         self._registered_page_tokens[unit] = page_tokens
         self._registered_transfer_parallelism[unit] = transfer_parallelism
         self._registered_transfer_ranks[unit] = transfer_rank
+      if variables is not None:
+        self._registered_variables[unit] = list(variables)
       if control_plane_rpc_address and hasattr(
           self.worker_rpc_client, "register_worker_endpoint"
       ):
@@ -1268,6 +1273,8 @@ class RaidenController:
     reg_req.global_shape.extend(self._registered_global_shapes.get(unit, ()))
     for pool in self._registered_pool_manifests.get(unit, ()):
       reg_req.pools.add().CopyFrom(pool)
+    if unit in self._registered_variables:
+      reg_req.variables.extend(self._registered_variables[unit])
     return reg_req
 
   def get_all_metadata(self) -> list[Any]:
@@ -3975,6 +3982,7 @@ class RaidenControllerServer:
             transfer_rank = (
                 reg.transfer_rank if pool_manifest is not None else None
             )
+            variables = list(reg.variables) if reg.variables else None
 
             self._controller.register_work_unit(
                 unit,
@@ -3989,6 +3997,7 @@ class RaidenControllerServer:
                 page_tokens=page_tokens,
                 transfer_parallelism=transfer_parallelism,
                 transfer_rank=transfer_rank,
+                variables=variables,
             )
             raiden_resp.success = True
           elif (
@@ -4260,6 +4269,7 @@ class RaidenControllerClientFacade:
       page_tokens: Optional[int] = None,
       transfer_parallelism: Optional[int] = None,
       transfer_rank: Optional[int] = None,
+      variables: Optional[typing.Sequence[Any]] = None,
   ) -> None:
     """Sends remote RPC to register a physical worker entity with the central RaidenControllerServer.
 
@@ -4304,6 +4314,8 @@ class RaidenControllerClientFacade:
       reg_req.transfer_parallelism = transfer_parallelism
     if transfer_rank is not None:
       reg_req.transfer_rank = transfer_rank
+    if variables is not None:
+      reg_req.variables.extend(variables)
 
     req = self._raiden_proto_module.ControlRequest(
         command=self._raiden_proto_module.ControlRequest.COMMAND_REGISTER_WORK_UNIT,

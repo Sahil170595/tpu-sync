@@ -371,6 +371,66 @@ class RaidenControllerTest(absltest.TestCase):
       server.stop()
       server._thread.join(timeout=2)
 
+  def test_variables_registration_metadata_round_trip(self):
+    bind_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    bind_sock.bind(("127.0.0.1", 0))
+    port = bind_sock.getsockname()[1]
+    bind_sock.close()
+
+    controller = raiden_controller.RaidenController(port=port)
+    server = raiden_controller.RaidenControllerServer(controller)
+    server.start()
+    facade = raiden_controller.RaidenControllerClientFacade(f"127.0.0.1:{port}")
+    unit = raiden_controller.RaidenId("prefill", "engine-rank0", "kv.fa", 0)
+
+    v1 = raiden_service_pb2.VariableMetadataProto(
+        name="weights_0",
+        shape=[128, 1024],
+        mesh_shape=[2, 2],
+        layout=[0, 1],
+        item_size=4,
+        layer_idx=0,
+    )
+    v2 = raiden_service_pb2.VariableMetadataProto(
+        name="weights_1",
+        shape=[512],
+        mesh_shape=[2, 2],
+        layout=[0],
+        item_size=2,
+        layer_idx=1,
+    )
+
+    try:
+      facade.register_work_unit(
+          unit,
+          ["127.0.0.1:8100"],
+          control_plane_rpc_address="127.0.0.1:9100",
+          variables=[v1, v2],
+      )
+      metadata = facade.get_metadata()
+      self.assertLen(metadata, 1)
+      self.assertEqual(
+          raiden_controller._raiden_id_from_proto(metadata[0].unit), unit
+      )
+      self.assertLen(metadata[0].variables, 2)
+      self.assertEqual(metadata[0].variables[0].name, "weights_0")
+      self.assertEqual(list(metadata[0].variables[0].shape), [128, 1024])
+      self.assertEqual(list(metadata[0].variables[0].mesh_shape), [2, 2])
+      self.assertEqual(list(metadata[0].variables[0].layout), [0, 1])
+      self.assertEqual(metadata[0].variables[0].item_size, 4)
+      self.assertEqual(metadata[0].variables[0].layer_idx, 0)
+
+      self.assertEqual(metadata[0].variables[1].name, "weights_1")
+      self.assertEqual(list(metadata[0].variables[1].shape), [512])
+      self.assertEqual(list(metadata[0].variables[1].mesh_shape), [2, 2])
+      self.assertEqual(list(metadata[0].variables[1].layout), [0])
+      self.assertEqual(metadata[0].variables[1].item_size, 2)
+      self.assertEqual(metadata[0].variables[1].layer_idx, 1)
+
+    finally:
+      server.stop()
+      server._thread.join(timeout=2)
+
   def test_stage3_golden_pcp8_to_dp8_plan_and_encoder(self):
     controller, client, src_units, dst_unit, dst_ids = self._stage3_fixture(
         src_page_slice_tokens=256

@@ -168,6 +168,26 @@ TEST(KVCacheMetadataTest, AttachRejectsUnformattedOrMismatchedRegions) {
   EXPECT_TRUE(KVCacheMetadata::Attach(region.span(), 4).ok());
 }
 
+TEST(KVCacheMetadataTest, AttachValidatesModelUid) {
+  Region region(4);
+  ASSERT_TRUE(KVCacheMetadata::Format(region.span(), 4, "model_a").ok());
+
+  // A table recorded under another model (or none) must not attach: its
+  // bindings describe another model's blocks.
+  EXPECT_TRUE(KVCacheMetadata::Attach(region.span(), 4, "model_a").ok());
+  EXPECT_EQ(
+      KVCacheMetadata::Attach(region.span(), 4, "model_b").status().code(),
+      absl::StatusCode::kFailedPrecondition);
+  EXPECT_EQ(KVCacheMetadata::Attach(region.span(), 4).status().code(),
+            absl::StatusCode::kFailedPrecondition);
+
+  // Longer than the header field can record.
+  EXPECT_EQ(KVCacheMetadata::Format(region.span(), 4, std::string(64, 'x'))
+                .status()
+                .code(),
+            absl::StatusCode::kInvalidArgument);
+}
+
 TEST(KVCacheMetadataTest, FormatWipesSurvivingEntries) {
   Region region(2);
   auto metadata_or = KVCacheMetadata::Format(region.span(), 2);

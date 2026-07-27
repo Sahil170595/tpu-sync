@@ -33,11 +33,19 @@ namespace kv_cache {
 // Fixed-layout header at the start of a KV cache metadata region, aligned
 // with SharedMemoryHeader in tpu_raiden/core/host_memory_allocator.h.
 struct alignas(64) KVCacheMetadataHeader {
-  uint64_t magic = 0x52414944454E4B4D;  // "RAIDENKM"
-  uint32_t version = 1;
-  uint32_t num_blocks = 0;
-  uint32_t entry_size = 0;
+  uint64_t magic = 0x52414944454E4B4D;  // "RAIDENKM", offset 0, 8 bytes
+  uint32_t version = 1;                 // offset 8, 4 bytes
+  uint32_t num_blocks = 0;              // offset 12, 4 bytes
+  uint32_t entry_size = 0;              // offset 16, 4 bytes
+  // Identifies the model whose KV blocks the table describes, mirroring the
+  // model_uid of the shared-memory KV pool (see SharedMemoryHeader). Attach
+  // rejects a table recorded under a different model_uid, so a surviving
+  // table can never resurrect bindings for another model's blocks.
+  char model_uid[64] = {0};  // offset 20, 64 bytes
 };
+
+static_assert(sizeof(KVCacheMetadataHeader) == 128,
+              "KVCacheMetadataHeader layout is part of the on-memory format");
 
 // One fixed-size slot per block, indexed by block ID. The layout is a
 // persistent format read back after a crash, so every byte of the 128-byte
@@ -84,17 +92,21 @@ class KVCacheMetadata {
   // Byte size a region must have to hold a table for `num_blocks` blocks.
   static size_t RequiredSizeBytes(int num_blocks);
 
-  // Initializes `region` as an empty table for `num_blocks` blocks (cold
-  // start), overwriting any previous content. The region must be at least
-  // RequiredSizeBytes(num_blocks) large and 64-byte aligned.
-  static absl::StatusOr<KVCacheMetadata> Format(absl::Span<uint8_t> region,
-                                                int num_blocks);
+  // Initializes `region` as an empty table for `num_blocks` blocks of
+  // `model_uid`'s KV data (cold start), overwriting any previous content.
+  // The region must be at least RequiredSizeBytes(num_blocks) large and
+  // 64-byte aligned.
+  static absl::StatusOr<KVCacheMetadata> Format(
+      absl::Span<uint8_t> region, int num_blocks,
+      absl::string_view model_uid = "");
 
   // Attaches to a previously formatted region (warm restart). Fails if the
-  // header does not carry the expected magic, version, entry size, or
-  // `num_blocks`; callers should treat a failure as a cold start and Format.
-  static absl::StatusOr<KVCacheMetadata> Attach(absl::Span<uint8_t> region,
-                                                int num_blocks);
+  // header does not carry the expected magic, version, entry size,
+  // `num_blocks`, or `model_uid`; callers should treat a failure as a cold
+  // start and Format.
+  static absl::StatusOr<KVCacheMetadata> Attach(
+      absl::Span<uint8_t> region, int num_blocks,
+      absl::string_view model_uid = "");
 
   // Records that `block_id` holds the data identified by `hash`. `seq` is a
   // monotonically increasing recency stamp used to order entries during

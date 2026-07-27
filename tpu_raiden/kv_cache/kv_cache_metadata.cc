@@ -32,10 +32,16 @@ namespace tpu_raiden {
 namespace kv_cache {
 namespace {
 
-absl::Status ValidateRegion(absl::Span<uint8_t> region, int num_blocks) {
+absl::Status ValidateRegion(absl::Span<uint8_t> region, int num_blocks,
+                            absl::string_view model_uid) {
   if (num_blocks <= 0) {
     return absl::InvalidArgumentError(
         absl::StrCat("num_blocks must be positive, got ", num_blocks));
+  }
+  if (model_uid.size() >= sizeof(KVCacheMetadataHeader::model_uid)) {
+    return absl::InvalidArgumentError(absl::StrCat(
+        "model_uid length ", model_uid.size(), " exceeds the maximum of ",
+        sizeof(KVCacheMetadataHeader::model_uid) - 1));
   }
   if (region.data() == nullptr) {
     return absl::InvalidArgumentError("Metadata region is null");
@@ -64,8 +70,8 @@ size_t KVCacheMetadata::RequiredSizeBytes(int num_blocks) {
 }
 
 absl::StatusOr<KVCacheMetadata> KVCacheMetadata::Format(
-    absl::Span<uint8_t> region, int num_blocks) {
-  absl::Status status = ValidateRegion(region, num_blocks);
+    absl::Span<uint8_t> region, int num_blocks, absl::string_view model_uid) {
+  absl::Status status = ValidateRegion(region, num_blocks, model_uid);
   if (!status.ok()) {
     return status;
   }
@@ -75,6 +81,7 @@ absl::StatusOr<KVCacheMetadata> KVCacheMetadata::Format(
   KVCacheMetadataHeader fresh;
   fresh.num_blocks = static_cast<uint32_t>(num_blocks);
   fresh.entry_size = sizeof(KVCacheMetadataEntry);
+  std::memcpy(fresh.model_uid, model_uid.data(), model_uid.size());
   std::memcpy(header, &fresh, sizeof(KVCacheMetadataHeader));
 
   auto* entries = reinterpret_cast<KVCacheMetadataEntry*>(
@@ -83,8 +90,8 @@ absl::StatusOr<KVCacheMetadata> KVCacheMetadata::Format(
 }
 
 absl::StatusOr<KVCacheMetadata> KVCacheMetadata::Attach(
-    absl::Span<uint8_t> region, int num_blocks) {
-  absl::Status status = ValidateRegion(region, num_blocks);
+    absl::Span<uint8_t> region, int num_blocks, absl::string_view model_uid) {
+  absl::Status status = ValidateRegion(region, num_blocks, model_uid);
   if (!status.ok()) {
     return status;
   }
@@ -108,6 +115,14 @@ absl::StatusOr<KVCacheMetadata> KVCacheMetadata::Attach(
     return absl::FailedPreconditionError(
         absl::StrCat("Metadata num_blocks mismatch: ", header->num_blocks,
                      " vs ", num_blocks));
+  }
+  absl::string_view recorded_uid(
+      header->model_uid,
+      strnlen(header->model_uid, sizeof(header->model_uid)));
+  if (recorded_uid != model_uid) {
+    return absl::FailedPreconditionError(
+        absl::StrCat("Metadata model_uid mismatch: \"", recorded_uid,
+                     "\" vs \"", model_uid, "\""));
   }
 
   auto* entries = reinterpret_cast<KVCacheMetadataEntry*>(

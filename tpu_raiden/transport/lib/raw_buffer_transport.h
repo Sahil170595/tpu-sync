@@ -61,7 +61,7 @@ class RawBufferTransportDelegate {
 
 // Standalone raw buffer POSIX TCP socket transport engine.
 class RawBufferTransport {
- public:
+ protected:
   // Compact 32-byte binary packet header layout.
   struct alignas(8) PacketHeader {
     uint8_t op;     // 3=BytePull, 5=ByteSlicePush, 1,2,4,6=HigherLevelBlockOps
@@ -75,6 +75,7 @@ class RawBufferTransport {
     uint64_t uuid;           // Globally unique transaction routing ID
   };
 
+ public:
   RawBufferTransport(RawBufferTransportDelegate* delegate, int local_port,
                      const std::vector<std::string>& local_ips = {});
   virtual ~RawBufferTransport();

@@ -29,6 +29,7 @@
 #include "tpu_raiden/kv_cache/pool_layout.h"
 
 #include <cstdint>
+#include <utility>
 #include <vector>
 
 #include <gmock/gmock.h>
@@ -251,6 +252,71 @@ TEST(ComputePoolBlockCopyExtentsTest,
     EXPECT_EQ((*extents_or)[head_group].offset_bytes, head_group * 540672);
     EXPECT_EQ((*extents_or)[head_group].size_bytes, 262144);
   }
+}
+
+TEST(PoolLiveSegmentsTest, ExpandsStridedRegionsToCompactRuns) {
+  absl::StatusOr<std::vector<PoolLiveSegment>> segments =
+      ExpandPoolLiveSegments(ValidPool());
+  ASSERT_TRUE(segments.ok()) << segments.status().ToString();
+  ASSERT_EQ(segments->size(), 5u);
+  for (int64_t unit = 0; unit < 5; ++unit) {
+    EXPECT_EQ((*segments)[unit].logical_offset, unit * 20);
+    EXPECT_EQ((*segments)[unit].physical_offset, unit * 100);
+    EXPECT_EQ((*segments)[unit].size, 20);
+  }
+}
+
+TEST(PoolLiveSegmentsTest, CoalescesAbuttingRegionsAndRejectsOverlap) {
+  PoolSpec pool = ValidPool();
+  pool.regions = {
+      RegionSpec{
+          .name = "a",
+          .offset_bytes = 0,
+          .stride_bytes = 20,
+          .unit_bytes = 20,
+          .num_units = 1,
+          .units_per_stride = 1,
+      },
+      RegionSpec{
+          .name = "b",
+          .offset_bytes = 20,
+          .stride_bytes = 30,
+          .unit_bytes = 30,
+          .num_units = 1,
+          .units_per_stride = 1,
+      },
+  };
+  absl::StatusOr<std::vector<PoolLiveSegment>> segments =
+      ExpandPoolLiveSegments(pool);
+  ASSERT_TRUE(segments.ok()) << segments.status().ToString();
+  ASSERT_EQ(segments->size(), 1u);
+  EXPECT_EQ((*segments)[0].logical_offset, 0);
+  EXPECT_EQ((*segments)[0].physical_offset, 0);
+  EXPECT_EQ((*segments)[0].size, 50);
+
+  pool.regions[1].offset_bytes = 10;
+  EXPECT_THAT(ExpandPoolLiveSegments(pool).status(),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       HasSubstr("overlapping live regions")));
+}
+
+TEST(PhysicalLiveRangeToLogicalTest, MapsWithinRunsAndRejectsPaddingCross) {
+  absl::StatusOr<std::vector<PoolLiveSegment>> segments =
+      ExpandPoolLiveSegments(ValidPool());
+  ASSERT_TRUE(segments.ok()) << segments.status().ToString();
+
+  absl::StatusOr<std::pair<int64_t, int64_t>> range =
+      PhysicalLiveRangeToLogical(*segments, /*physical_offset=*/105,
+                                 /*size=*/10);
+  ASSERT_TRUE(range.ok()) << range.status().ToString();
+  EXPECT_EQ(range->first, 25);
+  EXPECT_EQ(range->second, 35);
+
+  EXPECT_THAT(
+      PhysicalLiveRangeToLogical(*segments, /*physical_offset=*/15, /*size=*/10)
+          .status(),
+      StatusIs(absl::StatusCode::kInvalidArgument,
+               HasSubstr("crosses padding")));
 }
 
 }  // namespace

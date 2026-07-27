@@ -216,6 +216,46 @@ class SamePeerFanoutDelegate : public MockDelegate {
   }
 };
 
+class PlanRequiringDelegate : public MockDelegate {
+ public:
+  using MockDelegate::MockDelegate;
+
+  bool AcceptsPlanlessExplicitPush(uint64_t uuid) const override {
+    return false;
+  }
+};
+
+TEST(BlockTransportTest, PoolModeReceiverRejectsPlanlessExplicitPush) {
+  size_t size = 1024;
+  MockDelegate sender_delegate(size);
+  PlanRequiringDelegate receiver_delegate(size);
+  std::memset(sender_delegate.data(), 0xAB, size);
+  std::memset(receiver_delegate.data(), 0x00, size);
+
+  BlockTransport sender(&sender_delegate, 0);
+  BlockTransport receiver(&receiver_delegate, 0);
+  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  std::string peer = "localhost:" + std::to_string(receiver.local_port());
+
+  // Explicit destination (op=6) without a registered plan: the pool-mode
+  // receiver drops the push before any payload byte lands in its mirror.
+  auto rejected =
+      sender.SyncPush({peer}, /*src_block_ids=*/{0}, /*dst_block_ids=*/{0},
+                      /*parallelism=*/1, MajorOrder::kLayerMajor, /*uuid=*/77,
+                      /*layer_idx=*/-1);
+  EXPECT_FALSE(rejected.ok());
+  EXPECT_EQ(receiver_delegate.data()[0], 0x00);
+
+  // The plan-less legacy contract (receiver-allocated destinations) is
+  // untouched.
+  auto legacy =
+      sender.SyncPush({peer}, /*src_block_ids=*/{0}, /*dst_block_ids=*/{},
+                      /*parallelism=*/1, MajorOrder::kLayerMajor, /*uuid=*/0,
+                      /*layer_idx=*/-1);
+  ASSERT_TRUE(legacy.ok()) << legacy.status().message();
+  EXPECT_EQ(receiver_delegate.data()[0], 0xAB);
+}
+
 TEST(BlockTransportTest, PushAndPullCorrectness) {
   size_t size = 1024;
   MockDelegate delegate1(size);

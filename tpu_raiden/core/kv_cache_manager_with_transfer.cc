@@ -755,13 +755,20 @@ absl::Status KVCacheManagerWithTransfer::ValidatePoolReshardPlan(
     return absl::InvalidArgumentError(
         "pool reshard requires use_block_chunks=true");
   }
-  if (plan.expected_pushes_per_pool() <= 0) {
-    return absl::InvalidArgumentError(
-        "expected_pushes_per_pool must be positive");
-  }
   if (plan.transfer_pool_indices().empty()) {
     return absl::InvalidArgumentError(
         "reshard plan must declare transfer_pool_indices");
+  }
+  if (plan.pool_groups().empty()) {
+    return absl::InvalidArgumentError(
+        "reshard plans must declare pool_groups (a plan is a list of "
+        "groups; entries name their group)");
+  }
+  for (const auto& group : plan.pool_groups()) {
+    if (group.expected_pushes() <= 0) {
+      return absl::InvalidArgumentError(
+          "every pool group must expect a positive push count");
+    }
   }
   if (plan.pool_dtype_tags_size() != static_cast<int>(num_pools())) {
     return absl::InvalidArgumentError(
@@ -772,12 +779,41 @@ absl::Status KVCacheManagerWithTransfer::ValidatePoolReshardPlan(
     return absl::InvalidArgumentError("local block ids must not be empty");
   }
 
-  absl::flat_hash_set<int64_t> local_ids;
+  absl::flat_hash_set<int64_t> local_ids(local_block_ids.begin(),
+                                         local_block_ids.end());
+  // Different groups address different pools, so numerically equal ids
+  // across groups are legitimate on both sides. Receiver: the flat list
+  // must concatenate the groups' destination runs (uniqueness holds within
+  // each group). Sender: the flat list is the union of per-tag source
+  // blocks; only bounds are checked here — per-group scoping happens at
+  // entry resolution.
   for (int64_t block_id : local_block_ids) {
-    if (block_id < 0 || block_id > std::numeric_limits<int>::max() ||
-        !local_ids.insert(block_id).second) {
+    if (block_id < 0 || block_id > std::numeric_limits<int>::max()) {
       return absl::InvalidArgumentError(
-          "local block ids must be unique, non-negative, and fit in int");
+          "local block ids must be non-negative and fit in int");
+    }
+  }
+  if (!is_sender) {
+    size_t cursor = 0;
+    for (const auto& group : plan.pool_groups()) {
+      absl::flat_hash_set<int64_t> group_ids;
+      for (int64_t block_id : group.dst_device_block_ids()) {
+        if (!group_ids.insert(block_id).second) {
+          return absl::InvalidArgumentError(
+              "group destination block ids must be unique");
+        }
+        if (cursor >= local_block_ids.size() ||
+            local_block_ids[cursor] != block_id) {
+          return absl::InvalidArgumentError(
+              "pool group block ids must concatenate to the plan's "
+              "local block ids");
+        }
+        ++cursor;
+      }
+    }
+    if (cursor != local_block_ids.size()) {
+      return absl::InvalidArgumentError(
+          "pool group block ids must cover the plan's local block ids");
     }
   }
 
@@ -870,7 +906,16 @@ absl::Status KVCacheManagerWithTransfer::ValidatePoolReshardPlan(
       if (!is_sender && entry.dst_offset_bytes() == 0) {
         receiver_blocks_with_zero_start.insert(entry.dst_block_id());
       }
-      for (size_t pool_idx : declared_pools) {
+      const int32_t group_idx = entry.pool_group();
+      if (group_idx < 0 || group_idx >= plan.pool_groups_size()) {
+        return absl::InvalidArgumentError(absl::StrCat(
+            "reshard entry declares an unknown pool group ", group_idx));
+      }
+      std::vector<size_t> entry_pools;
+      for (int32_t pool_idx : plan.pool_groups(group_idx).pool_indices()) {
+        entry_pools.push_back(static_cast<size_t>(pool_idx));
+      }
+      for (size_t pool_idx : entry_pools) {
         const kv_cache::PoolSpec* spec = pool(pool_idx);
         if (!StridedSpanFitsRegions(local_offset, local_stride,
                                     entry.size_bytes(), entry.count(),
@@ -896,6 +941,211 @@ absl::Status KVCacheManagerWithTransfer::ValidatePoolReshardPlan(
             "destination block ", block_id,
             " has no transfer entry starting at offset 0; partial-page "
             "destination preservation is not implemented"));
+      }
+    }
+    TF_RETURN_IF_ERROR(ValidatePoolReshardReceiverCoverage(plan));
+  }
+  return absl::OkStatus();
+}
+
+absl::Status KVCacheManagerWithTransfer::ValidatePoolReshardReceiverCoverage(
+    const rpc::StartTransferRequest& plan) {
+  constexpr int64_t kMaxExpandedRepeats = 1 << 20;
+
+  struct GroupView {
+    std::vector<size_t> pool_indices;
+    std::vector<int64_t> dst_ids;
+    std::vector<int64_t> extents;
+    int64_t expected_pushes = 0;
+  };
+  std::vector<GroupView> groups;
+  absl::flat_hash_set<size_t> grouped_pools;
+  for (const auto& group : plan.pool_groups()) {
+    GroupView view;
+    for (int32_t pool_idx : group.pool_indices()) {
+      if (pool_idx < 0 ||
+          !grouped_pools.insert(static_cast<size_t>(pool_idx)).second) {
+        return absl::InvalidArgumentError(
+            "group pool indices must be unique and non-negative");
+      }
+      view.pool_indices.push_back(static_cast<size_t>(pool_idx));
+    }
+    view.dst_ids.assign(group.dst_device_block_ids().begin(),
+                        group.dst_device_block_ids().end());
+    view.extents.assign(group.dst_expected_extent_bytes().begin(),
+                        group.dst_expected_extent_bytes().end());
+    view.expected_pushes = group.expected_pushes();
+    groups.push_back(std::move(view));
+  }
+  if (grouped_pools.size() !=
+      static_cast<size_t>(plan.transfer_pool_indices_size())) {
+    return absl::InvalidArgumentError(
+        "group pool indices do not partition the plan's transfer pools");
+  }
+  for (int32_t pool_idx : plan.transfer_pool_indices()) {
+    if (!grouped_pools.contains(static_cast<size_t>(pool_idx))) {
+      return absl::InvalidArgumentError(
+          "group pool indices do not partition the plan's transfer pools");
+    }
+  }
+
+  const int64_t parallelism = plan.parallelism();
+  if (parallelism <= 0) {
+    return absl::InvalidArgumentError(
+        "receiver plans require positive parallelism for push accounting");
+  }
+
+  struct GroupState {
+    std::vector<kv_cache::PoolLiveSegment> segments;
+    int64_t live_bytes = 0;
+    absl::flat_hash_map<int64_t, size_t> ordinals;
+    std::vector<std::vector<std::pair<int64_t, int64_t>>> coverage;
+    absl::flat_hash_map<
+        int32_t, absl::flat_hash_set<std::tuple<std::string, int64_t, int64_t>>>
+        pairs_by_sender;
+  };
+  std::vector<GroupState> states(groups.size());
+  for (size_t group_idx = 0; group_idx < groups.size(); ++group_idx) {
+    const GroupView& view = groups[group_idx];
+    GroupState& state = states[group_idx];
+    if (view.pool_indices.empty()) {
+      return absl::InvalidArgumentError(
+          absl::StrCat("group ", group_idx, " declares no pools"));
+    }
+    for (size_t pool_idx : view.pool_indices) {
+      const kv_cache::PoolSpec* spec = pool(pool_idx);
+      if (spec == nullptr) {
+        return absl::InvalidArgumentError(
+            absl::StrCat("group pool index out of range: ", pool_idx));
+      }
+      absl::StatusOr<std::vector<kv_cache::PoolLiveSegment>> segments =
+          kv_cache::ExpandPoolLiveSegments(*spec);
+      if (!segments.ok()) return segments.status();
+      if (state.segments.empty()) {
+        state.segments = *std::move(segments);
+      } else if (state.segments != *segments) {
+        return absl::InvalidArgumentError(absl::StrCat(
+            "group ", group_idx, " pools must share one live-region map; pool ",
+            pool_idx, " disagrees"));
+      }
+    }
+    for (const kv_cache::PoolLiveSegment& segment : state.segments) {
+      state.live_bytes += segment.size;
+    }
+    if (state.live_bytes <= 0) {
+      return absl::InvalidArgumentError(
+          absl::StrCat("group ", group_idx, " has no live destination bytes"));
+    }
+    if (view.extents.empty()) {
+      return absl::InvalidArgumentError(
+          "receiver plans require dst_expected_extent_bytes");
+    }
+    if (view.extents.size() != view.dst_ids.size()) {
+      return absl::InvalidArgumentError(absl::StrCat(
+          "group ", group_idx,
+          " extents do not match its destination block count: got ",
+          view.extents.size(), ", expected ", view.dst_ids.size()));
+    }
+    for (size_t ordinal = 0; ordinal < view.extents.size(); ++ordinal) {
+      const int64_t extent = view.extents[ordinal];
+      if (extent <= 0 || extent > state.live_bytes) {
+        return absl::InvalidArgumentError(
+            absl::StrCat("extent ", extent, " for destination block ordinal ",
+                         ordinal, " of group ", group_idx, " is outside (0, ",
+                         state.live_bytes, "]"));
+      }
+      if (ordinal != view.extents.size() - 1 && extent != state.live_bytes) {
+        return absl::InvalidArgumentError(
+            "extents must cover every destination block fully except the "
+            "final one");
+      }
+    }
+    for (size_t ordinal = 0; ordinal < view.dst_ids.size(); ++ordinal) {
+      state.ordinals[view.dst_ids[ordinal]] = ordinal;
+    }
+    state.coverage.resize(view.dst_ids.size());
+  }
+
+  int64_t expanded_repeats = 0;
+  for (const auto& [source_rank, schedule] : plan.shard_push_schedules()) {
+    for (const auto& entry : schedule.entries()) {
+      const size_t group_idx = static_cast<size_t>(entry.pool_group());
+      if (group_idx >= states.size()) {
+        return absl::InvalidArgumentError(absl::StrCat(
+            "reshard entry declares an unknown pool group ", group_idx));
+      }
+      GroupState& state = states[group_idx];
+      const auto ordinal_it = state.ordinals.find(entry.dst_block_id());
+      if (ordinal_it == state.ordinals.end()) {
+        return absl::InvalidArgumentError(absl::StrCat(
+            "reshard entry targets destination block ", entry.dst_block_id(),
+            " outside its group ", group_idx, " destination set"));
+      }
+      const int64_t extent = groups[group_idx].extents[ordinal_it->second];
+      expanded_repeats += entry.count();
+      if (expanded_repeats > kMaxExpandedRepeats) {
+        return absl::InvalidArgumentError(
+            "receiver plan exceeds the repeat expansion bound");
+      }
+      for (int64_t repeat = 0; repeat < entry.count(); ++repeat) {
+        const int64_t physical =
+            entry.dst_offset_bytes() + repeat * entry.dst_stride_bytes();
+        absl::StatusOr<std::pair<int64_t, int64_t>> range =
+            kv_cache::PhysicalLiveRangeToLogical(state.segments, physical,
+                                                 entry.size_bytes());
+        if (!range.ok()) {
+          return absl::InvalidArgumentError(absl::StrCat(
+              "reshard entry for destination block ", entry.dst_block_id(),
+              " crosses padding or lies outside declared live regions: ",
+              range.status().message()));
+        }
+        if (range->second > extent) {
+          return absl::InvalidArgumentError(absl::StrCat(
+              "reshard entry exceeds destination block ", entry.dst_block_id(),
+              " declared live tail: end=", range->second, " extent=", extent));
+        }
+        state.coverage[ordinal_it->second].push_back(*range);
+      }
+      state.pairs_by_sender[source_rank].insert(std::make_tuple(
+          entry.dst_peer(), static_cast<int64_t>(entry.src_block_id()),
+          static_cast<int64_t>(entry.dst_block_id())));
+    }
+  }
+
+  for (size_t group_idx = 0; group_idx < groups.size(); ++group_idx) {
+    const GroupView& view = groups[group_idx];
+    GroupState& state = states[group_idx];
+    int64_t calculated_pushes = 0;
+    for (const auto& [source_rank, pairs] : state.pairs_by_sender) {
+      calculated_pushes +=
+          std::min(parallelism, static_cast<int64_t>(pairs.size()));
+    }
+    if (calculated_pushes != view.expected_pushes) {
+      return absl::InvalidArgumentError(absl::StrCat(
+          "expected pushes for group ", group_idx,
+          " do not match the received schedules: declared=",
+          view.expected_pushes, " recomputed=", calculated_pushes));
+    }
+    for (size_t ordinal = 0; ordinal < view.dst_ids.size(); ++ordinal) {
+      std::vector<std::pair<int64_t, int64_t>>& intervals =
+          state.coverage[ordinal];
+      std::sort(intervals.begin(), intervals.end());
+      int64_t covered_until = 0;
+      for (const auto& [start_bytes, end_bytes] : intervals) {
+        if (start_bytes != covered_until) {
+          return absl::InvalidArgumentError(absl::StrCat(
+              "receiver schedule has a destination coverage ",
+              start_bytes < covered_until ? "overlap" : "gap", " for block ",
+              view.dst_ids[ordinal], " at byte ", start_bytes));
+        }
+        covered_until = end_bytes;
+      }
+      if (covered_until != view.extents[ordinal]) {
+        return absl::InvalidArgumentError(absl::StrCat(
+            "receiver schedule does not cover the exact live bytes for "
+            "destination block ",
+            view.dst_ids[ordinal], ": covered=", covered_until,
+            " expected=", view.extents[ordinal]));
       }
     }
   }
@@ -945,7 +1195,6 @@ absl::Status KVCacheManagerWithTransfer::PoolReshardPush(
   state->parallelism = parallelism;
   state->remaining_pool_peer_pushes =
       plan.transfer_pool_indices_size() * peers.size();
-  state->source_block_ids.assign(src_block_ids.begin(), src_block_ids.end());
   state->plan = plan;
   state->deadline = DeadlineFromNow();
   {
@@ -958,9 +1207,48 @@ absl::Status KVCacheManagerWithTransfer::PoolReshardPush(
     active_pool_reshard_sends_[plan.uuid()] = state;
   }
 
+  // Multi-tag plans scope each pool's staging and pushes to its group's
+  // entries; the flat src_block_ids argument is the legacy single-tag
+  // whole-plan block list.
+  const auto pool_group_index = [&plan](size_t pool_idx) -> int {
+    for (int group_idx = 0; group_idx < plan.pool_groups_size(); ++group_idx) {
+      const auto& indices = plan.pool_groups(group_idx).pool_indices();
+      if (std::find(indices.begin(), indices.end(),
+                    static_cast<int32_t>(pool_idx)) != indices.end()) {
+        return group_idx;
+      }
+    }
+    return -1;
+  };
+  auto local_schedule_it = plan.shard_push_schedules().find(0);
+  if (local_schedule_it == plan.shard_push_schedules().end() &&
+      plan.shard_push_schedules().size() == 1) {
+    local_schedule_it = plan.shard_push_schedules().begin();
+  }
+
   for (int32_t encoded_pool_idx : plan.transfer_pool_indices()) {
     const size_t pool_idx = static_cast<size_t>(encoded_pool_idx);
-    auto future_or = D2hPoolBlocks(pool_idx, src_block_ids);
+    std::vector<int64_t> pool_src_block_ids(src_block_ids.begin(),
+                                            src_block_ids.end());
+    if (local_schedule_it != plan.shard_push_schedules().end()) {
+      const int group_idx = pool_group_index(pool_idx);
+      std::set<int64_t> group_src_ids;
+      for (const auto& entry : local_schedule_it->second.entries()) {
+        if (entry.pool_group() == group_idx) {
+          group_src_ids.insert(static_cast<int64_t>(entry.src_block_id()));
+        }
+      }
+      pool_src_block_ids.assign(group_src_ids.begin(), group_src_ids.end());
+      if (pool_src_block_ids.empty()) {
+        FinishPoolReshardSend(
+            plan.uuid(),
+            absl::InvalidArgumentError(absl::StrCat(
+                "pool ", pool_idx, " has no schedule entries in its group")));
+        return absl::InvalidArgumentError(
+            absl::StrCat("pool ", pool_idx, " has no group entries"));
+      }
+    }
+    auto future_or = D2hPoolBlocks(pool_idx, pool_src_block_ids);
     if (!future_or.ok()) {
       FinishPoolReshardSend(plan.uuid(), future_or.status());
       return future_or.status();
@@ -993,9 +1281,23 @@ void KVCacheManagerWithTransfer::StartPoolReshardPush(uint64_t uuid,
   if (schedule_it == state->plan.shard_push_schedules().end()) {
     schedule_it = state->plan.shard_push_schedules().begin();
   }
+  // A pool pushes only its own group's (src, dst) pairs.
+  int pool_group_idx = -1;
+  for (int group_idx = 0; group_idx < state->plan.pool_groups_size();
+       ++group_idx) {
+    const auto& indices = state->plan.pool_groups(group_idx).pool_indices();
+    if (std::find(indices.begin(), indices.end(),
+                  static_cast<int32_t>(pool_idx)) != indices.end()) {
+      pool_group_idx = group_idx;
+      break;
+    }
+  }
   std::map<std::string, std::vector<std::pair<int, int>>> transfers_by_peer;
   std::map<std::string, std::set<std::pair<int, int>>> seen_by_peer;
   for (const auto& entry : schedule_it->second.entries()) {
+    if (entry.pool_group() != pool_group_idx) {
+      continue;
+    }
     const std::pair<int, int> pair{static_cast<int>(entry.src_block_id()),
                                    static_cast<int>(entry.dst_block_id())};
     if (seen_by_peer[entry.dst_peer()].insert(pair).second) {
@@ -1108,6 +1410,17 @@ absl::Status KVCacheManagerWithTransfer::PoolReshardRegisterRecv(
   // chip block ids directly; no staging-id remap is needed.
   for (int32_t pool_idx : plan.transfer_pool_indices()) {
     recv_entry.expected_pool_indices.insert(static_cast<size_t>(pool_idx));
+    recv_entry.pool_order_ranks[static_cast<size_t>(pool_idx)] = 0;
+  }
+  for (const auto& group : plan.pool_groups()) {
+    std::vector<int64_t> group_dst_ids(group.dst_device_block_ids().begin(),
+                                       group.dst_device_block_ids().end());
+    for (int32_t pool_idx : group.pool_indices()) {
+      recv_entry.pool_order_ranks[static_cast<size_t>(pool_idx)] =
+          group.order_rank();
+      recv_entry.pool_dst_block_ids[static_cast<size_t>(pool_idx)] =
+          group_dst_ids;
+    }
   }
   {
     absl::MutexLock lock(mu_);
@@ -2301,7 +2614,6 @@ absl::Status KVCacheManagerWithTransfer::OnBlocksReceived(
 
 absl::Status KVCacheManagerWithTransfer::OnPoolReceived(size_t pool_idx,
                                                         uint64_t uuid) {
-  std::vector<int64_t> chip_block_ids;
   {
     absl::MutexLock lock(mu_);
     auto it = active_recv_entries_.find(uuid);
@@ -2328,27 +2640,64 @@ absl::Status KVCacheManagerWithTransfer::OnPoolReceived(size_t pool_idx,
           absl::StrCat("pool completed more than once: ", pool_idx));
     }
     entry.started_pool_indices.insert(pool_idx);
-    chip_block_ids = entry.chip_block_ids;
   }
 
-  auto future_or = H2dPoolBlocks(pool_idx, chip_block_ids);
-  if (!future_or.ok()) {
-    FinishPoolReshardRecvPool(uuid, pool_idx, future_or.status());
-    return future_or.status();
-  }
-  raiden::PjRtCopyFuture future = std::move(future_or).value();
-  future.OnReady([this, uuid, pool_idx](auto status_or) {
-    FinishPoolReshardRecvPool(
-        uuid, pool_idx, status_or.ok() ? absl::OkStatus() : status_or.status());
-  });
+  LaunchEligiblePoolH2ds(uuid);
+  return absl::OkStatus();
+}
+
+void KVCacheManagerWithTransfer::LaunchEligiblePoolH2ds(uint64_t uuid) {
+  std::vector<std::pair<size_t, std::vector<int64_t>>> to_launch;
   {
     absl::MutexLock lock(mu_);
     auto it = active_recv_entries_.find(uuid);
-    if (it != active_recv_entries_.end()) {
-      it->second.h2d_futures.push_back(future);
+    if (it == active_recv_entries_.end()) return;
+    RecvEntry& entry = it->second;
+    if (entry.reshard_finalizing) return;
+    for (size_t pool_idx : entry.started_pool_indices) {
+      if (entry.h2d_launched_pools.count(pool_idx)) continue;
+      const auto rank_it = entry.pool_order_ranks.find(pool_idx);
+      const int rank =
+          rank_it == entry.pool_order_ranks.end() ? 0 : rank_it->second;
+      bool prerequisites_uploaded = true;
+      for (size_t other : entry.expected_pool_indices) {
+        const auto other_it = entry.pool_order_ranks.find(other);
+        const int other_rank =
+            other_it == entry.pool_order_ranks.end() ? 0 : other_it->second;
+        if (other_rank < rank && entry.completed_pool_indices.find(other) ==
+                                     entry.completed_pool_indices.end()) {
+          prerequisites_uploaded = false;
+          break;
+        }
+      }
+      if (!prerequisites_uploaded) continue;
+      entry.h2d_launched_pools.insert(pool_idx);
+      const auto ids_it = entry.pool_dst_block_ids.find(pool_idx);
+      to_launch.emplace_back(pool_idx, ids_it == entry.pool_dst_block_ids.end()
+                                           ? entry.chip_block_ids
+                                           : ids_it->second);
     }
   }
-  return absl::OkStatus();
+  for (auto& [pool_idx, chip_block_ids] : to_launch) {
+    auto future_or = H2dPoolBlocks(pool_idx, chip_block_ids);
+    if (!future_or.ok()) {
+      FinishPoolReshardRecvPool(uuid, pool_idx, future_or.status());
+      continue;
+    }
+    raiden::PjRtCopyFuture future = std::move(future_or).value();
+    future.OnReady([this, uuid, pool_idx = pool_idx](auto status_or) {
+      FinishPoolReshardRecvPool(
+          uuid, pool_idx,
+          status_or.ok() ? absl::OkStatus() : status_or.status());
+    });
+    {
+      absl::MutexLock lock(mu_);
+      auto it = active_recv_entries_.find(uuid);
+      if (it != active_recv_entries_.end()) {
+        it->second.h2d_futures.push_back(future);
+      }
+    }
+  }
 }
 
 void KVCacheManagerWithTransfer::FinishPoolReshardRecvPool(
@@ -2370,6 +2719,10 @@ void KVCacheManagerWithTransfer::FinishPoolReshardRecvPool(
         finished = true;
       }
     }
+  }
+  if (!finished && status.ok()) {
+    // A completed upload may unblock deferred higher-order-rank pools.
+    LaunchEligiblePoolH2ds(uuid);
   }
   if (finished) {
     absl::Status unregister = UnregisterActivePlan(uuid);

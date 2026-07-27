@@ -377,6 +377,16 @@ class KVCacheManagerWithTransfer : public kv_cache::KVCacheManagerBase {
     std::set<size_t> expected_pool_indices;
     std::set<size_t> started_pool_indices;
     std::set<size_t> completed_pool_indices;
+    // Multi-tag plans: per-pool H2D upload ordering. A pool's mirror is
+    // uploaded only after every expected pool of a strictly lower order
+    // rank has completed its upload (FA at rank 0, state classes at rank
+    // 1, so state bytes land last on aliased arena pages). Single-tag
+    // plans leave every rank 0 (upload immediately on wire completion).
+    std::map<size_t, int> pool_order_ranks;
+    std::set<size_t> h2d_launched_pools;
+    // Multi-tag plans: each pool uploads only its own group's destination
+    // block ids (the flat chip_block_ids list concatenates all groups).
+    std::map<size_t, std::vector<int64_t>> pool_dst_block_ids;
   };
   absl::flat_hash_map<uint64_t, RecvEntry> active_recv_entries_;
 
@@ -388,7 +398,6 @@ class KVCacheManagerWithTransfer : public kv_cache::KVCacheManagerBase {
     bool failed = false;
     bool finalizing = false;
     std::chrono::steady_clock::time_point deadline;
-    std::vector<int64_t> source_block_ids;
     rpc::StartTransferRequest plan;
     std::vector<raiden::PjRtCopyFuture> d2h_futures;
   };
@@ -404,10 +413,22 @@ class KVCacheManagerWithTransfer : public kv_cache::KVCacheManagerBase {
   absl::Status ValidatePoolReshardPlan(
       const rpc::StartTransferRequest& plan,
       absl::Span<const int64_t> local_block_ids, bool is_sender);
+  // Receiver-only byte accounting over the plan's group structure: group
+  // pools must share one live-region map, declared extents must be
+  // prefix-shaped, every destination block's compact-live bytes must be
+  // covered exactly once up to its extent, and the group's expected push
+  // count must equal the recomputation from the received schedules. This
+  // is the trust boundary between a planner defect and silent decode
+  // corruption; the arming worker validates for itself.
+  absl::Status ValidatePoolReshardReceiverCoverage(
+      const rpc::StartTransferRequest& plan);
   void StartPoolReshardPush(uint64_t uuid, size_t pool_idx);
   void FinishPoolReshardSend(uint64_t uuid, const absl::Status& status);
   void FinishPoolReshardRecvPool(uint64_t uuid, size_t pool_idx,
                                  const absl::Status& status);
+  // Launches H2D uploads for every wire-complete pool whose order-rank
+  // prerequisites (all lower-rank pools uploaded) are satisfied.
+  void LaunchEligiblePoolH2ds(uint64_t uuid);
 
   std::chrono::steady_clock::time_point DeadlineFromNow() const;
 

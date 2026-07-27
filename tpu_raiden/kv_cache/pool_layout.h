@@ -32,6 +32,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "absl/status/status.h"
@@ -109,6 +110,35 @@ struct PoolBlockCopyExtent {
 // out-of-range ids and overflowing byte geometry.
 absl::StatusOr<std::vector<PoolBlockCopyExtent>> ComputePoolBlockCopyExtents(
     const PoolSpec& pool, absl::Span<const int64_t> block_ids);
+
+// One coalesced run of live bytes inside a pool block, mapping compact-live
+// (logical) offsets to physical block offsets. Logical offsets concatenate
+// the runs in physical-address order — the byte-span plan's destination
+// coordinate space.
+struct PoolLiveSegment {
+  int64_t logical_offset = 0;
+  int64_t physical_offset = 0;
+  int64_t size = 0;
+
+  friend bool operator==(const PoolLiveSegment& lhs,
+                         const PoolLiveSegment& rhs) {
+    return lhs.logical_offset == rhs.logical_offset &&
+           lhs.physical_offset == rhs.physical_offset && lhs.size == rhs.size;
+  }
+};
+
+// Expands a pool's regions into non-overlapping physical live runs with
+// compact-live offsets. Adjacent physical runs are coalesced; overlapping
+// regions and runs exceeding the block stride are rejected.
+absl::StatusOr<std::vector<PoolLiveSegment>> ExpandPoolLiveSegments(
+    const PoolSpec& pool);
+
+// Maps one gap-free physical byte range to its compact-live [start, end)
+// interval. Fails when the range crosses padding or lies outside the
+// declared live runs.
+absl::StatusOr<std::pair<int64_t, int64_t>> PhysicalLiveRangeToLogical(
+    absl::Span<const PoolLiveSegment> segments, int64_t physical_offset,
+    int64_t size);
 
 tpu_raiden::rpc::RegionSpecProto ToProto(const RegionSpec& region);
 absl::StatusOr<RegionSpec> RegionSpecFromProto(

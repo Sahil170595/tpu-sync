@@ -120,6 +120,11 @@ message ShardPushEntryProto {
   int64 dst_stride_bytes = 9;
   int32 count = 10;
   optional int32 layer_idx = 11;
+  // Index into StartTransferRequest.pool_groups scoping this entry to one
+  // tag class's pools. Meaningful only when pool_groups is non-empty
+  // (multi-tag transfers); single-tag plans leave it zero and scope every
+  // entry to every transfer pool, preserving the legacy replay.
+  optional int32 pool_group = 12;
 }
 
 // A collection of network push entries orchestrated by a specific source TPU
@@ -150,27 +155,44 @@ message StartTransferRequest {
   // the receiving manager has explicitly registered pools, the tags must match
   // the local pools' dtype tags at plan registration.
   repeated string pool_dtype_tags = 10;
-  // Pool-keyed receive accounting. Each listed transfer pool expects this
-  // many independent push streams (summed across senders) before its
-  // completion callback fires. Zero preserves the legacy header-declared
-  // (header.reserved) accounting.
-  int32 expected_pushes_per_pool = 11;
+  // Retired scalar mirrors of the pool-group fields (expected pushes,
+  // block-id lists, extents, and audit num_tokens): a pool reshard plan is
+  // a list of groups, and entries name their group. The per-pool block ids
+  // derive from group entries; the flat destination list is the groups'
+  // concatenation.
+  reserved 11, 13, 14, 16, 17;
   // Canonical pool indices moved by this plan, resolved by the controller
-  // from the consumer's requested pool tags. Unselected pools are never
-  // armed; raiden attaches no meaning to any tag name.
+  // from the consumer's requested pool tags. Non-empty selects the pool
+  // executor; the groups below must partition exactly this set. Unselected
+  // pools are never armed; raiden attaches no meaning to any tag name.
   repeated int32 transfer_pool_indices = 12;
-  // Block-granular arguments consumed by the pool executor. The controller
-  // emits only the IDs relevant to the worker receiving this command.
-  repeated int64 src_block_ids = 13;
-  repeated int64 dst_device_block_ids = 14;
   int32 parallelism = 15;
-  int64 num_tokens = 16;
-  // Byte-span reshard plans: the expected destination coverage end per
-  // entry of dst_device_block_ids. Non-empty selects the byte-level
-  // receiver validation (no token arithmetic); empty preserves the legacy
-  // token/state validation driven by num_tokens.
-  repeated int64 dst_expected_extent_bytes = 17;
   optional bool skip_d2h = 18;
+  // One group per requested pool tag, in request order — mandatory for
+  // pool reshard plans. Each group scopes its schedule entries
+  // (ShardPushEntryProto.pool_group) to its own pools, destination
+  // block-id space, extents, and receive accounting.
+  repeated PoolGroupProto pool_groups = 19;
+}
+
+// One tag class's slice of a multi-tag byte-span transfer.
+message PoolGroupProto {
+  // Canonical pool indices this group's entries replay over.
+  repeated int32 pool_indices = 1;
+  // The group's destination block-id space: entry dst_block_id values for
+  // this group index into the group's own destination blocks.
+  repeated int64 dst_device_block_ids = 2;
+  // Independent push streams expected per pool of this group before its
+  // completion callback fires.
+  int32 expected_pushes = 3;
+  // Expected destination coverage end per entry of dst_device_block_ids
+  // (byte-level receiver validation for this group).
+  repeated int64 dst_expected_extent_bytes = 4;
+  // H2D upload ordering rank: groups upload in ascending order_rank;
+  // groups sharing a rank upload independently. The connector places the
+  // FA payload at rank 0 and the GDN state classes at rank 1 so state
+  // bytes land last on aliased arena pages.
+  int32 order_rank = 5;
 }
 
 message GetMetadataResponse {

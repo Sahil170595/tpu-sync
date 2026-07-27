@@ -174,8 +174,10 @@ StartTransferRequest* AddPoolPlan(ControlRequest* request, bool is_sender) {
   plan->set_uuid(1234);
   plan->set_req_id("request-1");
   plan->set_is_sender(is_sender);
-  plan->set_expected_pushes_per_pool(2);
   plan->add_transfer_pool_indices(0);
+  auto* group = plan->add_pool_groups();
+  group->add_pool_indices(0);
+  group->set_expected_pushes(2);
   return plan;
 }
 
@@ -185,18 +187,20 @@ TEST(KVCacheListenerTest, PoolSenderRoutesToPoolReshardPush) {
 
   ControlRequest request;
   StartTransferRequest* plan = AddPoolPlan(&request, /*is_sender=*/true);
-  plan->add_src_block_ids(9);
-  plan->add_src_block_ids(7);
   plan->set_parallelism(3);
+  // The sender's local block list derives from its schedule entries (no
+  // scalar mirror on the wire).
   auto* schedule = &(*plan->mutable_shard_push_schedules())[0];
-  schedule->add_entries()->set_src_block_id(99);
+  schedule->add_entries()->set_src_block_id(9);
+  schedule->add_entries()->set_src_block_id(7);
+  schedule->add_entries()->set_src_block_id(9);
 
   ControlResponse response = SendRequest(listener.listener_port(), request);
 
   EXPECT_TRUE(response.success()) << response.message();
   EXPECT_EQ(manager.route(), Route::kPoolReshardPush);
   EXPECT_EQ(manager.request().uuid(), 1234);
-  EXPECT_EQ(manager.local_block_ids(), (std::vector<int64_t>{9, 7}));
+  EXPECT_EQ(manager.local_block_ids(), (std::vector<int64_t>{7, 9}));
   EXPECT_EQ(manager.parallelism(), 3);
 }
 
@@ -206,8 +210,10 @@ TEST(KVCacheListenerTest, PoolReceiverRoutesToPoolReshardRegisterRecv) {
 
   ControlRequest request;
   StartTransferRequest* plan = AddPoolPlan(&request, /*is_sender=*/false);
-  plan->add_dst_device_block_ids(5);
-  plan->add_dst_device_block_ids(3);
+  // The receiver's local block list is the groups' concatenation (no
+  // scalar mirror on the wire).
+  plan->mutable_pool_groups(0)->add_dst_device_block_ids(5);
+  plan->mutable_pool_groups(0)->add_dst_device_block_ids(3);
   auto* source_zero = &(*plan->mutable_shard_push_schedules())[0];
   source_zero->add_entries()->set_dst_block_id(99);
 
@@ -231,7 +237,7 @@ TEST(KVCacheListenerTest, PartiallyPopulatedPoolPlanStillRoutesToPoolPath) {
   StartTransferRequest* plan = request.mutable_start_transfer_request();
   plan->set_uuid(9012);
   plan->set_is_sender(false);
-  plan->set_expected_pushes_per_pool(4);  // no transfer_pool_indices
+  plan->add_pool_groups()->set_expected_pushes(4);  // no transfer_pool_indices
 
   ControlResponse response = SendRequest(listener.listener_port(), request);
 

@@ -338,6 +338,9 @@ TEST(KVCacheManagerTest,
 
   const std::optional<int> receiver_port = receiver.local_port();
   ASSERT_TRUE(receiver_port.has_value());
+  tpu_raiden::rpc::StartTransferRequest dummy_plan;
+  ASSERT_TRUE(
+      receiver.RegisterActivePlan(0, dummy_plan, /*is_sender=*/false).ok());
   auto pushed = sender.H2hWriteDirect(
       absl::StrCat(receiver.local_ip(), ":", *receiver_port),
       /*src_block_ids=*/{0}, /*dst_block_ids=*/{1}, /*uuid=*/0,
@@ -402,6 +405,9 @@ TEST(KVCacheManagerTest,
 
   const std::optional<int> receiver_port = receiver.local_port();
   ASSERT_TRUE(receiver_port.has_value());
+  tpu_raiden::rpc::StartTransferRequest dummy_plan;
+  ASSERT_TRUE(
+      receiver.RegisterActivePlan(0, dummy_plan, /*is_sender=*/false).ok());
   auto pushed = sender.H2hWriteDirect(
       absl::StrCat(receiver.local_ip(), ":", *receiver_port),
       /*src_block_ids=*/{0}, /*dst_block_ids=*/{1}, /*uuid=*/0,
@@ -442,6 +448,9 @@ TEST(KVCacheManagerTest, ExplicitPoolTransportEnumeratesAllPools) {
 
   const std::optional<int> receiver_port = receiver.local_port();
   ASSERT_TRUE(receiver_port.has_value());
+  tpu_raiden::rpc::StartTransferRequest dummy_plan;
+  ASSERT_TRUE(
+      receiver.RegisterActivePlan(0, dummy_plan, /*is_sender=*/false).ok());
   auto pushed = sender.H2hWriteDirect(
       absl::StrCat(receiver.local_ip(), ":", *receiver_port),
       /*src_block_ids=*/{0}, /*dst_block_ids=*/{1}, /*uuid=*/0,

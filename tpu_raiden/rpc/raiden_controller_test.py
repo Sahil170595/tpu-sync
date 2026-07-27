@@ -1603,6 +1603,80 @@ class RaidenControllerTest(absltest.TestCase):
     schedules = plan.shard_push_schedules[src]
     self.assertSetEqual(set(schedules.keys()), {0, 1, 2, 3})
 
+  def test_resharding_with_layout_permutation_different_meshes(self):
+    dummy_client = DummyWorkerRpcClient()
+    controller = raiden_controller.RaidenController(
+        port=10004, worker_rpc_client=dummy_client
+    )
+
+    # Mesh [2, 3, 4], layout [0, 2, 1], num_hosts=3.
+    # Host axis is dim 1 (size 3).
+    # We register 3 replicas for src and dst.
+    src_units = []
+    dst_units = []
+    for r in range(3):
+      src_id = raiden_controller.RaidenId("trainer", str(r), "weights")
+      dst_id = raiden_controller.RaidenId("sampler", str(r), "weights")
+      src_units.append(src_id)
+      dst_units.append(dst_id)
+
+      # 8 shards per replica
+      src_shards = [f"10.0.0.1:{8000 + r*8 + i}" for i in range(8)]
+      dst_shards = [f"10.0.0.2:{8000 + r*8 + i}" for i in range(8)]
+
+      controller.register_work_unit(
+          src_id,
+          src_shards,
+          mesh_shape=(2, 3, 4),
+          layout=(0, 2, 1),
+          global_shape=(4, 3, 4),
+          itemsize=4,
+      )
+      controller.register_work_unit(
+          dst_id,
+          dst_shards,
+          mesh_shape=(4, 3, 2),
+          layout=(0, 2, 1),
+          global_shape=(4, 3, 4),
+          itemsize=4,
+      )
+
+    future = controller.start_transfer(
+        src_units=src_units,
+        dst_units=dst_units,
+        use_block_chunks=True,
+    )
+    asyncio.run(future.wait())
+
+    # Assert on schedules for replica 0
+    plan = controller.get_plan("req_0")
+    self.assertIn(src_units[0], plan.shard_push_schedules)
+    schedules = plan.shard_push_schedules[src_units[0]]
+
+    expected_matches = {
+        0: [0, 2],
+        1: [0, 2],
+        2: [1, 3],
+        3: [1, 3],
+        4: [4, 6],
+        5: [4, 6],
+        6: [5, 7],
+        7: [5, 7],
+    }
+
+    for src_idx, expected_dst_indices in expected_matches.items():
+      self.assertIn(src_idx, schedules)
+      entries = schedules[src_idx]
+      self.assertEqual(len(entries), 2)
+
+      actual_dst_indices = sorted([entry[1] for entry in entries])
+      self.assertEqual(actual_dst_indices, expected_dst_indices)
+
+      for entry in entries:
+        dst_peer = entry[0]
+        dst_shard_idx = entry[1]
+        self.assertEqual(dst_peer, f"10.0.0.2:{8000 + dst_shard_idx}")
+
   def test_greedy_tree_broadcast(self):
     recorded_calls = []
 

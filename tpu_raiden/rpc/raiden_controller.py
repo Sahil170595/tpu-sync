@@ -121,81 +121,40 @@ def _get_global_indices(
   major_to_minor = list(reversed(layout))
   phys_mesh = [logical_mesh_shape[d] for d in major_to_minor]
 
-  # Find the host axis in logical mesh.
-  # We assume it is the axis that matches num_physical_hosts.
   host_axis_logical = None
   for d, size in enumerate(logical_mesh_shape):
     if size == num_physical_hosts:
       host_axis_logical = d
       break
 
-  if host_axis_logical is not None:
-    try:
-      host_axis_physical = major_to_minor.index(host_axis_logical)
-    except ValueError:
-      host_axis_physical = None
-  else:
-    host_axis_physical = None
+  non_host_axes = [
+      d for d in range(len(logical_mesh_shape)) if d != host_axis_logical
+  ]
 
   indices = []
+  for j in range(num_shards):
+    local_coords = {}
+    temp = j
+    for d in reversed(non_host_axes):
+      size = logical_mesh_shape[d]
+      local_coords[d] = temp % size
+      temp = temp // size
 
-  # Log details for debugging
-  logging.info(
-      "_get_global_indices unit=%s, shards=%s, logical_mesh=%s, layout=%s,"
-      " phys_mesh=%s, host_axis_logical=%s, host_axis_physical=%s",
-      unit,
-      shards,
-      logical_mesh_shape,
-      layout,
-      phys_mesh,
-      host_axis_logical,
-      host_axis_physical,
-  )
+    full_coords = [0] * len(logical_mesh_shape)
+    for d in range(len(logical_mesh_shape)):
+      if d == host_axis_logical:
+        full_coords[d] = replica_id
+      else:
+        full_coords[d] = local_coords[d]
 
-  if host_axis_physical is not None:
-    logical_H = phys_mesh[
-        host_axis_physical
-    ]  # should be equal to num_physical_hosts
-    non_host_axes = [
-        ax for ax in range(len(phys_mesh)) if ax != host_axis_physical
-    ]
+    tensor_coords = [full_coords[m_axis] for m_axis in major_to_minor]
 
-    # We need to decompose local shard index 'j' into coordinates for non-host axes.
-    for j in range(num_shards):
-      coords = [0] * len(phys_mesh)
-      coords[host_axis_physical] = replica_id % logical_H
-
-      temp = j
-      # Decompose j into non-host coordinates (right-to-left)
-      for ax in reversed(non_host_axes):
-        size = phys_mesh[ax]
-        coords[ax] = temp % size
-        temp = temp // size
-
-      # Convert coordinates to flat global index (row-major)
-      global_idx = 0
-      stride = 1
-      for val, size in zip(reversed(coords), reversed(phys_mesh)):
-        global_idx += val * stride
-        stride *= size
-      indices.append((j, global_idx))
-  else:
-    # Replication case (no host axis found, map all replica IDs to same logical hosts).
-    # Decompose j into all physical mesh dimensions.
-    for j in range(num_shards):
-      coords = [0] * len(phys_mesh)
-      temp = j
-      for ax in reversed(range(len(phys_mesh))):
-        size = phys_mesh[ax]
-        coords[ax] = temp % size
-        temp = temp // size
-
-      global_idx = 0
-      stride = 1
-      for val, size in zip(reversed(coords), reversed(phys_mesh)):
-        global_idx += val * stride
-        stride *= size
-      indices.append((j, global_idx))
+    global_idx = 0
+    stride = 1
+    for val, size in zip(reversed(tensor_coords), reversed(phys_mesh)):
+      global_idx += val * stride
+      stride *= size
+    indices.append((j, global_idx))
 
   logging.info("_get_global_indices computed indices: %s", indices)
   return indices

@@ -13,12 +13,16 @@
 // limitations under the License.
 
 #include <cstdint>
+#include <cstdlib>
+#include <cstring>
 #include <memory>
 #include <optional>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "absl/log/log.h"
+#include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
@@ -38,6 +42,8 @@
 #include "tpu_raiden/frameworks/jax/nb_statusor.h"  // IWYU pragma: keep
 #include "tpu_raiden/frameworks/jax/raw_transfer_internal.h"
 #include "tpu_raiden/frameworks/jax/weight_synchronizer.h"
+#include "tpu_raiden/kv_cache/kv_cache_metadata.h"
+#include "tpu_raiden/kv_cache/kv_cache_metadata_shm.h"
 #include "tpu_raiden/kv_cache/kv_cache_store.h"
 
 namespace nb = nanobind;
@@ -66,15 +72,74 @@ class KVCacheStoreWrapper {
                                int64_t shard_size_bytes = 0,
                                std::string raiden_orchestrator_address = "",
                                std::string raiden_controller_address = "") {
+    // When the KV pool lives in shared memory (RAIDEN_SHM_KEY), keep the
+    // crash-persistent KVCacheMetadata table there too — the data and its
+    // metadata are always shm-backed together, never separately — and
+    // rebuild the LRU cache from a surviving table on restart. Any failure
+    // here degrades to serving without recovery; it never blocks
+    // construction.
+    std::optional<KVCacheMetadata> metadata;
+    if (num_shards > 0) {
+      std::string shm_key = MetadataShmKey();
+      if (!shm_key.empty()) {
+        const char* model_uid = std::getenv("RAIDEN_SHM_MODEL_UID");
+        auto region_or = KVCacheMetadataShmRegion::AttachOrFormat(
+            shm_key, static_cast<int>(lru_capacity),
+            model_uid != nullptr ? model_uid : "default_model");
+        if (region_or.ok()) {
+          metadata_region_ = *std::move(region_or);
+          metadata = metadata_region_->metadata();
+        } else {
+          LOG(WARNING) << "KV metadata table unavailable, serving without "
+                          "crash recovery: "
+                       << region_or.status().message();
+        }
+      }
+    }
+
     controller_ = std::make_unique<KVCacheStore>(
         lru_capacity, global_registry_address, std::move(raiden_id), num_shards,
         shard_size_bytes, raiden_orchestrator_address,
-        raiden_controller_address);
+        raiden_controller_address, std::move(metadata));
+
+    if (metadata_region_ != nullptr && metadata_region_->warm()) {
+      auto recovered_or = controller_->RecoverFromLocalManifest();
+      if (recovered_or.ok()) {
+        LOG(INFO) << "Recovered " << *recovered_or
+                  << " blocks from the local KV metadata table";
+      } else {
+        LOG(WARNING) << "KV metadata recovery failed, falling back to a cold "
+                        "start: "
+                     << recovered_or.status().message();
+        absl::Status reformat_status = metadata_region_->Reformat();
+        if (!reformat_status.ok()) {
+          LOG(WARNING) << "Failed to reformat the KV metadata table: "
+                       << reformat_status.message();
+        }
+      }
+    }
   }
   KVCacheStore* operator->() { return controller_.get(); }
   KVCacheStore& operator*() { return *controller_; }
 
  private:
+  // Names the metadata segment after the KV pool segments: RAIDEN_SHM_KEY
+  // plus the server-name suffix (but no per-device suffix — the table spans
+  // the store, not one device).
+  static std::string MetadataShmKey() {
+    const char* shm_key = std::getenv("RAIDEN_SHM_KEY");
+    if (shm_key == nullptr || std::strlen(shm_key) == 0) {
+      return "";
+    }
+    std::string key = absl::StrCat(shm_key, "_metadata");
+    const char* server_name = std::getenv("RAIDEN_SHM_SERVER_NAME");
+    if (server_name != nullptr && std::strlen(server_name) > 0) {
+      absl::StrAppend(&key, "_", server_name);
+    }
+    return key;
+  }
+
+  std::unique_ptr<KVCacheMetadataShmRegion> metadata_region_;
   std::unique_ptr<KVCacheStore> controller_;
 };
 }  // namespace

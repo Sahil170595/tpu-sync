@@ -80,6 +80,7 @@ cc_library(
     name = "kv_cache_metadata",
     srcs = ["kv_cache_metadata.cc"],
     hdrs = ["kv_cache_metadata.h"],
+    visibility = ["//visibility:public"],
     deps = [
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
@@ -97,6 +98,36 @@ cc_test(
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/types:span",
+        "@com_google_googletest//:gtest",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+cc_library(
+    name = "kv_cache_metadata_shm",
+    srcs = ["kv_cache_metadata_shm.cc"],
+    hdrs = ["kv_cache_metadata_shm.h"],
+    linkopts = ["-lrt"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":kv_cache_metadata",
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/strings:string_view",
+        "@com_google_absl//absl/types:span",
+    ],
+)
+
+cc_test(
+    name = "kv_cache_metadata_shm_test",
+    srcs = ["kv_cache_metadata_shm_test.cc"],
+    deps = [
+        ":kv_cache_metadata",
+        ":kv_cache_metadata_shm",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/strings:string_view",
         "@com_google_googletest//:gtest",
         "@com_google_googletest//:gtest_main",
     ],

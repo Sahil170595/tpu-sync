@@ -1832,6 +1832,92 @@ class RaidenControllerTest(absltest.TestCase):
     ):
       asyncio.run(future.wait())
 
+  def test_register_transfer_schedule_skip_d2h_propagation(self):
+    facade = raiden_controller.RaidenControllerClientFacade("127.0.0.1:0")
+    calls = []
+
+    def mock_send(req):
+      calls.append(req)
+      return True
+
+    facade._send_raiden_protobuf_rpc = mock_send
+
+    src_unit = raiden_controller.RaidenId("prefill", "engine-rank0", "kv.fa", 0)
+    dst_unit = raiden_controller.RaidenId("decode", "engine-rank0", "kv.fa", 0)
+
+    # Test with skip_d2h=True
+    facade.register_transfer_schedule(
+        src_units=[src_unit],
+        dst_units=[dst_unit],
+        req_id="req1",
+        skip_d2h=True,
+    )
+    self.assertEqual(len(calls), 1)
+    req = calls[0]
+    self.assertEqual(
+        req.command,
+        raiden_service_pb2.ControlRequest.COMMAND_REGISTER_TRANSFER_SCHEDULE,
+    )
+    self.assertTrue(req.start_transfer_request.skip_d2h)
+
+    # Test with skip_d2h=False (default)
+    calls.clear()
+    facade.register_transfer_schedule(
+        src_units=[src_unit],
+        dst_units=[dst_unit],
+        req_id="req2",
+    )
+    self.assertEqual(len(calls), 1)
+    req = calls[0]
+    self.assertFalse(req.start_transfer_request.skip_d2h)
+
+  def test_server_skip_d2h_propagation(self):
+    controller = raiden_controller.RaidenController(port=0)
+    server = raiden_controller.RaidenControllerServer(controller)
+    server.start()
+
+    facade = raiden_controller.RaidenControllerClientFacade(
+        f"127.0.0.1:{server.port}",
+        name_resolver=controller.worker_rpc_client.name_resolver,
+    )
+
+    calls = []
+    original_start_transfer = controller.start_transfer
+
+    def mock_start_transfer(*args, **kwargs):
+      calls.append(kwargs)
+      return raiden_controller.RaidenFuture(0, None)
+
+    controller.start_transfer = mock_start_transfer
+
+    src_unit = raiden_controller.RaidenId("prefill", "engine-rank0", "kv.fa", 0)
+    dst_unit = raiden_controller.RaidenId("decode", "engine-rank0", "kv.fa", 0)
+
+    try:
+      # Test with skip_d2h=True
+      facade.register_transfer_schedule(
+          src_units=[src_unit],
+          dst_units=[dst_unit],
+          req_id="req1",
+          skip_d2h=True,
+      )
+      self.assertEqual(len(calls), 1)
+      self.assertTrue(calls[0].get("skip_d2h"))
+
+      # Test with skip_d2h=False (default)
+      calls.clear()
+      facade.register_transfer_schedule(
+          src_units=[src_unit],
+          dst_units=[dst_unit],
+          req_id="req2",
+      )
+      self.assertEqual(len(calls), 1)
+      self.assertFalse(calls[0].get("skip_d2h"))
+
+    finally:
+      controller.start_transfer = original_start_transfer
+      server.stop()
+
 
 def _byte_spans_for_rank(
     rank,

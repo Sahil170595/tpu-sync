@@ -214,6 +214,7 @@ class TransferPlan:
   request_block_claim_owner: Any = dataclasses.field(
       default=None, repr=False, compare=False
   )
+  skip_d2h: bool = False
 
 
 @dataclasses.dataclass(frozen=True)
@@ -727,6 +728,7 @@ class WorkerRpcClient:
         dst_device_block_ids=transfer_plan.dst_device_block_ids,
         parallelism=transfer_plan.parallelism,
         num_tokens=transfer_plan.num_tokens,
+        skip_d2h=transfer_plan.skip_d2h,
     )
 
     if transfer_plan.shard_push_schedules:
@@ -2271,6 +2273,7 @@ class RaidenController:
               is_sender=True,
               expected_block_count=count,
               req_id=hop_req_id,
+              skip_d2h=final_plan.skip_d2h,
           )
 
           async def _run_single_transfer(s_node, d_node, plan):
@@ -2294,6 +2297,7 @@ class RaidenController:
                   src_controller_address,
                   plan.shard_push_schedules,
                   dst_mem_type,
+                  skip_d2h=plan.skip_d2h,
               )
               if not success:
                 raise RuntimeError(
@@ -2367,6 +2371,7 @@ class RaidenController:
       num_tokens: Optional[int],
       transfer_pool_tags: Optional[typing.Sequence[str]],
       parallelism: Optional[int],
+      skip_d2h: bool = False,
   ) -> RaidenFuture:
     """Coordinates the controller-owned block-granular pool reshard path."""
     if not src_units:
@@ -2463,6 +2468,7 @@ class RaidenController:
           transfer_pool_tags=list(transfer_pool_tags),
           parallelism=parallelism,
       )
+      final_plan.skip_d2h = skip_d2h
       plan_build_end_ns = time.monotonic_ns()
 
       # Receivers must be armed before any sender can put bytes on the wire.
@@ -2498,6 +2504,7 @@ class RaidenController:
                   dst_expected_extent_bytes=(
                       final_plan.dst_expected_extent_bytes
                   ),
+                  skip_d2h=final_plan.skip_d2h,
               ),
           )
         except Exception:
@@ -2902,6 +2909,7 @@ class RaidenController:
       num_tokens: Optional[int] = None,
       transfer_pool_tags: Optional[typing.Sequence[str]] = None,
       parallelism: Optional[int] = None,
+      skip_d2h: bool = False,
   ) -> RaidenFuture:
     """For a requested data transfer, generates a transfer plan for the work units to carry out and start it.
 
@@ -2957,6 +2965,7 @@ class RaidenController:
           num_tokens=num_tokens,
           transfer_pool_tags=transfer_pool_tags,
           parallelism=parallelism,
+          skip_d2h=skip_d2h,
       )
 
     if not src_units:
@@ -3047,6 +3056,7 @@ class RaidenController:
           uuid=uuid,
           dst_mem_type=dst_mem_type,
           use_block_chunks=False,
+          skip_d2h=skip_d2h,
       )
       with self._lock:
         self._active_transfers[req_id] = plan
@@ -3067,6 +3077,7 @@ class RaidenController:
           is_sender=is_sender,
           expected_block_count=expected_block_count,
           req_id=req_id,
+          skip_d2h=skip_d2h,
       )
       with self._lock:
         self._active_transfers[req_id] = plan
@@ -3110,6 +3121,7 @@ class RaidenController:
               is_sender=False,
               expected_block_count=expected_block_count,
               req_id=req_id,
+              skip_d2h=skip_d2h,
           )
 
           # 4. Trigger COMMAND_START_TRANSFER (is_sender=False) on local workers
@@ -3387,6 +3399,7 @@ class RaidenController:
               is_sender=True,
               expected_block_count=expected_block_count,
               req_id=req_id,
+              skip_d2h=skip_d2h,
           )
           with self._lock:
             self._active_transfers[req_id] = final_plan
@@ -3505,6 +3518,7 @@ class RaidenController:
                   is_sender=True,
                   expected_block_count=expected_block_count,
                   req_id=req_id,
+                  skip_d2h=skip_d2h,
               )
 
               direct_dsts = []
@@ -4104,6 +4118,7 @@ class RaidenControllerServer:
                   is_sender=start_req.is_sender,
                   expected_block_count=start_req.expected_block_count,
                   shard_push_schedules=shard_push_schedules,
+                  skip_d2h=start_req.skip_d2h,
               )
             if future.try_start():
               loop.run_until_complete(future.wait())
@@ -4463,6 +4478,7 @@ class RaidenControllerClientFacade:
       parallelism: int = 0,
       num_tokens: int = 0,
       dst_expected_extent_bytes: Optional[typing.Sequence[int]] = None,
+      skip_d2h: bool = False,
   ) -> bool:
     """Inter-controller RPC to register computed push schedules and prepare receivers."""
     start_req = self._raiden_proto_module.StartTransferRequest(
@@ -4477,6 +4493,7 @@ class RaidenControllerClientFacade:
         expected_pushes_per_pool=expected_pushes_per_pool,
         parallelism=parallelism,
         num_tokens=num_tokens,
+        skip_d2h=skip_d2h,
     )
     if transfer_pool_indices is not None:
       start_req.transfer_pool_indices.extend(transfer_pool_indices)

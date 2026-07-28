@@ -272,8 +272,14 @@ grpc::Status WorkerServiceImpl::TransferBuffers(
       future_or = transfer_manager_.D2h(src_offsets, dst_offsets, copy_sizes);
     }
   } else if (is_h2d) {
-    if (transfer.src_buffers_size() > 0 &&
-        !transfer.src_buffers(0).remote_address().empty()) {
+    LOG(INFO) << "WorkerServiceImpl::TransferBuffers running H2D on transfer manager.";
+    if (!src_remote_descriptors.empty()) {
+      LOG(INFO) << "WorkerServiceImpl::TransferBuffers vector descriptor branch called.";
+      future_or = transfer_manager_.H2dRead(src_remote_descriptors, src_offsets,
+                                            staging_host_offsets, dst_offsets,
+                                            copy_sizes);
+    } else if (transfer.src_buffers_size() > 0 &&
+               !transfer.src_buffers(0).remote_address().empty()) {
       std::string src_peer = transfer.src_buffers(0).remote_address();
       // Flow order: remote host src -> local host staging -> local device dst.
       future_or = transfer_manager_.H2dRead(

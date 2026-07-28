@@ -166,13 +166,28 @@ struct MockTransferManager {
 struct ShardAwareMockTransferManager : MockTransferManager {
   // Keep the base string overloads visible (the vector declarations below would
   // otherwise hide them, and KVManagerHolder still references the string form).
+  using MockTransferManager::H2dRead;
   using MockTransferManager::H2hRead;
   using MockTransferManager::H2hWrite;
 
   int vector_h2h_read_calls = 0;
   int vector_h2h_write_calls = 0;
+  int vector_h2d_read_calls = 0;
   std::vector<::tpu_raiden::RaidenTransferEndpoint> last_read_descriptors;
   std::vector<::tpu_raiden::RaidenTransferEndpoint> last_write_descriptors;
+  std::vector<::tpu_raiden::RaidenTransferEndpoint> last_h2d_read_descriptors;
+
+  absl::StatusOr<raiden::PjRtCopyFuture> H2dRead(
+      const std::vector<::tpu_raiden::RaidenTransferEndpoint>&
+          remote_descriptors,
+      const std::vector<int64_t>& src_host_offsets,
+      const std::vector<int64_t>& dst_host_offsets,
+      const std::vector<int64_t>& dst_device_offsets,
+      const std::vector<int64_t>& copy_sizes) {
+    vector_h2d_read_calls++;
+    last_h2d_read_descriptors = remote_descriptors;
+    return raiden::PjRtCopyFuture();
+  }
 
   absl::StatusOr<std::pair<std::vector<int>, raiden::PjRtCopyFuture>> H2hWrite(
       const std::vector<::tpu_raiden::RaidenTransferEndpoint>& remote_descriptors,

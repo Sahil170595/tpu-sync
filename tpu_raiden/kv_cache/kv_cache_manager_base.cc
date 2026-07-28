@@ -778,6 +778,7 @@ absl::StatusOr<raiden::PjRtCopyFuture> KVCacheManagerBase::H2dRead(
   if (num_chunks == 0) {
     return raiden::PjRtCopyFuture(std::vector<raiden::BufferHolder>{});
   }
+  LOG(INFO) << "KVCacheManagerBase::H2dRead string_view peer version called with " << num_chunks << " chunks, peer=" << peer;
   if (dst_host_offsets_major_dim.size() != num_chunks ||
       dst_device_offsets_major_dim.size() != num_chunks ||
       copy_sizes_major_dim.size() != num_chunks) {
@@ -828,8 +829,10 @@ absl::StatusOr<raiden::PjRtCopyFuture> KVCacheManagerBase::H2dRead(
     int64_t dst_device_offset = dst_device_offsets_major_dim[i];
     int64_t size = copy_sizes_major_dim[i];
 
+    LOG(INFO) << "KVCacheManagerBase::H2dRead Scheduling pull task for chunk " << i << " src_block_id=" << src_block_id << " peer=" << peer_str;
     pull_pool_->Schedule([this, state, peer_str, src_block_id, staging_block_id,
                           staging_offset, dst_device_offset, size]() {
+      LOG(INFO) << "H2dRead pull task lambda running for src_block_id=" << src_block_id;
       if (state->HasFailed()) {
         state->MarkChunkComplete();
         return;

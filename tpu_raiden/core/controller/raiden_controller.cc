@@ -23,6 +23,7 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -557,6 +558,13 @@ tsl::Future<> RaidenController::TransferBuffers(
       peer_node_id_to_endpoints.emplace(group.node_id, &group);
     }
   }
+  if (peer_node_id_to_endpoints.empty()) {
+    for (const auto& src_buf : src_buffers) {
+      for (const auto& group : src_buf.remote_worker_endpoints()) {
+        peer_node_id_to_endpoints.emplace(group.node_id, &group);
+      }
+    }
+  }
 
   std::vector<tsl::Future<>> worker_futures;
   worker_futures.reserve(workers.size());
@@ -573,14 +581,32 @@ tsl::Future<> RaidenController::TransferBuffers(
     // Every buffer/block is transferred by every worker (each worker owns a
     // shard of every block), so there is no per-block partitioning here.
     for (size_t i = 0; i < src_buffers.size(); ++i) {
-      worker_src.push_back(src_buffers[i]);
+      Buffer src_buf = src_buffers[i];
+      if (!src_buf.remote_worker_endpoints().empty()) {
+        auto it = peer_node_id_to_endpoints.find(workers[w].node_id);
+        if (it == peer_node_id_to_endpoints.end()) {
+          LOG(ERROR) << "Could not match node_id: " << workers[w].node_id;
+          return tsl::Future<>(absl::FailedPreconditionError(absl::StrCat(
+              "ReadRemote: no source worker group with node_id ",
+              workers[w].node_id, " to match destination worker '",
+              workers[w].worker_id, "' (source provided ",
+              src_buf.remote_worker_endpoints().size(), " group(s))")));
+        }
+        LOG(INFO) << "Matched node_id " << workers[w].node_id
+                  << " for src to endpoints[0]: "
+                  << it->second->endpoints[0].endpoint;
+        src_buf.set_remote_descriptors(it->second->endpoints);
+        src_buf.set_remote_worker_endpoints({});
+      }
+      worker_src.push_back(std::move(src_buf));
 
       Buffer dst_buf = dst_buffers[i];
       if (!dst_buf.remote_worker_endpoints().empty()) {
         auto it = peer_node_id_to_endpoints.find(workers[w].node_id);
         if (it == peer_node_id_to_endpoints.end()) {
+          LOG(ERROR) << "Could not match node_id: " << workers[w].node_id;
           return tsl::Future<>(absl::FailedPreconditionError(absl::StrCat(
-              "ReadRemote: no destination worker group with node_id ",
+              "WriteRemote: no destination worker group with node_id ",
               workers[w].node_id, " to match source worker '",
               workers[w].worker_id, "' (destination provided ",
               dst_buf.remote_worker_endpoints().size(), " group(s))")));
@@ -687,24 +713,11 @@ tsl::Future<> RaidenController::ReadRemote(
                              rpc::MemoryType::MEMORY_TYPE_DRAM);
   }
 
-  // A KV block is sharded across every (destination) worker, so every block is
-  // transferred by every worker. Attach the full list of destination workers'
-  // endpoint groups to each dst buffer, each tagged with its node_id, so the
-  // remote source controller can match each of its workers to the destination
-  // peer worker with the same node_id.
-  std::vector<RaidenWorkerEndpoints> dest_worker_endpoints;
-  dest_worker_endpoints.reserve(workers.size());
-  for (const auto& reg : workers) {
-    dest_worker_endpoints.push_back(
-        {reg.node_id, reg.worker_id, reg.raiden_transfer_endpoints});
-  }
-
   std::vector<Buffer> dst_buffers;
   dst_buffers.reserve(dest_host_block_ids.size());
   for (size_t i = 0; i < dest_host_block_ids.size(); ++i) {
     Buffer dst_buf(dest_host_block_ids[i], std::vector<BufferShard>{},
                    std::nullopt, rpc::MemoryType::MEMORY_TYPE_DRAM);
-    dst_buf.set_remote_worker_endpoints(dest_worker_endpoints);
     dst_buffers.push_back(std::move(dst_buf));
   }
 
@@ -749,44 +762,81 @@ tsl::Future<> RaidenController::ReadRemote(
     }
   }
 
-  cproto::ReadRemoteRequest request;
-  request.mutable_src_host_block_ids()->Reserve(src_host_block_ids.size());
-  request.mutable_dest_host_block_ids()->Reserve(dest_host_block_ids.size());
-  for (int32_t id : src_host_block_ids) {
-    request.add_src_host_block_ids(id);
-  }
-  for (int32_t id : dest_host_block_ids) {
-    request.add_dest_host_block_ids(id);
-  }
+  cproto::PinRemoteBlocksRequest pin_req;
+  pin_req.set_ttl_seconds(60);
   for (const auto& hash : block_hashes) {
-    request.add_block_hashes(hash);
-  }
-  for (const auto& buf : src_buffers) {
-    *request.add_src_buffers() = buf.ToProto();
-  }
-  for (const auto& buf : dst_buffers) {
-    *request.add_dst_buffers() = buf.ToProto();
+    pin_req.add_block_hashes(hash);
   }
 
   auto [promise, future] = tsl::MakePromise<>();
   auto context = std::make_shared<grpc::ClientContext>();
-  auto response = std::make_shared<cproto::ReadRemoteResponse>();
+  auto response = std::make_shared<cproto::PinRemoteBlocksResponse>();
 
-  stub->async()->ReadRemote(
-      context.get(), &request, response.get(),
-      [context, response, stub,
+  stub->async()->PinRemoteBlocks(
+      context.get(), &pin_req, response.get(),
+      [this, context, response, stub, dest_host_block_ids,
        promise = std::move(promise).ToShared()](grpc::Status status) {
         if (!status.ok()) {
-          // Preserve the gRPC status code (grpc and absl codes share the same
-          // canonical integers), so ReadRemote step-6a errors stay
-          // distinguishable end-to-end: NOT_FOUND (BLOCK_HASH_NOT_FOUND) vs
-          // FAILED_PRECONDITION (present but not host-resident) vs INTERNAL.
-          promise->Set(absl::Status(
-              static_cast<absl::StatusCode>(status.error_code()),
-              absl::StrCat("ReadRemote RPC failed: ", status.error_message())));
-        } else {
-          promise->Set(absl::OkStatus());
+          promise->Set(
+              absl::Status(static_cast<absl::StatusCode>(status.error_code()),
+                           absl::StrCat("PinRemoteBlocks RPC failed: ",
+                                        status.error_message())));
+          return;
         }
+
+        std::vector<RaidenWorkerEndpoints> src_endpoints;
+        for (const auto& ep : response->src_worker_endpoints()) {
+          std::vector<RaidenTransferEndpoint> endpoints;
+          for (const auto& r_ep : ep.endpoints()) {
+            endpoints.push_back(
+                {r_ep.endpoint(), std::vector<int64_t>(r_ep.shards().begin(),
+                                                       r_ep.shards().end())});
+          }
+          src_endpoints.push_back({ep.node_id(), ep.worker_id(), endpoints});
+        }
+
+        std::vector<Buffer> src_buffers;
+        for (int32_t id : response->src_host_block_ids()) {
+          Buffer src_buf(id, {}, std::nullopt,
+                         rpc::MemoryType::MEMORY_TYPE_DRAM);
+          src_buf.set_remote_worker_endpoints(src_endpoints);
+          src_buffers.push_back(std::move(src_buf));
+        }
+
+        std::vector<Buffer> staging_host_buffers;
+        std::vector<Buffer> dst_buffers;
+        for (int32_t id : dest_host_block_ids) {
+          staging_host_buffers.emplace_back(id, std::vector<BufferShard>{},
+                                            std::nullopt,
+                                            rpc::MemoryType::MEMORY_TYPE_DRAM);
+          dst_buffers.emplace_back(id, std::vector<BufferShard>{}, std::nullopt,
+                                   rpc::MemoryType::MEMORY_TYPE_HBM);
+        }
+
+        auto transfer_future = this->TransferBuffers(src_buffers, dst_buffers,
+                                                     staging_host_buffers);
+        std::vector<int32_t> src_block_ids(
+            response->src_host_block_ids().begin(),
+            response->src_host_block_ids().end());
+
+        std::thread([transfer_future = std::move(transfer_future), promise,
+                     stub, src_block_ids = std::move(src_block_ids)]() mutable {
+          absl::Status transfer_status = transfer_future.Await();
+
+          cproto::UnpinRemoteBlocksRequest unpin_req;
+          for (int32_t id : src_block_ids) {
+            unpin_req.add_src_host_block_ids(id);
+          }
+          auto unpin_ctx = std::make_shared<grpc::ClientContext>();
+          auto unpin_resp =
+              std::make_shared<cproto::UnpinRemoteBlocksResponse>();
+
+          stub->async()->UnpinRemoteBlocks(
+              unpin_ctx.get(), &unpin_req, unpin_resp.get(),
+              [unpin_ctx, unpin_resp](grpc::Status status) {});
+
+          promise->Set(transfer_status);
+        }).detach();
       });
 
   return future;

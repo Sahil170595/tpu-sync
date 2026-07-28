@@ -214,6 +214,7 @@ nanobind_extension(
         "//tpu_raiden/core:raw_transfer_core",
         "//tpu_raiden/kv_cache:kv_cache_manager_base",
         "//tpu_raiden/kv_cache:kv_cache_store",
+        "//tpu_raiden/kv_cache:kv_cache_store_wrapper",
         "//tpu_raiden/rpc:raiden_service_cc_proto",
         "//tpu_raiden/weight_sync:weight_synchronizer_base",
         "@com_google_absl//absl/status",

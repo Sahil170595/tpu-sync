@@ -38,6 +38,7 @@
 #include "tpu_raiden/frameworks/torch/torch_nanobind_utils.h"
 #include "tpu_raiden/frameworks/torch/weight_synchronizer.h"
 #include "tpu_raiden/kv_cache/kv_cache_store.h"
+#include "tpu_raiden/kv_cache/kv_cache_store_wrapper.h"
 #include "tpu_raiden/rpc/raiden_service.pb.h"
 
 namespace nb = nanobind;
@@ -59,25 +60,6 @@ std::vector<std::string> ToStdStringVector(
   return str_vec;
 }
 
-class KVCacheStoreWrapper {
- public:
-  explicit KVCacheStoreWrapper(size_t lru_capacity,
-                               std::string global_registry_address = "",
-                               RaidenId raiden_id = {}, int num_shards = 0,
-                               int shard_size_bytes = 0,
-                               std::string raiden_orchestrator_address = "",
-                               std::string raiden_controller_address = "") {
-    controller_ = std::make_unique<KVCacheStore>(
-        lru_capacity, global_registry_address, std::move(raiden_id), num_shards,
-        shard_size_bytes, raiden_orchestrator_address,
-        raiden_controller_address);
-  }
-  KVCacheStore* operator->() { return controller_.get(); }
-  KVCacheStore& operator*() { return *controller_; }
-
- private:
-  std::unique_ptr<KVCacheStore> controller_;
-};
 }  // namespace
 }  // namespace kv_cache
 }  // namespace tpu_raiden
@@ -519,7 +501,7 @@ NB_MODULE(_tpu_raiden_torch, m) {
 
   nb::class_<tpu_raiden::kv_cache::KVCacheStoreWrapper>(m, "KVCacheStore")
       .def(nb::init<size_t, std::string, tpu_raiden::kv_cache::RaidenId, int,
-                    int, std::string, std::string>(),
+                    int64_t, std::string, std::string>(),
            nb::arg("capacity"), nb::arg("global_registry_address") = "",
            nb::arg("raiden_id") = tpu_raiden::kv_cache::RaidenId(),
            nb::arg("num_shards") = 0, nb::arg("shard_size_bytes") = 0,

@@ -20,12 +20,15 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <queue>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
 #include "absl/base/thread_annotations.h"
 #include "absl/container/flat_hash_map.h"
+#include "absl/functional/any_invocable.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
@@ -135,7 +138,10 @@ class KVCacheManagerBase : public tpu_raiden::RaidenManagerBase {
       size_t layer_idx, size_t shard_idx, int block_id, uint64_t uuid,
       transport::BlockTransportDelegate::HostBlockReadyCallback cb) override;
 
-  // Async on-chip H2D offloads returning PJRT copy future E2E
+  // Async on-chip H2D offloads returning PJRT copy future E2E.
+  // When RAIDEN_ENABLE_ASYNC_DISPATCH is enabled, work is enqueued to the
+  // background worker thread; otherwise dispatches synchronously via
+  // H2dSyncDispatch().
   virtual absl::StatusOr<raiden::PjRtCopyFuture> H2d(
       const std::vector<int64_t>& src_offsets_major_dim = {},
       const std::vector<int64_t>& dst_offsets_major_dim = {},
@@ -167,7 +173,10 @@ class KVCacheManagerBase : public tpu_raiden::RaidenManagerBase {
       const std::vector<int64_t>& dst_device_offsets_major_dim,
       const std::vector<int64_t>& copy_sizes_major_dim);
 
-  // Async on-chip D2H offloads E2E
+  // Async on-chip D2H offloads E2E.
+  // When RAIDEN_ENABLE_ASYNC_DISPATCH is enabled, work is enqueued to the
+  // background worker thread; otherwise dispatches synchronously via
+  // D2hSyncDispatch().
   virtual absl::StatusOr<raiden::PjRtCopyFuture> D2h(
       const std::vector<int64_t>& src_offsets_major_dim = {},
       const std::vector<int64_t>& dst_offsets_major_dim = {},
@@ -458,7 +467,43 @@ class KVCacheManagerBase : public tpu_raiden::RaidenManagerBase {
       std::optional<size_t> layer_idx = std::nullopt,
       std::optional<size_t> shard_idx = std::nullopt, int64_t device_id = -1);
 
+  // Synchronous on-chip H2D offload (bypasses background worker thread queue).
+  virtual absl::StatusOr<raiden::PjRtCopyFuture> H2dSyncDispatch(
+      const std::vector<int64_t>& src_offsets_major_dim = {},
+      const std::vector<int64_t>& dst_offsets_major_dim = {},
+      const std::vector<int64_t>& copy_sizes_major_dim = {},
+      std::optional<int64_t> slot_idx = std::nullopt,
+      std::optional<size_t> layer_idx = std::nullopt,
+      std::optional<size_t> shard_idx = std::nullopt);
+
+  // Synchronous on-chip D2H offload (bypasses background worker thread queue).
+  virtual absl::StatusOr<raiden::PjRtCopyFuture> D2hSyncDispatch(
+      const std::vector<int64_t>& src_offsets_major_dim = {},
+      const std::vector<int64_t>& dst_offsets_major_dim = {},
+      const std::vector<int64_t>& copy_sizes_major_dim = {},
+      std::optional<int64_t> slot_idx = std::nullopt,
+      std::optional<size_t> layer_idx = std::nullopt,
+      std::optional<size_t> shard_idx = std::nullopt);
+
  private:
+  // Asynchronous on-chip H2D offload enqueued to the background worker queue.
+  virtual absl::StatusOr<raiden::PjRtCopyFuture> H2dAsyncDispatch(
+      const std::vector<int64_t>& src_offsets_major_dim = {},
+      const std::vector<int64_t>& dst_offsets_major_dim = {},
+      const std::vector<int64_t>& copy_sizes_major_dim = {},
+      std::optional<int64_t> slot_idx = std::nullopt,
+      std::optional<size_t> layer_idx = std::nullopt,
+      std::optional<size_t> shard_idx = std::nullopt);
+
+  // Asynchronous on-chip D2H offload enqueued to the background worker queue.
+  virtual absl::StatusOr<raiden::PjRtCopyFuture> D2hAsyncDispatch(
+      const std::vector<int64_t>& src_offsets_major_dim = {},
+      const std::vector<int64_t>& dst_offsets_major_dim = {},
+      const std::vector<int64_t>& copy_sizes_major_dim = {},
+      std::optional<int64_t> slot_idx = std::nullopt,
+      std::optional<size_t> layer_idx = std::nullopt,
+      std::optional<size_t> shard_idx = std::nullopt);
+
   // Lazily materializes one implicit pool per storage when RegisterPools was
   // never called (or the host buffers were replaced since).
   void EnsureImplicitPools() const;
@@ -495,6 +540,44 @@ class KVCacheManagerBase : public tpu_raiden::RaidenManagerBase {
   // previous copy semantics exactly.
   absl::flat_hash_map<uint64_t, std::shared_ptr<const RegisteredPlan>>
       active_plans_ ABSL_GUARDED_BY(plans_mu_);
+
+  // An asynchronous FFI task item representing a queued H2D or D2H copy
+  // request. Bundles the work lambda with the XLA promise that signals Python
+  // caller completion.
+  struct AsyncTask {
+    absl::AnyInvocable<absl::StatusOr<raiden::PjRtCopyFuture>() &&> work;
+    xla::Promise<void> promise;
+  };
+
+  // Background worker loop that dequeues tasks from task_queue_ and executes
+  // them in FIFO order, resolving promises when under-the-hood DMA completes.
+  void WorkerLoop();
+
+  // Condition variable predicate helper checking if tasks are available or if
+  // shutdown has been requested.
+  bool QueueNotEmptyOrShutdown() const ABSL_SHARED_LOCKS_REQUIRED(queue_mu_);
+
+  // Mutex guarding access to the asynchronous background dispatch queue and
+  // shutdown state.
+  absl::Mutex queue_mu_;
+
+  // FIFO task queue for sequential H2D/D2H transfer scheduling.
+  std::queue<AsyncTask> task_queue_ ABSL_GUARDED_BY(queue_mu_);
+
+  // Background worker thread executing queued FFI transfers.
+  std::thread worker_thread_;
+
+  // True if destruction has been initiated and the worker loop should exit
+  // after draining the queue.
+  bool shutdown_ ABSL_GUARDED_BY(queue_mu_) = false;
+
+  // True if background FFI dispatching is enabled via the
+  // RAIDEN_ENABLE_ASYNC_DISPATCH environment variable.
+  bool enable_background_ = false;
+
+  // Initializes background worker thread if RAIDEN_ENABLE_ASYNC_DISPATCH is
+  // enabled.
+  void InitBackgroundWorker();
 };
 
 }  // namespace kv_cache

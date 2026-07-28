@@ -23,7 +23,6 @@
 #include "torch/headeronly/core/DeviceType.h"
 
 #include "torch_tpu/eager/materialize.h"
-#include "torch_tpu/eager/structured_log_buffer.h"
 #include "torch_tpu/eager/tensor_to_buffer.h"
 #include "absl/strings/str_cat.h"
 

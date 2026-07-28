@@ -25,6 +25,7 @@
 #include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
 #include "absl/synchronization/mutex.h"
+#include "absl/time/time.h"
 #include "absl/types/span.h"
 #include "grpcpp/channel.h"
 #include "xla/tsl/concurrency/future.h"
@@ -51,6 +52,9 @@ class ControllerServer;
 }  // namespace core
 
 namespace controller {
+
+// Per-read state for an in-flight ReadRemote (defined in the .cc).
+struct RemoteReadState;
 
 // Raiden Controller responsible for managing logical KV cache block allocations
 // and synchronizing them with remote transfer workers via WorkerService gRPC.
@@ -136,12 +140,50 @@ class RaidenController {
       absl::Span<const Buffer> staging_host_buffers = {},
       absl::Span<const int64_t> copy_sizes = {});
 
-  // Initiates remote read from source controller. block_hashes (parallel to the
-  // block ids) let the source verify/pin the blocks in its LRU before transfer.
-  tsl::Future<> ReadRemote(const kv_cache::RaidenId& src_raiden_id,
-                           const std::vector<int32_t>& src_host_block_ids,
-                           const std::vector<int32_t>& dest_host_block_ids,
-                           const std::vector<std::string>& block_hashes = {});
+  // Reads blocks from a remote source, receiver-initiated: this controller's
+  // own workers pull the bytes, so the write window belongs to the destination
+  // and the H2D leg folds into the same transfer.
+  //
+  // Three phases against the source (see controller_service.proto):
+  //   AcquireReadLease -> pull -> ReleaseReadLease.
+  // The returned future succeeds ONLY if the transfer succeeded AND the source
+  // reports verdict HELD, i.e. it kept the blocks pinned for the whole read.
+  // Anything else fails the future and the caller must discard.
+  //
+  // dst_device_block_ids selects the mode:
+  //   empty            -> ReadRemote-to-Host. Bytes land in dst_host_block_ids.
+  //   size == hashes   -> ReadRemote-to-HBM. Bytes land in the caller's device
+  //                       blocks, with dst_host_block_ids as the staging hop
+  //                       (so the host copy is valid too, and a later local
+  //                       load() can reuse it).
+  //   any other size   -> InvalidArgument, before anything is pinned.
+  //
+  // src_host_block_ids is ADVISORY (registry-derived, possibly stale); the
+  // source re-derives the authoritative ids while validating the hashes.
+  //
+  // In HBM mode the caller's device blocks are written before the verdict is
+  // known, so a discarded read leaves them holding undefined bytes. That is by
+  // design: nothing in the LRU ever points at them (failed hashes are never
+  // promoted), and callers overwrite device blocks when they reuse them.
+  // Treat supplied device blocks as scratch until the read reports success.
+  tsl::Future<> ReadRemote(
+      const kv_cache::RaidenId& src_raiden_id,
+      const std::vector<int32_t>& src_host_block_ids,
+      const std::vector<int32_t>& dst_host_block_ids,
+      const std::vector<std::string>& block_hashes = {},
+      const std::vector<int32_t>& dst_device_block_ids = {});
+
+  // Weak handle to a live controller. An in-flight ReadRemote must be able to
+  // call back into the controller to issue the pull, but the read outlives the
+  // calling frame, so capturing `this` would make controller teardown
+  // mid-read a use-after-free. The destructor clears `ctrl` under `mu`, and a
+  // continuation holds `mu` for as long as it touches the controller -- so
+  // teardown either happens before the callback (which then fails cleanly) or
+  // waits for it.
+  struct Lifetime {
+    absl::Mutex mu;
+    RaidenController* ctrl ABSL_GUARDED_BY(mu) = nullptr;
+  };
 
   // Registers the ReadRemote step-6a verify/pin and unpin hooks (invoked when
   // this controller acts as the SOURCE of a remote read). Forwards to the hosted
@@ -196,6 +238,15 @@ class RaidenController {
   std::unique_ptr<kv_cache::LogicalBlockManager> block_manager_
       ABSL_GUARDED_BY(mutex_);
   std::string raiden_controller_address_;
+
+  // Issues the pull for an in-flight read and chains the release. Runs on a
+  // gRPC callback thread with lifetime_->mu held.
+  void PullAndRelease(const std::vector<int32_t>& src_host_block_ids,
+                      const std::vector<RaidenWorkerEndpoints>& src_groups,
+                      const std::shared_ptr<RemoteReadState>& state,
+                      bool to_hbm);
+
+  std::shared_ptr<Lifetime> lifetime_ = std::make_shared<Lifetime>();
 
   std::unique_ptr<core::controller::ControllerServer>
       private_controller_server_;

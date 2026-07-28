@@ -21,6 +21,7 @@
 #include <utility>
 #include <vector>
 
+#include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
@@ -164,15 +165,53 @@ struct MockTransferManager {
 // the worker received, so a test can assert that path was actually triggered
 // with the shards intact.
 struct ShardAwareMockTransferManager : MockTransferManager {
+  // Scripts every transfer to fail, so failure-path logic (release-on-error,
+  // discard, retryability) can be exercised on CPU where a real transfer
+  // cannot run at all.
+  bool fail_transfers = false;
+
   // Keep the base string overloads visible (the vector declarations below would
   // otherwise hide them, and KVManagerHolder still references the string form).
+  using MockTransferManager::H2dRead;
   using MockTransferManager::H2hRead;
   using MockTransferManager::H2hWrite;
 
   int vector_h2h_read_calls = 0;
   int vector_h2h_write_calls = 0;
+  int vector_h2d_read_calls = 0;
   std::vector<::tpu_raiden::RaidenTransferEndpoint> last_read_descriptors;
   std::vector<::tpu_raiden::RaidenTransferEndpoint> last_write_descriptors;
+  std::vector<::tpu_raiden::RaidenTransferEndpoint> last_h2d_read_descriptors;
+
+  absl::StatusOr<raiden::PjRtCopyFuture> H2hReadExplicit(
+      const std::vector<::tpu_raiden::RaidenTransferEndpoint>&
+          remote_descriptors,
+      const std::vector<int>& src_block_ids,
+      const std::vector<int>& dst_block_ids) {
+    vector_h2h_read_calls++;
+    last_read_descriptors = remote_descriptors;
+    last_src_offsets.assign(src_block_ids.begin(), src_block_ids.end());
+    last_dst_offsets.assign(dst_block_ids.begin(), dst_block_ids.end());
+    if (fail_transfers) return absl::InternalError("scripted transfer failure");
+    return raiden::PjRtCopyFuture();
+  }
+
+  absl::StatusOr<raiden::PjRtCopyFuture> H2dRead(
+      const std::vector<::tpu_raiden::RaidenTransferEndpoint>&
+          remote_descriptors,
+      const std::vector<int64_t>& src_host_offsets,
+      const std::vector<int64_t>& dst_host_offsets,
+      const std::vector<int64_t>& dst_device_offsets,
+      const std::vector<int64_t>& copy_sizes) {
+    vector_h2d_read_calls++;
+    last_h2d_read_descriptors = remote_descriptors;
+    last_src_offsets = src_host_offsets;
+    last_staging_offsets = dst_host_offsets;
+    last_dst_offsets = dst_device_offsets;
+    last_copy_sizes = copy_sizes;
+    if (fail_transfers) return absl::InternalError("scripted transfer failure");
+    return raiden::PjRtCopyFuture();
+  }
 
   absl::StatusOr<std::pair<std::vector<int>, raiden::PjRtCopyFuture>> H2hWrite(
       const std::vector<::tpu_raiden::RaidenTransferEndpoint>& remote_descriptors,
@@ -191,6 +230,7 @@ struct ShardAwareMockTransferManager : MockTransferManager {
       const std::vector<int>& src_block_ids) {
     vector_h2h_read_calls++;
     last_read_descriptors = remote_descriptors;
+    if (fail_transfers) return absl::InternalError("scripted transfer failure");
     last_src_offsets.assign(src_block_ids.begin(), src_block_ids.end());
     return std::make_pair(std::vector<int>{}, raiden::PjRtCopyFuture());
   }

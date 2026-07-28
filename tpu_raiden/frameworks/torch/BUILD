@@ -27,13 +27,6 @@ header_only_cc_info(
 )
 
 header_only_cc_info(
-    name = "torch_tpu_structured_log_buffer_headers",
-    deps = [
-        "@torch_tpu//torch_tpu/eager:structured_log_buffer",
-    ],
-)
-
-header_only_cc_info(
     name = "torch_tpu_tensor_to_buffer_headers",
     deps = [
         "@torch_tpu//torch_tpu/eager:tensor_to_buffer",
@@ -90,7 +83,6 @@ cc_library(
     deps = [
         ":torch_tpu_device_buffer_headers",
         ":torch_tpu_materialize_headers",
-        ":torch_tpu_structured_log_buffer_headers",
         ":torch_tpu_tensor_to_buffer_headers",
         "//tpu_raiden/core:xla_raw_transfer_headers",
         "@com_google_absl//absl/strings",

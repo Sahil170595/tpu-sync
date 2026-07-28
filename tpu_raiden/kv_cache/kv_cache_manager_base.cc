@@ -33,6 +33,7 @@
 #include <utility>
 #include <vector>
 
+#include "absl/base/thread_annotations.h"
 #include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
@@ -1065,6 +1066,18 @@ KVCacheManagerBase::H2hRead(std::string peer,
   return H2hRead(std::vector<std::string>{std::move(peer)}, src_block_ids);
 }
 
+// Pulls remote host blocks into EXPLICIT local blocks.
+//
+// Sends kLeaseAuthorizedPullUuid so the source skips its device-to-host
+// readiness gate. That is sound because every caller of this function pulls
+// blocks the peer has already published as host-resident, and the ordering
+// against the peer's own device-to-host copy is enforced elsewhere and
+// earlier: a block is not advertised as HOST until its save() future resolves,
+// and a read lease is granted only against HOST blocks, which then stay pinned
+// for the read. The gate could not help here regardless -- save() runs a plain
+// D2h() whose future the store tracks, so it creates no send entry for the
+// gate to find. See current_work/global_prefix_cache_0727/
+// uuid_readiness_gate_issue.md.
 absl::StatusOr<raiden::PjRtCopyFuture> KVCacheManagerBase::H2hReadExplicit(
     std::string peer, const std::vector<int>& src_block_ids,
     const std::vector<int>& local_block_ids,
@@ -1079,7 +1092,8 @@ absl::StatusOr<raiden::PjRtCopyFuture> KVCacheManagerBase::H2hReadExplicit(
       std::vector<int> allocated_ids,
       server_->SyncPull({peer}, src_block_ids, local_block_ids,
                         explicit_dst_ptrs, parallelism, major_order,
-                        on_block_received, /*uuid=*/0));
+                        on_block_received,
+                        tpu_raiden::transport::kLeaseAuthorizedPullUuid));
   return raiden::PjRtCopyFuture(std::vector<raiden::BufferHolder>{});
 }
 

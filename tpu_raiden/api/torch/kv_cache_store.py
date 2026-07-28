@@ -301,16 +301,34 @@ class KVCacheStore:
     """Releases previously pinned block hashes, making them eligible for LRU eviction when capacity is exceeded."""
     self._impl.release(block_hashes)
 
-  def read_remote(self, block_hashes: list[bytes]) -> bool:
-    """Launches async H2H read from remote worker.
+  def read_remote(
+      self,
+      block_hashes: list[bytes],
+      device_block_ids: list[int] | None = None,
+  ) -> bool:
+    """Launches an async receiver-initiated read of REMOTE blocks from peers.
+
+    Returns as soon as the reads are issued; poll with
+    poll_remote_read_status().
 
     Args:
-      block_hashes: List of block hashes to read from remote.
+      block_hashes: Block hashes to read. Each must already be pinned, and must
+        stay pinned until poll_remote_read_status() reports it terminal.
+        Releasing early makes the entry deletable mid-read, in which case the
+        read is discarded and the WHOLE batch is reported failed.
+      device_block_ids: Optional. Omit (or pass None) to read into host DRAM,
+        leaving the entries HOST. Pass one device block id per hash to read
+        straight into HBM, leaving the entries HOST_AND_HBM (the host landing
+        blocks act as the staging hop, so a later load() can reuse them).
+        On FAILURE the contents of these device blocks are UNDEFINED: they are
+        written before the source's verdict is known. Treat them as scratch
+        until the read reports success -- nothing in the cache points at them
+        unless it does.
 
     Returns:
       True if successfully launched.
     """
-    return self._impl.read_remote(block_hashes)
+    return self._impl.read_remote(block_hashes, device_block_ids or [])
 
   def poll_remote_read_status(
       self,

@@ -80,7 +80,7 @@ message BufferProto {
   // remote_descriptors before dispatch (so remote_worker_endpoints is empty on
   // the wire to a worker).
   // TODO(raiden): this grouping is duplicated on every dst buffer; it could
-  // instead be a single repeated field on ReadRemoteRequest.
+  // instead be a single repeated field on the transfer request.
   repeated RaidenWorkerEndpointsProto remote_worker_endpoints = 10;
 }
 

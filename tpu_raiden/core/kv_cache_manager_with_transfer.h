@@ -231,6 +231,16 @@ class KVCacheManagerWithTransfer : public kv_cache::KVCacheManagerBase {
 
   virtual std::vector<RaidenTransferEndpoint> get_local_endpoints() const;
 
+  // Endpoints for the block-transport DATA protocol (pulls and pushes),
+  // always the transport server's own port -- unlike get_local_endpoints(),
+  // which prefers the CONTROL port when a control server is running because
+  // StartRead speaks the control protocol. Use these anywhere a peer will
+  // open a data connection, notably worker registration: the registry's
+  // endpoints are what a remote ReadRemote pulls from, and pointing a pull
+  // at a control port hangs both sides silently.
+  virtual std::vector<RaidenTransferEndpoint> get_local_data_endpoints()
+      const;
+
   static bool EncodeIpToIpv6Bytes(const std::string& ip, uint8_t out[16]);
 
   virtual void StartRead(
@@ -244,6 +254,8 @@ class KVCacheManagerWithTransfer : public kv_cache::KVCacheManagerBase {
   virtual int64_t node_id() const { return node_id_; }
 
  protected:
+  std::vector<RaidenTransferEndpoint> BuildEndpoints(int64_t port) const;
+
   struct SendEntry {
     std::string req_id;
     uint64_t uuid = 0;

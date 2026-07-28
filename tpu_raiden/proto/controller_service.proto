@@ -17,14 +17,96 @@ syntax = "proto3";
 package tpu_raiden.proto;
 
 import "tpu_raiden/proto/worker_service.proto";
+import "tpu_raiden/rpc/raiden_service.proto";
 
 // Service definition for TPU Raiden Controller.
 service RaidenControllerService {
   // Registers a worker daemon / endpoint with the controller.
   rpc RegisterWorker(RegisterWorkerRequest) returns (RegisterWorkerResponse) {  }
 
-  // Requests a remote read from this controller.
-  rpc ReadRemote(ReadRemoteRequest) returns (ReadRemoteResponse) {  }
+  // --- Read-lease protocol (receiver-initiated pull) -----------------------
+  //
+  // A remote read is a three-phase transaction against the SOURCE controller:
+  //
+  //   Prepare  AcquireReadLease  all-or-nothing verify & pin of the requested
+  //                              hashes; returns the authoritative source host
+  //                              block ids, this source's worker endpoint
+  //                              groups, and a lease_id.
+  //   Work     (no RPC)          the destination's own workers pull the bytes.
+  //   Commit   ReleaseReadLease  returns a VERDICT. The destination may commit
+  //                              the read ONLY on transfer-OK and LEASE_HELD.
+  //
+  // The TTL is garbage collection, not safety: if it expires under a live pull
+  // the source reclaims the pins and the commit-time verdict turns the read
+  // into a discard + retry rather than silent corruption.
+  rpc AcquireReadLease(AcquireReadLeaseRequest)
+      returns (AcquireReadLeaseResponse) {  }
+  rpc RenewReadLease(RenewReadLeaseRequest) returns (RenewReadLeaseResponse) {  }
+  rpc ReleaseReadLease(ReleaseReadLeaseRequest)
+      returns (ReleaseReadLeaseResponse) {  }
+}
+
+// The source's answer to the only question that gates a commit: was the pin
+// held continuously from grant to this call?
+enum LeaseVerdict {
+  LEASE_VERDICT_UNSPECIFIED = 0;
+  // Pinned continuously. Safe to commit (if the transfer also succeeded).
+  LEASE_HELD = 1;
+  // The TTL expired mid-flight and the pins were reclaimed. The bytes are
+  // suspect: DISCARD.
+  LEASE_REVOKED = 2;
+  // No record of this lease (aged out past the retention window, or the source
+  // restarted). Indistinguishable from "never granted": DISCARD.
+  LEASE_UNKNOWN = 3;
+}
+
+message AcquireReadLeaseRequest {
+  // MUST be non-empty; an empty list is INVALID_ARGUMENT. There is no path
+  // that transfers without validating.
+  repeated bytes block_hashes = 1;
+  // The destination's requested lease duration. 0 means "use the source
+  // default". The source clamps to its own [min, max] and reports the granted
+  // value, which is authoritative.
+  int64 ttl_ms = 2;
+  // Identifies the requesting node, for logging and per-peer accounting. Not
+  // used for authorization.
+  .tpu_raiden.rpc.RaidenIdProto requester_raiden_id = 3;
+}
+
+message AcquireReadLeaseResponse {
+  // Never 0 on success; 0 is reserved as "never granted" so a default-
+  // initialised field cannot alias a live lease.
+  uint64 lease_id = 1;
+  // Authoritative: re-derived from the source's own LRU. The destination's
+  // registry-derived ids are advisory and may be stale.
+  repeated int32 src_host_block_ids = 2;
+  // This source's worker endpoint groups, tagged with node_id so each
+  // destination worker can pair with the source worker holding its shards.
+  // These are DATA-plane endpoints -- the pull speaks the block-transport
+  // protocol, not the control protocol.
+  repeated .tpu_raiden.proto.RaidenWorkerEndpointsProto src_worker_endpoints = 3;
+  // The TTL actually granted, after clamping.
+  int64 granted_ttl_ms = 4;
+}
+
+message RenewReadLeaseRequest {
+  uint64 lease_id = 1;
+  // Extension measured from NOW, not from the current expiration. 0 means
+  // "grant the source default". Clamped like the initial TTL, per extension.
+  int64 extend_ms = 2;
+}
+
+message RenewReadLeaseResponse {
+  LeaseVerdict verdict = 1;
+  int64 new_ttl_ms = 2;
+}
+
+message ReleaseReadLeaseRequest {
+  uint64 lease_id = 1;
+}
+
+message ReleaseReadLeaseResponse {
+  LeaseVerdict verdict = 1;
 }
 
 message RegisterWorkerRequest {
@@ -46,16 +128,3 @@ message RegisterWorkerResponse {
   string error_message = 2;
 }
 
-message ReadRemoteRequest {
-  // Advisory (registry-derived): the source re-derives the authoritative source
-  // host block ids from its own LRU after verifying the block_hashes.
-  repeated int32 src_host_block_ids = 1;
-  repeated int32 dest_host_block_ids = 2;
-  repeated .tpu_raiden.proto.BufferProto src_buffers = 3;
-  repeated .tpu_raiden.proto.BufferProto dst_buffers = 4;
-  // Prefix hashes of the requested blocks. The source controller verifies each
-  // exists in its LRU with status HOST/HOST_AND_HBM and pins it for the transfer.
-  repeated bytes block_hashes = 5;
-}
-
-message ReadRemoteResponse {}

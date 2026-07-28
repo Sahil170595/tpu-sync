@@ -438,6 +438,24 @@ int64_t NumaAwareKVCacheManager::NotifyForRead(
 }
 
 std::vector<RaidenTransferEndpoint>
+NumaAwareKVCacheManager::get_local_data_endpoints() const {
+  std::vector<RaidenTransferEndpoint> res;
+  for (size_t s = 0; s < sub_managers_.size(); ++s) {
+    auto sub_eps = sub_managers_[s]->get_local_data_endpoints();
+    if (!sub_eps.empty()) {
+      std::vector<int64_t> shards;
+      if (s < submanager_to_global_shards_.size()) {
+        shards = submanager_to_global_shards_[s];
+      }
+      for (const auto& sub_ep : sub_eps) {
+        res.push_back({sub_ep.endpoint, shards});
+      }
+    }
+  }
+  return res;
+}
+
+std::vector<RaidenTransferEndpoint>
 NumaAwareKVCacheManager::get_local_endpoints() const {
   std::vector<RaidenTransferEndpoint> res;
   for (size_t s = 0; s < sub_managers_.size(); ++s) {
@@ -796,6 +814,88 @@ NumaAwareKVCacheManager::H2hRead(
   return std::make_pair(std::move(all_ids), std::move(composite));
 }
 
+absl::StatusOr<raiden::PjRtCopyFuture>
+NumaAwareKVCacheManager::H2hReadExplicit(
+    const std::vector<RaidenTransferEndpoint>& remote_descriptors,
+    const std::vector<int>& src_block_ids,
+    const std::vector<int>& dst_block_ids) {
+  if (sub_managers_.empty()) {
+    return raiden::PjRtCopyFuture();
+  }
+  std::vector<raiden::PjRtCopyFuture> sub_copy_futures;
+  sub_copy_futures.reserve(sub_managers_.size());
+
+  for (size_t s = 0; s < sub_managers_.size(); ++s) {
+    // Same endpoint matching as the vector H2hRead/H2hWrite/H2dRead above.
+    const auto& sub_shards = submanager_to_global_shards_[s];
+    std::string matched_ep;
+    for (const auto& desc : remote_descriptors) {
+      for (int64_t gsh : sub_shards) {
+        if (std::find(desc.shards.begin(), desc.shards.end(), gsh) !=
+            desc.shards.end()) {
+          matched_ep = desc.endpoint;
+          break;
+        }
+      }
+      if (!matched_ep.empty()) break;
+    }
+    if (matched_ep.empty() && !remote_descriptors.empty()) {
+      matched_ep = remote_descriptors[0].endpoint;
+    }
+
+    ASSIGN_OR_RETURN(auto fut, sub_managers_[s]->H2hReadExplicit(
+                                   matched_ep, src_block_ids, dst_block_ids,
+                                   /*explicit_dst_ptrs=*/{}));
+    sub_copy_futures.push_back(std::move(fut));
+  }
+  return raiden::JoinPjRtCopyFutures(absl::MakeSpan(sub_copy_futures));
+}
+
+absl::StatusOr<raiden::PjRtCopyFuture> NumaAwareKVCacheManager::H2dRead(
+    const std::vector<RaidenTransferEndpoint>& remote_descriptors,
+    const std::vector<int64_t>& src_host_offsets,
+    const std::vector<int64_t>& dst_host_offsets,
+    const std::vector<int64_t>& dst_device_offsets,
+    const std::vector<int64_t>& copy_sizes) {
+  if (sub_managers_.empty()) {
+    return raiden::PjRtCopyFuture();
+  }
+  std::vector<raiden::PjRtCopyFuture> sub_copy_futures;
+  sub_copy_futures.reserve(sub_managers_.size());
+
+  for (size_t s = 0; s < sub_managers_.size(); ++s) {
+    // Same endpoint matching as the vector H2hRead/H2hWrite above: pick the
+    // remote descriptor that serves this sub-manager's global shards. Every
+    // sub-manager owns a shard of every block, so the block offsets are
+    // identical across sub-managers; only the peer differs.
+    const auto& sub_shards = submanager_to_global_shards_[s];
+    std::string matched_ep;
+    for (const auto& desc : remote_descriptors) {
+      for (int64_t gsh : sub_shards) {
+        if (std::find(desc.shards.begin(), desc.shards.end(), gsh) !=
+            desc.shards.end()) {
+          matched_ep = desc.endpoint;
+          break;
+        }
+      }
+      if (!matched_ep.empty()) break;
+    }
+    if (matched_ep.empty() && !remote_descriptors.empty()) {
+      matched_ep = remote_descriptors[0].endpoint;
+    }
+
+    ASSIGN_OR_RETURN(auto fut, sub_managers_[s]->H2dRead(
+                                   matched_ep, src_host_offsets,
+                                   dst_host_offsets, dst_device_offsets,
+                                   copy_sizes));
+    sub_copy_futures.push_back(std::move(fut));
+  }
+  // Event-aware join (see D2h/H2d): on TPU the per-shard transfers complete via
+  // the PJRT C-API event path, leaving f.future invalid and signalling through
+  // event_bundles; xla::JoinFutures on the raw future would CHECK-fail.
+  return raiden::JoinPjRtCopyFutures(absl::MakeSpan(sub_copy_futures));
+}
+
 absl::Status NumaAwareKVCacheManager::UnlockBlocks(
     const std::vector<int>& block_ids) {
   for (auto& sub : sub_managers_) {
@@ -916,7 +1016,10 @@ void KVCacheManager::StartGrpcServer(
       worker_endpoint = absl::StrCat(worker_ip, ":", bound_port);
     }
 
-    auto local_eps = numa_manager_->get_local_endpoints();
+    // Registry endpoints are what remote peers open DATA connections to (a
+    // pull's H2hRead/H2dRead, a push's H2hWrite), so they must be data
+    // endpoints even when this manager also runs a control server.
+    auto local_eps = numa_manager_->get_local_data_endpoints();
     std::string transfer_endpoints_log = "";
     for (size_t i = 0; i < local_eps.size(); ++i) {
       if (i > 0) absl::StrAppend(&transfer_endpoints_log, ", ");

@@ -95,7 +95,7 @@ class Buffer {
   // worker.
   //
   // TODO(raiden): this is duplicated on every dst buffer; consider moving it to
-  // a single repeated field on ReadRemoteRequest instead of carrying it on each
+  // a single repeated field on the transfer request instead of carrying it on each
   // Buffer.
   const std::vector<RaidenWorkerEndpoints>& remote_worker_endpoints() const {
     return remote_worker_endpoints_;

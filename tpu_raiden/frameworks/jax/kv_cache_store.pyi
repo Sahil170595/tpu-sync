@@ -139,7 +139,11 @@ class KVCacheStore:
   def poll_load_status(self) -> tuple[list[bytes], list[bytes], list[bytes]]:
     """Polls status of asynchronous Load operations."""
     ...
-  def read_remote(self, block_hashes: list[bytes]) -> bool:
+  def read_remote(
+      self,
+      block_hashes: list[bytes],
+      device_block_ids: list[int] = ...,
+  ) -> bool:
     """Launches async H2H read from remote worker."""
     ...
   def poll_remote_read_status(self) -> tuple[list[bytes], list[bytes], list[bytes]]:

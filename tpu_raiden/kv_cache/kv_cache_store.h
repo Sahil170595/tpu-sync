@@ -244,8 +244,31 @@ class KVCacheStore {
              std::vector<std::string>>
   PollLoadStatus();
 
-  // Launches async H2H read from remote worker.
-  absl::Status ReadRemote(const std::vector<std::string>& block_hashes);
+  // Launches an async receiver-initiated read of REMOTE blocks from their
+  // owning peers. Returns as soon as the reads are issued; poll with
+  // PollRemoteReadStatus().
+  //
+  // device_block_ids selects the destination:
+  //   empty                    -> read to host. On success the entries become
+  //                               HOST.
+  //   size == block_hashes     -> read to HBM. The bytes land in the caller's
+  //                               device blocks, with the host landing blocks
+  //                               as the staging hop, so the entries become
+  //                               HOST_AND_HBM and a later load() can reuse
+  //                               the host copy.
+  //   any other size           -> InvalidArgument.
+  //
+  // CALLER CONTRACT: every requested hash must already be pinned, and must
+  // stay pinned until PollRemoteReadStatus() reports it terminal (done or
+  // failed). Releasing early makes the entry eligible for deletion mid-read;
+  // the read is then discarded and the WHOLE batch reported failed.
+  //
+  // In read-to-HBM mode the device blocks are written before the source's
+  // verdict is known, so on failure their contents are UNDEFINED -- treat
+  // supplied device blocks as scratch until the read reports success. Nothing
+  // in the cache ever points at them unless the read commits.
+  absl::Status ReadRemote(const std::vector<std::string>& block_hashes,
+                          const std::vector<int32_t>& device_block_ids = {});
 
   // Polls status of active remote reads.
   // Returns {done_hashes, failed_hashes, pending_hashes}
@@ -304,7 +327,12 @@ class KVCacheStore {
 
   struct RemoteReadState {
     std::vector<std::string> block_hashes;
+    // The local landing blocks. These live HERE and nowhere else until the
+    // poller commits -- stamping them into the LRU entry at issue time would
+    // destroy the peer coordinate the entry needs for a retry.
     std::vector<int> host_block_ids;
+    // Empty for a read to host; otherwise the caller's device blocks.
+    std::vector<int32_t> device_block_ids;
   };
 
   struct FutureHash {

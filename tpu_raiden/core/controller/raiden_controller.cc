@@ -18,11 +18,14 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -35,6 +38,8 @@
 #include "absl/strings/string_view.h"
 #include "absl/strings/strip.h"
 #include "absl/synchronization/mutex.h"
+#include "absl/time/clock.h"
+#include "absl/time/time.h"
 #include "absl/types/span.h"
 #include "grpcpp/client_context.h"
 #include "grpcpp/create_channel.h"
@@ -104,11 +109,84 @@ absl::StatusOr<proto::CreateBuffersResponse> CreateBuffersForWorker(
   return *resp_or;
 }
 
+// How long the destination waits for transfer + release before giving up and
+// discarding. RAIDEN_REMOTE_READ_DEADLINE_S; defaults to the lease TTL plus a
+// margin so that a pull outliving its lease still gets to release and LEARN
+// that it was revoked. Must sit between the TTL and the source's revoked-
+// lease retention (see controller_service.h).
+absl::Duration RemoteReadDeadline() {
+  static const absl::Duration kDeadline = [] {
+    const char* raw = std::getenv("RAIDEN_REMOTE_READ_DEADLINE_S");
+    // Derived from the TTL so overriding only RAIDEN_REMOTE_LOCK_TTL_S keeps a
+    // coherent triple (retention > deadline > ttl); an explicit env var wins.
+    absl::Duration fallback =
+        core::controller::RaidenControllerServiceImpl::DefaultLeaseTtl() +
+        absl::Seconds(30);
+    if (raw == nullptr) return fallback;
+    int64_t seconds = 0;
+    if (!absl::SimpleAtoi(raw, &seconds) || seconds <= 0) {
+      LOG(ERROR) << "RAIDEN_REMOTE_READ_DEADLINE_S=\"" << raw
+                 << "\" is not a positive integer number of seconds; using "
+                 << fallback;
+      return fallback;
+    }
+    return absl::Seconds(seconds);
+  }();
+  return kDeadline;
+}
+
+// Per-phase tracing for a remote read. Off unless RAIDEN_LEASE_TRACE is set:
+// a stalled read is otherwise invisible (the phases are all async callbacks,
+// and a hang looks identical to a slow peer), and this is the first thing
+// anyone debugging one will want.
+bool LeaseTraceEnabled() {
+  static const bool on = std::getenv("RAIDEN_LEASE_TRACE") != nullptr;
+  return on;
+}
+
+#define RAIDEN_LEASE_TRACE(...)                                    \
+  do {                                                             \
+    if (LeaseTraceEnabled()) {                                     \
+      LOG(INFO) << "RAIDEN_LEASE " << absl::StrCat(__VA_ARGS__);    \
+      std::fprintf(stderr, "RAIDEN_LEASE %s\n",                    \
+                   absl::StrCat(__VA_ARGS__).c_str());             \
+    }                                                              \
+  } while (0)
+
+// Validates the timing triple once per process. An incoherent set does not
+// corrupt anything -- the commit gate is clock-free -- but it silently
+// degrades every read (e.g. a deadline below the TTL means the TTL only ever
+// fires for dead destinations, wasting the renewal path and hiding
+// revocations), so say so loudly rather than let it pass.
+void CheckTimingTripleOnce() {
+  static const bool checked = [] {
+    namespace svc = ::tpu_raiden::core::controller;
+    const absl::Duration ttl = svc::RaidenControllerServiceImpl::DefaultLeaseTtl();
+    const absl::Duration deadline = RemoteReadDeadline();
+    const absl::Duration retention =
+        svc::RaidenControllerServiceImpl::RevokedLeaseRetention();
+    if (!(retention > deadline && deadline > ttl)) {
+      LOG(ERROR) << "Incoherent remote-read timing: expected retention > "
+                    "deadline > ttl, got retention="
+                 << retention << " deadline=" << deadline << " ttl=" << ttl
+                 << ". Reads may report UNKNOWN instead of REVOKED, or be "
+                    "abandoned while their lease is still valid.";
+    }
+    return true;
+  }();
+  (void)checked;
+}
+
 }  // namespace
 
 void RaidenController::Init(absl::Span<const std::string> worker_addresses,
                             absl::string_view raiden_orchestrator_address,
                             absl::string_view raiden_controller_address) {
+  // Publish ourselves to in-flight reads (cleared in the destructor).
+  {
+    absl::MutexLock lock(&lifetime_->mu);
+    lifetime_->ctrl = this;
+  }
   // 1. Set callback on registry
   worker_registry_->SetOnRegisterCallback(
       [this](core::controller::WorkerRegistration& reg) {
@@ -163,13 +241,6 @@ void RaidenController::Init(absl::Span<const std::string> worker_addresses,
 
   active_server_ = server_ptr;
 
-  server_ptr->SetTransferBuffersCallback(
-      [this](absl::Span<const Buffer> src_buffers,
-             absl::Span<const Buffer> dst_buffers) {
-        return this->TransferBuffers(src_buffers, dst_buffers);
-      });
-
-  // 3. Register static workers
   for (size_t i = 0; i < worker_addresses.size(); ++i) {
     std::string worker_id = absl::StrCat("worker_", i);
     absl::Status status = worker_registry_->RegisterWorker(
@@ -228,6 +299,14 @@ RaidenController::RaidenController(
 }
 
 RaidenController::~RaidenController() {
+  // Detach in-flight reads FIRST. A ReadRemote continuation holds lifetime_->mu
+  // for as long as it touches this controller, so after this block either the
+  // continuation has finished or it will see a null ctrl and fail the read
+  // cleanly -- never a use-after-free.
+  {
+    absl::MutexLock lock(&lifetime_->mu);
+    lifetime_->ctrl = nullptr;
+  }
   if (worker_registry_) {
     worker_registry_->SetOnRegisterCallback(nullptr);
   }
@@ -237,7 +316,6 @@ RaidenController::~RaidenController() {
   } else {
     auto& server = core::controller::ControllerServer::GetInstance();
     server.SetWorkerRegistry(nullptr);
-    server.SetTransferBuffersCallback(nullptr);
   }
 
   if (all_sharded_buffers_.empty() || !worker_registry_) return;
@@ -557,6 +635,15 @@ tsl::Future<> RaidenController::TransferBuffers(
       peer_node_id_to_endpoints.emplace(group.node_id, &group);
     }
   }
+  // Pull direction (remote src): the peer's worker endpoint groups arrive on
+  // the src buffers instead.
+  if (peer_node_id_to_endpoints.empty()) {
+    for (const auto& src_buf : src_buffers) {
+      for (const auto& group : src_buf.remote_worker_endpoints()) {
+        peer_node_id_to_endpoints.emplace(group.node_id, &group);
+      }
+    }
+  }
 
   std::vector<tsl::Future<>> worker_futures;
   worker_futures.reserve(workers.size());
@@ -573,14 +660,30 @@ tsl::Future<> RaidenController::TransferBuffers(
     // Every buffer/block is transferred by every worker (each worker owns a
     // shard of every block), so there is no per-block partitioning here.
     for (size_t i = 0; i < src_buffers.size(); ++i) {
-      worker_src.push_back(src_buffers[i]);
+      Buffer src_buf = src_buffers[i];
+      if (!src_buf.remote_worker_endpoints().empty()) {
+        // Pull: pair this local worker with the remote source worker that
+        // shares its node_id. Never broadcast — an unmatched node_id would
+        // corrupt the shards.
+        auto it = peer_node_id_to_endpoints.find(workers[w].node_id);
+        if (it == peer_node_id_to_endpoints.end()) {
+          return tsl::Future<>(absl::FailedPreconditionError(absl::StrCat(
+              "TransferBuffers: no source worker group with node_id ",
+              workers[w].node_id, " to match local worker '",
+              workers[w].worker_id, "' (source provided ",
+              src_buf.remote_worker_endpoints().size(), " group(s))")));
+        }
+        src_buf.set_remote_descriptors(it->second->endpoints);
+        src_buf.set_remote_worker_endpoints({});
+      }
+      worker_src.push_back(std::move(src_buf));
 
       Buffer dst_buf = dst_buffers[i];
       if (!dst_buf.remote_worker_endpoints().empty()) {
         auto it = peer_node_id_to_endpoints.find(workers[w].node_id);
         if (it == peer_node_id_to_endpoints.end()) {
           return tsl::Future<>(absl::FailedPreconditionError(absl::StrCat(
-              "ReadRemote: no destination worker group with node_id ",
+              "TransferBuffers: no destination worker group with node_id ",
               workers[w].node_id, " to match source worker '",
               workers[w].worker_id, "' (destination provided ",
               dst_buf.remote_worker_endpoints().size(), " group(s))")));
@@ -655,57 +758,70 @@ void RaidenController::SetReadRemoteHooks(
   }
 }
 
+
+// Everything a single in-flight read needs, owned by a shared_ptr so the
+// acquire callback, the transfer future, and the release callback can chain
+// without capturing `this` -- controller teardown mid-read must not be a
+// use-after-free.
+struct RemoteReadState {
+  std::shared_ptr<::tpu_raiden::proto::RaidenControllerService::Stub> stub;
+  std::shared_ptr<tsl::Promise<>> promise;
+  std::vector<int32_t> dst_host_block_ids;
+  std::vector<int32_t> dst_device_block_ids;
+  uint64_t lease_id = 0;
+  absl::Mutex mu;
+  bool settled ABSL_GUARDED_BY(mu) = false;
+
+  // Idempotent: the deadline timer and the release callback race by design.
+  void Settle(absl::Status status) {
+    {
+      absl::MutexLock lock(&mu);
+      if (settled) return;
+      settled = true;
+    }
+    promise->Set(std::move(status));
+  }
+};
+
 tsl::Future<> RaidenController::ReadRemote(
     const kv_cache::RaidenId& src_raiden_id,
     const std::vector<int32_t>& src_host_block_ids,
-    const std::vector<int32_t>& dest_host_block_ids,
-    const std::vector<std::string>& block_hashes) {
+    const std::vector<int32_t>& dst_host_block_ids,
+    const std::vector<std::string>& block_hashes,
+    const std::vector<int32_t>& dst_device_block_ids) {
   namespace cproto = ::tpu_raiden::proto;
+  CheckTimingTripleOnce();
 
-  if (src_host_block_ids.size() != dest_host_block_ids.size()) {
+  if (src_host_block_ids.size() != dst_host_block_ids.size()) {
     return tsl::Future<>(absl::InvalidArgumentError(absl::StrCat(
         "Mismatch in block IDs sizes: src size ", src_host_block_ids.size(),
-        " vs dest size ", dest_host_block_ids.size())));
+        " vs dst size ", dst_host_block_ids.size())));
+  }
+  if (block_hashes.empty()) {
+    // There is no unvalidated transfer path any more: without hashes the
+    // source cannot verify or pin anything.
+    return tsl::Future<>(absl::InvalidArgumentError(
+        "ReadRemote requires block_hashes to validate at the source"));
+  }
+  if (block_hashes.size() != dst_host_block_ids.size()) {
+    return tsl::Future<>(absl::InvalidArgumentError(
+        absl::StrCat("block_hashes size ", block_hashes.size(),
+                     " does not match block id count ",
+                     dst_host_block_ids.size())));
+  }
+  // Reject a wrong-sized device list BEFORE acquiring, so a caller error never
+  // pins anything at the source.
+  const bool to_hbm = !dst_device_block_ids.empty();
+  if (to_hbm && dst_device_block_ids.size() != dst_host_block_ids.size()) {
+    return tsl::Future<>(absl::InvalidArgumentError(absl::StrCat(
+        "dst_device_block_ids size ", dst_device_block_ids.size(),
+        " must be empty (read to host) or match the block count ",
+        dst_host_block_ids.size())));
   }
 
-  auto workers = worker_registry_->GetRegisteredWorkers();
-  if (workers.empty()) {
+  if (worker_registry_->GetRegisteredWorkers().empty()) {
     return tsl::Future<>(absl::FailedPreconditionError(
         "No registered workers available for ReadRemote"));
-  }
-
-  std::sort(workers.begin(), workers.end(),
-            [](const core::controller::WorkerRegistration& a,
-               const core::controller::WorkerRegistration& b) {
-              return CompareWorkerIds(a.worker_id, b.worker_id);
-            });
-
-  std::vector<Buffer> src_buffers;
-  src_buffers.reserve(src_host_block_ids.size());
-  for (int32_t id : src_host_block_ids) {
-    src_buffers.emplace_back(id, std::vector<BufferShard>{}, std::nullopt,
-                             rpc::MemoryType::MEMORY_TYPE_DRAM);
-  }
-
-  // A KV block is sharded across every (destination) worker, so every block is
-  // transferred by every worker. Attach the full list of destination workers'
-  // endpoint groups to each dst buffer, each tagged with its node_id, so the
-  // remote source controller can match each of its workers to the destination
-  // peer worker with the same node_id.
-  std::vector<RaidenWorkerEndpoints> dest_worker_endpoints;
-  dest_worker_endpoints.reserve(workers.size());
-  for (const auto& reg : workers) {
-    dest_worker_endpoints.push_back(
-        {reg.node_id, reg.worker_id, reg.raiden_transfer_endpoints});
-  }
-
-  std::vector<Buffer> dst_buffers;
-  dst_buffers.reserve(dest_host_block_ids.size());
-  for (size_t i = 0; i < dest_host_block_ids.size(); ++i) {
-    Buffer dst_buf(dest_host_block_ids[i], std::vector<BufferShard>{},
-                   std::nullopt, rpc::MemoryType::MEMORY_TYPE_DRAM);
-    dst_buf.set_remote_worker_endpoints(dest_worker_endpoints);
-    dst_buffers.push_back(std::move(dst_buf));
   }
 
   std::string controller_address;
@@ -716,7 +832,6 @@ tsl::Future<> RaidenController::ReadRemote(
       controller_address = it->second;
     }
   }
-
   if (controller_address.empty()) {
     rpc::RaidenIdProto src_proto = ToProto(src_raiden_id);
     auto address_or = ResolvePeerController(src_proto);
@@ -734,11 +849,8 @@ tsl::Future<> RaidenController::ReadRemote(
   {
     absl::MutexLock lock(mutex_);
     auto it = stubs_.find(controller_address);
-    if (it != stubs_.end()) {
-      stub = it->second;
-    }
+    if (it != stubs_.end()) stub = it->second;
   }
-
   if (stub == nullptr) {
     auto channel = grpc::CreateChannel(controller_address,
                                        grpc::InsecureChannelCredentials());
@@ -749,47 +861,211 @@ tsl::Future<> RaidenController::ReadRemote(
     }
   }
 
-  cproto::ReadRemoteRequest request;
-  request.mutable_src_host_block_ids()->Reserve(src_host_block_ids.size());
-  request.mutable_dest_host_block_ids()->Reserve(dest_host_block_ids.size());
-  for (int32_t id : src_host_block_ids) {
-    request.add_src_host_block_ids(id);
-  }
-  for (int32_t id : dest_host_block_ids) {
-    request.add_dest_host_block_ids(id);
-  }
-  for (const auto& hash : block_hashes) {
-    request.add_block_hashes(hash);
-  }
-  for (const auto& buf : src_buffers) {
-    *request.add_src_buffers() = buf.ToProto();
-  }
-  for (const auto& buf : dst_buffers) {
-    *request.add_dst_buffers() = buf.ToProto();
-  }
-
   auto [promise, future] = tsl::MakePromise<>();
-  auto context = std::make_shared<grpc::ClientContext>();
-  auto response = std::make_shared<cproto::ReadRemoteResponse>();
+  auto state = std::make_shared<RemoteReadState>();
+  state->stub = stub;
+  state->promise = std::move(promise).ToShared();
+  state->dst_host_block_ids = dst_host_block_ids;
+  state->dst_device_block_ids = dst_device_block_ids;
 
-  stub->async()->ReadRemote(
-      context.get(), &request, response.get(),
-      [context, response, stub,
-       promise = std::move(promise).ToShared()](grpc::Status status) {
+  // ---- Phase 1: Prepare -- acquire the lease. -----------------------------
+  auto acquire_ctx = std::make_shared<grpc::ClientContext>();
+  auto acquire_req = std::make_shared<cproto::AcquireReadLeaseRequest>();
+  for (const auto& hash : block_hashes) acquire_req->add_block_hashes(hash);
+  acquire_req->set_ttl_ms(absl::ToInt64Milliseconds(
+      core::controller::RaidenControllerServiceImpl::DefaultLeaseTtl()));
+  *acquire_req->mutable_requester_raiden_id() = unit_;
+  auto acquire_resp = std::make_shared<cproto::AcquireReadLeaseResponse>();
+
+  // Capture only shared state and by-value copies -- never `this`.
+  auto lifetime = lifetime_;
+
+  stub->async()->AcquireReadLease(
+      acquire_ctx.get(), acquire_req.get(), acquire_resp.get(),
+      [state, acquire_ctx, acquire_req, acquire_resp, lifetime,
+       to_hbm](grpc::Status status) {
         if (!status.ok()) {
-          // Preserve the gRPC status code (grpc and absl codes share the same
-          // canonical integers), so ReadRemote step-6a errors stay
-          // distinguishable end-to-end: NOT_FOUND (BLOCK_HASH_NOT_FOUND) vs
-          // FAILED_PRECONDITION (present but not host-resident) vs INTERNAL.
-          promise->Set(absl::Status(
+          // grpc and absl codes share canonical integers, so the source's
+          // verify-hook distinctions survive: NOT_FOUND (hash absent) vs
+          // FAILED_PRECONDITION (present, not host-resident). No retry here --
+          // neither is retryable against the same source, and a hidden retry
+          // loop would turn a fast failure into unbounded TTFT.
+          RAIDEN_LEASE_TRACE("acquire FAILED code=", status.error_code(), " ",
+                             status.error_message());
+          state->Settle(absl::Status(
               static_cast<absl::StatusCode>(status.error_code()),
-              absl::StrCat("ReadRemote RPC failed: ", status.error_message())));
-        } else {
-          promise->Set(absl::OkStatus());
+              absl::StrCat("AcquireReadLease failed: ", status.error_message())));
+          return;
         }
+        state->lease_id = acquire_resp->lease_id();
+        RAIDEN_LEASE_TRACE("acquired lease=", state->lease_id, " src_ids=",
+                           acquire_resp->src_host_block_ids_size(), " groups=",
+                           acquire_resp->src_worker_endpoints_size(),
+                           " ttl_ms=", acquire_resp->granted_ttl_ms());
+
+        // ---- Phase 2: Work -- our own workers pull the bytes. -------------
+        // Use the source's AUTHORITATIVE ids, not the advisory ones we sent.
+        std::vector<int32_t> src_ids(acquire_resp->src_host_block_ids().begin(),
+                                     acquire_resp->src_host_block_ids().end());
+        std::vector<RaidenWorkerEndpoints> src_groups;
+        src_groups.reserve(acquire_resp->src_worker_endpoints_size());
+        for (const auto& group : acquire_resp->src_worker_endpoints()) {
+          std::vector<::tpu_raiden::RaidenTransferEndpoint> eps;
+          eps.reserve(group.endpoints_size());
+          for (const auto& ep : group.endpoints()) {
+            eps.push_back({ep.endpoint(), std::vector<int64_t>(
+                                              ep.shards().begin(),
+                                              ep.shards().end())});
+          }
+          src_groups.push_back(
+              {group.node_id(), group.worker_id(), std::move(eps)});
+        }
+
+        absl::MutexLock lock(&lifetime->mu);
+        if (lifetime->ctrl == nullptr) {
+          // The controller went away mid-read. Release best-effort so the
+          // source does not hold pins for a full TTL, then fail the read.
+          auto ctx = std::make_shared<grpc::ClientContext>();
+          auto req =
+              std::make_shared<::tpu_raiden::proto::ReleaseReadLeaseRequest>();
+          req->set_lease_id(state->lease_id);
+          auto resp =
+              std::make_shared<::tpu_raiden::proto::ReleaseReadLeaseResponse>();
+          state->stub->async()->ReleaseReadLease(
+              ctx.get(), req.get(), resp.get(),
+              [ctx, req, resp](grpc::Status) {});
+          state->Settle(absl::CancelledError(
+              "ReadRemote abandoned: controller shut down mid-read"));
+          return;
+        }
+        lifetime->ctrl->PullAndRelease(src_ids, src_groups, state, to_hbm);
       });
 
+  // ---- Deadline. ----------------------------------------------------------
+  // Without this a hung worker leaves the future unresolved forever, which
+  // leaves the hashes permanently inadmissible at the store (reading_hashes_
+  // is never cleared) and contradicts the retry story. Expiry routes through
+  // the normal discard path.
+  std::thread([state, deadline = RemoteReadDeadline()] {
+    absl::SleepFor(deadline);
+    {
+      absl::MutexLock lock(&state->mu);
+      if (state->settled) return;
+    }
+    if (state->lease_id != 0) {
+      // Best-effort, fire-and-forget: let the source reclaim early rather than
+      // wait out the TTL.
+      auto ctx = std::make_shared<grpc::ClientContext>();
+      auto req = std::make_shared<::tpu_raiden::proto::ReleaseReadLeaseRequest>();
+      req->set_lease_id(state->lease_id);
+      auto resp =
+          std::make_shared<::tpu_raiden::proto::ReleaseReadLeaseResponse>();
+      state->stub->async()->ReleaseReadLease(
+          ctx.get(), req.get(), resp.get(), [ctx, req, resp](grpc::Status) {});
+    }
+    RAIDEN_LEASE_TRACE("DEADLINE lease=", state->lease_id);
+    state->Settle(absl::DeadlineExceededError(absl::StrCat(
+        "ReadRemote exceeded the destination deadline (", deadline, ")")));
+  }).detach();
+
   return future;
+}
+
+
+void RaidenController::PullAndRelease(
+    const std::vector<int32_t>& src_host_block_ids,
+    const std::vector<RaidenWorkerEndpoints>& src_groups,
+    const std::shared_ptr<RemoteReadState>& state, bool to_hbm) {
+  // Pull direction: the peer's endpoint groups ride on the SRC buffers, and
+  // TransferBuffers pairs each local worker with the source group sharing its
+  // node_id (hard failure if unmatched -- never a broadcast).
+  std::vector<Buffer> src_buffers;
+  src_buffers.reserve(src_host_block_ids.size());
+  for (int32_t id : src_host_block_ids) {
+    Buffer src_buf(id, std::vector<BufferShard>{}, std::nullopt,
+                   rpc::MemoryType::MEMORY_TYPE_DRAM);
+    src_buf.set_remote_worker_endpoints(src_groups);
+    src_buffers.push_back(std::move(src_buf));
+  }
+
+  std::vector<Buffer> dst_buffers;
+  std::vector<Buffer> staging_buffers;
+  if (to_hbm) {
+    // remote host src -> local host staging -> local device dst. The host
+    // landing blocks double as the staging hop, which is why the committed
+    // state is HOST_AND_HBM and a later local load() can reuse the host copy.
+    dst_buffers.reserve(state->dst_device_block_ids.size());
+    for (int32_t id : state->dst_device_block_ids) {
+      dst_buffers.emplace_back(id, std::vector<BufferShard>{}, std::nullopt,
+                               rpc::MemoryType::MEMORY_TYPE_HBM);
+    }
+    staging_buffers.reserve(state->dst_host_block_ids.size());
+    for (int32_t id : state->dst_host_block_ids) {
+      staging_buffers.emplace_back(id, std::vector<BufferShard>{}, std::nullopt,
+                                   rpc::MemoryType::MEMORY_TYPE_DRAM);
+    }
+  } else {
+    dst_buffers.reserve(state->dst_host_block_ids.size());
+    for (int32_t id : state->dst_host_block_ids) {
+      dst_buffers.emplace_back(id, std::vector<BufferShard>{}, std::nullopt,
+                               rpc::MemoryType::MEMORY_TYPE_DRAM);
+    }
+  }
+
+  RAIDEN_LEASE_TRACE("pull issue lease=", state->lease_id,
+                     " blocks=", src_buffers.size(),
+                     " to_hbm=", to_hbm ? 1 : 0);
+  tsl::Future<> transfer =
+      TransferBuffers(src_buffers, dst_buffers, staging_buffers);
+  RAIDEN_LEASE_TRACE("pull issued lease=", state->lease_id);
+
+  // ---- Phase 3: Commit -- release and read the verdict. -------------------
+  // This runs on EVERY path, including transfer failure: leaving a failed
+  // read's lease to the sweeper would hold the source's blocks for a full TTL
+  // for no reason.
+  transfer.OnReady([state](absl::Status transfer_status) {
+    RAIDEN_LEASE_TRACE("pull done lease=", state->lease_id,
+                       " status=", transfer_status.ToString());
+    auto ctx = std::make_shared<grpc::ClientContext>();
+    auto req = std::make_shared<::tpu_raiden::proto::ReleaseReadLeaseRequest>();
+    req->set_lease_id(state->lease_id);
+    auto resp =
+        std::make_shared<::tpu_raiden::proto::ReleaseReadLeaseResponse>();
+    state->stub->async()->ReleaseReadLease(
+        ctx.get(), req.get(), resp.get(),
+        [state, ctx, req, resp, transfer_status](grpc::Status rpc_status) {
+          if (!transfer_status.ok()) {
+            // Report the transfer error; the release was still sent.
+            state->Settle(transfer_status);
+            return;
+          }
+          if (!rpc_status.ok()) {
+            // We cannot tell whether the pin held, so we must assume it did
+            // not.
+            state->Settle(absl::UnavailableError(
+                absl::StrCat("ReleaseReadLease failed, verdict unknown: ",
+                             rpc_status.error_message())));
+            return;
+          }
+          RAIDEN_LEASE_TRACE("release lease=", state->lease_id,
+                             " verdict=", static_cast<int>(resp->verdict()));
+          switch (resp->verdict()) {
+            case ::tpu_raiden::proto::LEASE_HELD:
+              state->Settle(absl::OkStatus());
+              return;
+            case ::tpu_raiden::proto::LEASE_REVOKED:
+              state->Settle(absl::FailedPreconditionError(
+                  "read discarded: the source lease was revoked mid-read (its "
+                  "TTL expired), so the bytes may be from reused blocks"));
+              return;
+            default:
+              state->Settle(absl::FailedPreconditionError(
+                  "read discarded: the source has no record of this lease "
+                  "(aged out or restarted), so the pin cannot be attested"));
+              return;
+          }
+        });
+  });
 }
 
 }  // namespace controller

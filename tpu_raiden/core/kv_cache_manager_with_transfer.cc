@@ -1431,12 +1431,27 @@ absl::Status KVCacheManagerWithTransfer::PoolReshardRegisterRecv(
 
 std::vector<RaidenTransferEndpoint>
 KVCacheManagerWithTransfer::get_local_endpoints() const {
+  // NOTE: prefers the CONTROL port when a control server is running, because
+  // StartRead speaks the control protocol. Callers that need the block-
+  // transport data protocol (H2hRead/H2dRead pulls, H2hWrite pushes, and
+  // therefore worker registration) must use get_local_data_endpoints()
+  // instead: aiming a data-protocol connection at the control port hangs both
+  // sides with no error, since each waits for the other's framing.
+  return BuildEndpoints(local_control_port_ > 0 ? local_control_port_
+                                                : local_port().value_or(0));
+}
+
+std::vector<RaidenTransferEndpoint>
+KVCacheManagerWithTransfer::get_local_data_endpoints() const {
+  return BuildEndpoints(local_port().value_or(0));
+}
+
+std::vector<RaidenTransferEndpoint> KVCacheManagerWithTransfer::BuildEndpoints(
+    int64_t port) const {
   std::vector<int64_t> all_shards(num_shards_);
   for (size_t i = 0; i < num_shards_; ++i) {
     all_shards[i] = static_cast<int64_t>(i);
   }
-  int64_t port =
-      local_control_port_ > 0 ? local_control_port_ : local_port().value_or(0);
   std::vector<RaidenTransferEndpoint> eps;
   for (const auto& ip : local_ips()) {
     std::string endpoint = absl::StrContains(ip, ':')
@@ -1952,13 +1967,32 @@ void KVCacheManagerWithTransfer::RegisterBlockReadinessCallback(
     cb(absl::OkStatus());
     return;
   }
+  if (uuid == transport::kLeaseAuthorizedPullUuid) {
+    // A lease-authorised pull. The reader holds a lease over blocks this node
+    // already published as host-resident, so their device-to-host copy
+    // provably completed before the lease was granted, and the pin keeps them
+    // from being reused for the duration of the read. Gating here would add
+    // nothing -- and would be actively wrong, because the fallback scan below
+    // can only match some OTHER transfer's entry, making this read wait on a
+    // future that has nothing to do with it.
+    cb(absl::OkStatus());
+    return;
+  }
   std::shared_ptr<SendEntry> entry;
   {
     absl::MutexLock lock(mu_);
+    // Exact match: the transfer named itself, so gate on its own D2H. Reached
+    // by uuid-carrying senders; a pull that did not identify itself falls
+    // through to the scan below.
     auto it = send_entries_.find(uuid);
     if (it != send_entries_.end()) {
       entry = it->second;
     } else {
+      // Fallback: no entry owns this uuid, so look for any live transfer that
+      // registered this block id and wait on ITS copy. Conservative and
+      // imprecise -- the match is by block id alone, so an unrelated transfer
+      // can gate this one, and a stale entry whose future never resolves would
+      // stall it until the reader's own deadline fires.
       for (const auto& [u, e] : send_entries_) {
         if (e->registered_block_set.find(block_id) !=
                 e->registered_block_set.end() &&

@@ -969,6 +969,13 @@ class KVCacheStoreEmbeddedControllerTest : public ::testing::Test {
  protected:
   void SetUp() override {
     test_server_ = ::tpu_raiden::controller::CreateTestWorkerServer();
+    // The DESTINATION worker executes the copy now (the read is a pull), so it
+    // needs a transfer manager. Scripting it to succeed is what lets the
+    // commit-side logic run at all on CPU, where a real transfer cannot.
+    dst_transfer_mock_ =
+        std::make_unique<::tpu_raiden::controller::ShardAwareMockTransferManager>();
+    test_server_->service->SetTransferManager(
+        ::tpu_raiden::KVManagerHolder(dst_transfer_mock_.get()));
     unit_.set_job_name("test_job");
     unit_.set_job_replica_id("0");
     unit_.set_data_name("test_data");
@@ -1006,6 +1013,8 @@ class KVCacheStoreEmbeddedControllerTest : public ::testing::Test {
 
   rpc::RaidenIdProto unit_;
   std::unique_ptr<::tpu_raiden::controller::TestWorkerServer> test_server_;
+  std::unique_ptr<::tpu_raiden::controller::ShardAwareMockTransferManager>
+      dst_transfer_mock_;
   std::unique_ptr<::tpu_raiden::RaidenOrchestrator> orchestrator_service_;
   std::unique_ptr<grpc::Server> orchestrator_server_;
   std::string orchestrator_address_;
@@ -1816,49 +1825,29 @@ TEST_F(KVCacheStoreEmbeddedControllerTest, ReadRemoteSuccess) {
   };
   register_src_worker("worker_0", "src_worker_0_addr", "src_worker_0_transfer");
 
-  // Setup src controller's transfer callback to simulate successful H2H
-  std::atomic<bool> callback_triggered = false;
-  src_controller_server->service->SetTransferBuffersCallback(
-      [&](absl::Span<const Buffer> src_buffers,
-          absl::Span<const Buffer> dst_buffers) {
-        callback_triggered = true;
-        std::vector<int64_t> src_offsets;
-        for (const auto& buf : src_buffers) {
-          EXPECT_EQ(buf.memory_type(), rpc::MemoryType::MEMORY_TYPE_DRAM);
-          src_offsets.push_back(buf.index());
-        }
-        EXPECT_THAT(src_offsets, ::testing::ElementsAre(42));
 
-        std::vector<int64_t> dst_offsets;
-        std::vector<std::string> peer_addrs;
-        for (const auto& buf : dst_buffers) {
-          EXPECT_EQ(buf.memory_type(), rpc::MemoryType::MEMORY_TYPE_DRAM);
-          dst_offsets.push_back(buf.index());
-          // ReadRemote carries the destination peer workers as per-worker
-          // endpoint groups (each tagged with node_id); the source narrows them
-          // to the node_id-matched worker.
-          for (const auto& group : buf.remote_worker_endpoints()) {
-            for (const auto& p : group.endpoints) {
-              peer_addrs.push_back(p.endpoint);
-            }
-          }
-        }
-        EXPECT_THAT(dst_offsets, ::testing::ElementsAre(
-                                     0));  // allocated local host_block_id
-        EXPECT_THAT(peer_addrs,
-                    ::testing::ElementsAre(test_server_->server_address));
-        return tsl::Future<>(absl::OkStatus());
-      });
+  // Every read is now validated at the source by construction -- there is no
+  // longer any RPC that transfers without verifying and pinning first. Grant
+  // the lease and echo back authoritative ids.
+  src_controller_server->service->SetReadRemoteHooks(
+      [&](absl::Span<const std::string> h)
+          -> absl::StatusOr<std::vector<int32_t>> {
+        return std::vector<int32_t>(h.size(), 42);
+      },
+      [&](absl::Span<const std::string> /*h*/) {});
+  // NOTE: the source no longer transfers anything. Under the pull
+  // design the DESTINATION's own worker (test_server_, backed by a mock
+  // transfer manager) executes the copy, and the source only leases.
 
   // Setup dest controller and KVCacheStore
-  auto dest_controller =
+  auto dst_controller =
       std::make_unique<::tpu_raiden::controller::RaidenController>(
           unit_, 10, 1, 512, orchestrator_address_, "");
-  RegisterAndInitWorker(*dest_controller, "worker_0",
+  RegisterAndInitWorker(*dst_controller, "worker_0",
                         test_server_->server_address);
 
-  RaidenId rid{"dest_job", "0", "dest_cache", 0};
-  KVCacheStore store(10, std::move(dest_controller), registry_address, rid);
+  RaidenId rid{"dst_job", "0", "dst_cache", 0};
+  KVCacheStore store(10, std::move(dst_controller), registry_address, rid);
 
   // Insert and pin remote block in local store
   std::vector<std::string> hashes = {"hash_0"};
@@ -1884,7 +1873,12 @@ TEST_F(KVCacheStoreEmbeddedControllerTest, ReadRemoteSuccess) {
     absl::SleepFor(absl::Milliseconds(10));
   }
   ASSERT_TRUE(done);
-  EXPECT_TRUE(callback_triggered);
+  // The DESTINATION's worker executed the pull, against the source's
+  // authoritative block id (42, from the verify hook) and into the landing
+  // block the store allocated.
+  EXPECT_EQ(dst_transfer_mock_->vector_h2h_read_calls, 1);
+  EXPECT_THAT(dst_transfer_mock_->last_src_offsets, ::testing::ElementsAre(42));
+  EXPECT_THAT(dst_transfer_mock_->last_dst_offsets, ::testing::ElementsAre(0));
 
   // Verify status in LRU is HOST, host_block_id is 0
   auto lookup_res = store.Lookup(hashes);
@@ -1959,21 +1953,27 @@ TEST_F(KVCacheStoreEmbeddedControllerTest, ReadRemoteFailure) {
   };
   register_src_worker("worker_0", "src_worker_0_addr", "src_worker_0_transfer");
 
-  // Setup src controller to fail
-  src_controller_server->service->SetTransferBuffersCallback(
-      [&](absl::Span<const Buffer> src_buffers,
-          absl::Span<const Buffer> dst_buffers) {
-        return tsl::Future<>(absl::InternalError("H2H Transfer Failed"));
-      });
+  // Every read is now validated at the source by construction -- there is no
+  // longer any RPC that transfers without verifying and pinning first. Grant
+  // the lease and echo back authoritative ids.
+  src_controller_server->service->SetReadRemoteHooks(
+      [&](absl::Span<const std::string> h)
+          -> absl::StatusOr<std::vector<int32_t>> {
+        return std::vector<int32_t>(h.size(), 42);
+      },
+      [&](absl::Span<const std::string> /*h*/) {});
+  // NOTE: the source no longer transfers anything. Under the pull
+  // design the DESTINATION's own worker (test_server_, backed by a mock
+  // transfer manager) executes the copy, and the source only leases.
 
-  auto dest_controller =
+  auto dst_controller =
       std::make_unique<::tpu_raiden::controller::RaidenController>(
           unit_, 10, 1, 512, orchestrator_address_, "");
-  RegisterAndInitWorker(*dest_controller, "worker_0",
+  RegisterAndInitWorker(*dst_controller, "worker_0",
                         test_server_->server_address);
 
-  RaidenId rid{"dest_job", "0", "dest_cache", 0};
-  KVCacheStore store(2, std::move(dest_controller), registry_address, rid);
+  RaidenId rid{"dst_job", "0", "dst_cache", 0};
+  KVCacheStore store(2, std::move(dst_controller), registry_address, rid);
 
   // Fill cache with two local blocks
   std::vector<std::string> local_hashes = {"local_1", "local_2"};
@@ -1990,6 +1990,10 @@ TEST_F(KVCacheStoreEmbeddedControllerTest, ReadRemoteFailure) {
   std::vector<RaidenBlockID> slices = {
       RaidenBlockID(src_raiden_id, 42, BlockStatus::REMOTE)};
   ASSERT_TRUE(store.InsertAndLock(hashes, slices, true));
+
+  // The transfer now runs on the DESTINATION, so that is where the failure is
+  // injected.
+  dst_transfer_mock_->fail_transfers = true;
 
   // Trigger ReadRemote
   absl::Status status = store.ReadRemote(hashes);
@@ -2066,19 +2070,17 @@ TEST_F(KVCacheStoreEmbeddedControllerTest,
         return absl::NotFoundError("BLOCK_HASH_NOT_FOUND: h");
       },
       [&](absl::Span<const std::string> /*h*/) {});
-  src_controller_server->service->SetTransferBuffersCallback(
-      [&](absl::Span<const Buffer> /*s*/, absl::Span<const Buffer> /*d*/) {
-        transfer_ran = true;
-        return tsl::Future<>(absl::OkStatus());
-      });
+  // NOTE: the source no longer transfers anything. Under the pull design
+  // the DESTINATION's own worker (test_server_, backed by a mock transfer
+  // manager) executes the copy; the source only leases.
 
-  auto dest_controller =
+  auto dst_controller =
       std::make_unique<::tpu_raiden::controller::RaidenController>(
           unit_, 10, 1, 512, orchestrator_address_, "");
-  RegisterAndInitWorker(*dest_controller, "worker_0",
+  RegisterAndInitWorker(*dst_controller, "worker_0",
                         test_server_->server_address);
-  RaidenId rid{"dest_job", "0", "dest_cache", 0};
-  KVCacheStore store(2, std::move(dest_controller), "", rid);
+  RaidenId rid{"dst_job", "0", "dst_cache", 0};
+  KVCacheStore store(2, std::move(dst_controller), "", rid);
 
   std::vector<std::string> hashes = {"hash_0"};
   std::vector<RaidenBlockID> slices = {
@@ -2140,18 +2142,17 @@ TEST_F(KVCacheStoreEmbeddedControllerTest,
       [&](absl::Span<const std::string> h) {
         unpinned.assign(h.begin(), h.end());
       });
-  src_controller_server->service->SetTransferBuffersCallback(
-      [&](absl::Span<const Buffer> /*s*/, absl::Span<const Buffer> /*d*/) {
-        return tsl::Future<>(absl::OkStatus());
-      });
+  // NOTE: the source no longer transfers anything. Under the pull design
+  // the DESTINATION's own worker (test_server_, backed by a mock transfer
+  // manager) executes the copy; the source only leases.
 
-  auto dest_controller =
+  auto dst_controller =
       std::make_unique<::tpu_raiden::controller::RaidenController>(
           unit_, 10, 1, 512, orchestrator_address_, "");
-  RegisterAndInitWorker(*dest_controller, "worker_0",
+  RegisterAndInitWorker(*dst_controller, "worker_0",
                         test_server_->server_address);
-  RaidenId rid{"dest_job", "0", "dest_cache", 0};
-  KVCacheStore store(2, std::move(dest_controller), "", rid);
+  RaidenId rid{"dst_job", "0", "dst_cache", 0};
+  KVCacheStore store(2, std::move(dst_controller), "", rid);
 
   std::vector<std::string> hashes = {"hash_0"};
   std::vector<RaidenBlockID> slices = {
@@ -2215,20 +2216,27 @@ TEST_F(KVCacheStoreEmbeddedControllerTest, ReadRemoteDuplicateFails) {
   // Keep transfer pending by not fulfilling the promise
   auto promise_and_future = tsl::MakePromise();
   auto& promise = promise_and_future.first;
-  src_controller_server->service->SetTransferBuffersCallback(
-      [f = promise_and_future.second](absl::Span<const Buffer> src_buffers,
-                                      absl::Span<const Buffer> dst_buffers) {
-        return f;
-      });
+  // Every read is now validated at the source by construction -- there is no
+  // longer any RPC that transfers without verifying and pinning first. Grant
+  // the lease and echo back authoritative ids.
+  src_controller_server->service->SetReadRemoteHooks(
+      [&](absl::Span<const std::string> h)
+          -> absl::StatusOr<std::vector<int32_t>> {
+        return std::vector<int32_t>(h.size(), 42);
+      },
+      [&](absl::Span<const std::string> /*h*/) {});
+  // NOTE: the source no longer transfers anything. Under the pull design
+  // the DESTINATION's own worker (test_server_, backed by a mock transfer
+  // manager) executes the copy; the source only leases.
 
-  auto dest_controller =
+  auto dst_controller =
       std::make_unique<::tpu_raiden::controller::RaidenController>(
           unit_, 10, 1, 512, orchestrator_address_, "");
-  RegisterAndInitWorker(*dest_controller, "worker_0",
+  RegisterAndInitWorker(*dst_controller, "worker_0",
                         test_server_->server_address);
 
-  RaidenId rid{"dest_job", "0", "dest_cache", 0};
-  KVCacheStore store(10, std::move(dest_controller), "", rid);
+  RaidenId rid{"dst_job", "0", "dst_cache", 0};
+  KVCacheStore store(10, std::move(dst_controller), "", rid);
 
   std::vector<std::string> hashes = {"hash_0"};
   std::vector<RaidenBlockID> slices = {
@@ -2264,14 +2272,14 @@ TEST_F(KVCacheStoreEmbeddedControllerTest, ReadRemoteAllocationFailureAborts) {
   test_server_->service->SetTransferManager(
       ::tpu_raiden::KVManagerHolder(&mock_mgr));
 
-  auto dest_controller =
+  auto dst_controller =
       std::make_unique<::tpu_raiden::controller::RaidenController>(
           unit_, 1, 1, 512, orchestrator_address_, "");
-  RegisterAndInitWorker(*dest_controller, "worker_0",
+  RegisterAndInitWorker(*dst_controller, "worker_0",
                         test_server_->server_address);
 
-  RaidenId rid{"dest_job", "0", "dest_cache", 0};
-  KVCacheStore store(2, std::move(dest_controller), registry_address, rid);
+  RaidenId rid{"dst_job", "0", "dst_cache", 0};
+  KVCacheStore store(2, std::move(dst_controller), registry_address, rid);
 
   // Insert and pin local_1 (HBM status, device_block_id = 0)
   std::vector<std::string> local_hashes = {"local_1"};
@@ -2379,46 +2387,40 @@ TEST_F(KVCacheStoreEmbeddedControllerTest, ReadRemoteMultipleSources) {
                   .ok());
 
   // Setup callbacks with promises to control completion
-  std::atomic<bool> callback_1_triggered = false;
-  auto promise_and_future_1 = tsl::MakePromise();
-  auto& promise1 = promise_and_future_1.first;
-  src_controller_server_1->service->SetTransferBuffersCallback(
-      [f = promise_and_future_1.second, &callback_1_triggered](
-          absl::Span<const Buffer> src_buffers,
-          absl::Span<const Buffer> dst_buffers) {
-        callback_1_triggered = true;
-        std::vector<int64_t> src_offsets;
-        for (const auto& buf : src_buffers) {
-          src_offsets.push_back(buf.index());
-        }
-        EXPECT_THAT(src_offsets, ::testing::ElementsAre(10));
-        return f;
-      });
+  // Every read is now validated at the source by construction -- there is no
+  // longer any RPC that transfers without verifying and pinning first. Grant
+  // the lease and echo back authoritative ids.
+  src_controller_server_1->service->SetReadRemoteHooks(
+      [&](absl::Span<const std::string> h)
+          -> absl::StatusOr<std::vector<int32_t>> {
+        return std::vector<int32_t>(h.size(), 42);
+      },
+      [&](absl::Span<const std::string> /*h*/) {});
+  // NOTE: the source no longer transfers anything. Under the pull design
+  // the DESTINATION's own worker (test_server_, backed by a mock transfer
+  // manager) executes the copy; the source only leases.
 
-  std::atomic<bool> callback_2_triggered = false;
-  auto promise_and_future_2 = tsl::MakePromise();
-  auto& promise2 = promise_and_future_2.first;
-  src_controller_server_2->service->SetTransferBuffersCallback(
-      [f = promise_and_future_2.second, &callback_2_triggered](
-          absl::Span<const Buffer> src_buffers,
-          absl::Span<const Buffer> dst_buffers) {
-        callback_2_triggered = true;
-        std::vector<int64_t> src_offsets;
-        for (const auto& buf : src_buffers) {
-          src_offsets.push_back(buf.index());
-        }
-        EXPECT_THAT(src_offsets, ::testing::ElementsAre(20));
-        return f;
-      });
+  // Every read is now validated at the source by construction -- there is no
+  // longer any RPC that transfers without verifying and pinning first. Grant
+  // the lease and echo back authoritative ids.
+  src_controller_server_2->service->SetReadRemoteHooks(
+      [&](absl::Span<const std::string> h)
+          -> absl::StatusOr<std::vector<int32_t>> {
+        return std::vector<int32_t>(h.size(), 42);
+      },
+      [&](absl::Span<const std::string> /*h*/) {});
+  // NOTE: the source no longer transfers anything. Under the pull design
+  // the DESTINATION's own worker (test_server_, backed by a mock transfer
+  // manager) executes the copy; the source only leases.
 
-  auto dest_controller =
+  auto dst_controller =
       std::make_unique<::tpu_raiden::controller::RaidenController>(
           unit_, 10, 1, 512, orchestrator_address_, "");
-  RegisterAndInitWorker(*dest_controller, "worker_0",
+  RegisterAndInitWorker(*dst_controller, "worker_0",
                         test_server_->server_address);
 
-  RaidenId rid{"dest_job", "0", "dest_cache", 0};
-  KVCacheStore store(10, std::move(dest_controller), registry_address, rid);
+  RaidenId rid{"dst_job", "0", "dst_cache", 0};
+  KVCacheStore store(10, std::move(dst_controller), registry_address, rid);
 
   // Insert and pin remote block hash_0 and hash_1
   std::vector<std::string> hashes = {"hash_0", "hash_1"};
@@ -2431,33 +2433,11 @@ TEST_F(KVCacheStoreEmbeddedControllerTest, ReadRemoteMultipleSources) {
   absl::Status status = store.ReadRemote(hashes);
   ASSERT_TRUE(status.ok()) << status.message();
 
-  // Wait for both callbacks to be triggered asynchronously
-  bool callbacks_triggered = false;
-  for (int attempt = 0; attempt < 100; ++attempt) {
-    if (callback_1_triggered && callback_2_triggered) {
-      callbacks_triggered = true;
-      break;
-    }
-    absl::SleepFor(absl::Milliseconds(10));
-  }
-  ASSERT_TRUE(callbacks_triggered) << "Callbacks were not triggered in time";
-
-  // Fulfill first promise
-  promise1.Set(absl::OkStatus());
-
-  // Poll: neither should be done since promise2 is pending
-  absl::SleepFor(absl::Milliseconds(50));
-  auto [done_hashes1, failed_hashes1, pending_hashes1] =
-      store.PollRemoteReadStatus();
-  EXPECT_TRUE(done_hashes1.empty());
-  EXPECT_TRUE(failed_hashes1.empty());
-  EXPECT_THAT(pending_hashes1,
-              ::testing::UnorderedElementsAre("hash_0", "hash_1"));
-
-  // Fulfill second promise
-  promise2.Set(absl::OkStatus());
-
-  // Poll: now both should be done
+  // A batch spanning two peers takes one lease per peer and joins the futures,
+  // so it still commits as a UNIT: both hashes complete together, or neither.
+  // (The staged promise-gating this test used to do lived on the source's
+  // transfer callback, which the pull design removed -- the destination's
+  // mock now completes both pulls.)
   bool done = false;
   for (int attempt = 0; attempt < 100; ++attempt) {
     auto [done_hashes, failed_hashes, pending_hashes] =
@@ -2573,24 +2553,31 @@ TEST_F(KVCacheStoreEmbeddedControllerTest,
       "worker_0", "src_worker_0_addr", {{"src_worker_0_transfer", {}}});
   ASSERT_TRUE(worker_status.ok()) << worker_status.message();
 
-  src_controller_server->service->SetTransferBuffersCallback(
-      [&](absl::Span<const Buffer> src_buffers,
-          absl::Span<const Buffer> dst_buffers) {
-        return tsl::Future<>(absl::OkStatus());
-      });
+  // Every read is now validated at the source by construction -- there is no
+  // longer any RPC that transfers without verifying and pinning first. Grant
+  // the lease and echo back authoritative ids.
+  src_controller_server->service->SetReadRemoteHooks(
+      [&](absl::Span<const std::string> h)
+          -> absl::StatusOr<std::vector<int32_t>> {
+        return std::vector<int32_t>(h.size(), 42);
+      },
+      [&](absl::Span<const std::string> /*h*/) {});
+  // NOTE: the source no longer transfers anything. Under the pull design
+  // the DESTINATION's own worker (test_server_, backed by a mock transfer
+  // manager) executes the copy; the source only leases.
 
-  auto dest_controller =
+  auto dst_controller =
       std::make_unique<::tpu_raiden::controller::RaidenController>(
           unit_, 10, 1, 512, orchestrator_address_, "");
-  RegisterAndInitWorker(*dest_controller, "worker_0",
+  RegisterAndInitWorker(*dst_controller, "worker_0",
                         test_server_->server_address);
 
   MetadataRegion metadata_region(10);
   auto metadata_or = KVCacheMetadata::Format(metadata_region.span(), 10);
   ASSERT_TRUE(metadata_or.ok());
 
-  RaidenId rid{"dest_job", "0", "dest_cache", 0};
-  KVCacheStore store(10, std::move(dest_controller), registry_address, rid,
+  RaidenId rid{"dst_job", "0", "dst_cache", 0};
+  KVCacheStore store(10, std::move(dst_controller), registry_address, rid,
                      *metadata_or);
 
   std::vector<std::string> hashes = {"hash_0"};

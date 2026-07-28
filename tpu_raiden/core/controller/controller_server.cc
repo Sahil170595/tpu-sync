@@ -94,14 +94,6 @@ void ControllerServer::SetWorkerRegistry(
   }
 }
 
-void ControllerServer::SetTransferBuffersCallback(
-    RaidenControllerServiceImpl::TransferBuffersCallback cb) {
-  absl::MutexLock lock(mutex_);
-  if (controller_service_) {
-    controller_service_->SetTransferBuffersCallback(std::move(cb));
-  }
-}
-
 void ControllerServer::SetReadRemoteHooks(
     RaidenControllerServiceImpl::ValidateAndPinCallback validate_and_pin,
     RaidenControllerServiceImpl::UnpinCallback unpin) {

@@ -120,6 +120,7 @@ class NumaAwareKVCacheManager {
       std::optional<std::vector<int64_t>> local_host_block_ids = std::nullopt);
 
   std::vector<RaidenTransferEndpoint> get_local_endpoints() const;
+  std::vector<RaidenTransferEndpoint> get_local_data_endpoints() const;
 
   void SetSubmanagerShardsForTesting(
       const std::vector<std::vector<int64_t>>& assignment) {
@@ -178,6 +179,26 @@ class NumaAwareKVCacheManager {
   absl::StatusOr<std::pair<std::vector<int>, raiden::PjRtCopyFuture>> H2hRead(
       const std::vector<RaidenTransferEndpoint>& remote_descriptors,
       const std::vector<int>& src_block_ids);
+
+  // Receiver-initiated pull into EXPLICIT local host blocks. Unlike H2hRead,
+  // which auto-allocates its destination, this lands the data in the blocks
+  // the caller already reserved -- which is what a store-level read needs,
+  // since the store commits those ids into its directory.
+  absl::StatusOr<raiden::PjRtCopyFuture> H2hReadExplicit(
+      const std::vector<RaidenTransferEndpoint>& remote_descriptors,
+      const std::vector<int>& src_block_ids,
+      const std::vector<int>& dst_block_ids);
+
+  // Receiver-initiated pull: remote host src -> local host staging -> local
+  // device dst. Fans out to every sub-manager with the endpoint whose shard
+  // tags match that sub-manager's global shards (same matching idiom as the
+  // vector H2hRead/H2hWrite above).
+  absl::StatusOr<raiden::PjRtCopyFuture> H2dRead(
+      const std::vector<RaidenTransferEndpoint>& remote_descriptors,
+      const std::vector<int64_t>& src_host_offsets,
+      const std::vector<int64_t>& dst_host_offsets,
+      const std::vector<int64_t>& dst_device_offsets,
+      const std::vector<int64_t>& copy_sizes);
 
  private:
 #ifndef WITHOUT_PYTHON
@@ -307,6 +328,10 @@ class KVCacheManager {
     return numa_manager_->get_local_endpoints();
   }
 
+  std::vector<RaidenTransferEndpoint> get_local_data_endpoints() const {
+    return numa_manager_->get_local_data_endpoints();
+  }
+
   void SetSubmanagerShardsForTesting(
       const std::vector<std::vector<int64_t>>& assignment) {
     numa_manager_->SetSubmanagerShardsForTesting(assignment);
@@ -398,6 +423,25 @@ class KVCacheManager {
       const std::vector<RaidenTransferEndpoint>& remote_descriptors,
       const std::vector<int>& src_block_ids) {
     return numa_manager_->H2hRead(remote_descriptors, src_block_ids);
+  }
+
+  absl::StatusOr<raiden::PjRtCopyFuture> H2dRead(
+      const std::vector<RaidenTransferEndpoint>& remote_descriptors,
+      const std::vector<int64_t>& src_host_offsets,
+      const std::vector<int64_t>& dst_host_offsets,
+      const std::vector<int64_t>& dst_device_offsets,
+      const std::vector<int64_t>& copy_sizes) {
+    return numa_manager_->H2dRead(remote_descriptors, src_host_offsets,
+                                  dst_host_offsets, dst_device_offsets,
+                                  copy_sizes);
+  }
+
+  absl::StatusOr<raiden::PjRtCopyFuture> H2hReadExplicit(
+      const std::vector<RaidenTransferEndpoint>& remote_descriptors,
+      const std::vector<int>& src_block_ids,
+      const std::vector<int>& dst_block_ids) {
+    return numa_manager_->H2hReadExplicit(remote_descriptors, src_block_ids,
+                                          dst_block_ids);
   }
 
  private:

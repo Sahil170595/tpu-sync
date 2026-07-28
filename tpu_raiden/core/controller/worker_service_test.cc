@@ -481,6 +481,50 @@ TEST_F(WorkerServiceTest,
   EXPECT_THAT(mock_mgr.last_copy_sizes, ElementsAre(1));
 }
 
+// Receiver-initiated pull to HBM: per-shard remote descriptors on the SRC
+// buffer route to the vector H2dRead overload, and take precedence over the
+// single-peer remote_address fallback.
+TEST_F(WorkerServiceTest, TransferBuffersRemoteSrcHbmDstRunsVectorH2dRead) {
+  ShardAwareMockTransferManager mock_mgr;
+  test_server_->service->SetTransferManager(KVManagerHolder(&mock_mgr));
+
+  proto::TransferBuffersRequest transfer_req;
+  auto* transfer = transfer_req.mutable_transfer();
+  transfer->set_src_mem_type(rpc::MEMORY_TYPE_DRAM);
+  transfer->set_dst_mem_type(rpc::MEMORY_TYPE_HBM);
+
+  auto* src_buf = transfer->add_src_buffers();
+  src_buf->set_index(100);
+  // A stale single-peer address that must lose to the descriptors.
+  src_buf->set_remote_address("ignored_host:1111");
+  auto* ep0 = src_buf->add_remote_descriptors();
+  ep0->set_endpoint("shard_host_a:2222");
+  ep0->add_shards(0);
+  auto* ep1 = src_buf->add_remote_descriptors();
+  ep1->set_endpoint("shard_host_b:3333");
+  ep1->add_shards(1);
+
+  transfer->add_dst_buffers()->set_index(200);
+  transfer->add_staging_host_buffers()->set_index(300);
+
+  auto status = test_server_->client->TransferBuffers(transfer_req).Await();
+  ASSERT_TRUE(status.ok()) << status.message();
+  EXPECT_EQ(mock_mgr.vector_h2d_read_calls, 1);
+  EXPECT_EQ(mock_mgr.h2d_read_calls, 0) << "string overload must not be used";
+  EXPECT_EQ(mock_mgr.h2d_calls, 0);
+  EXPECT_EQ(mock_mgr.h2d_write_calls, 0);
+  ASSERT_EQ(mock_mgr.last_h2d_read_descriptors.size(), 2u);
+  EXPECT_EQ(mock_mgr.last_h2d_read_descriptors[0].endpoint,
+            "shard_host_a:2222");
+  EXPECT_EQ(mock_mgr.last_h2d_read_descriptors[1].endpoint,
+            "shard_host_b:3333");
+  // Flow order: remote host src -> local host staging -> local device dst.
+  EXPECT_THAT(mock_mgr.last_src_offsets, ElementsAre(100));
+  EXPECT_THAT(mock_mgr.last_staging_offsets, ElementsAre(300));
+  EXPECT_THAT(mock_mgr.last_dst_offsets, ElementsAre(200));
+  EXPECT_THAT(mock_mgr.last_copy_sizes, ElementsAre(1));
+}
+
 TEST_F(WorkerServiceTest, TransferBuffersLocalH2dFallbackSuccess) {
   MockTransferManager mock_mgr;
   test_server_->service->SetTransferManager(KVManagerHolder(&mock_mgr));

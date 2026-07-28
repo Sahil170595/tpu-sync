@@ -120,6 +120,35 @@ struct has_vector_h2h_read<
 template <typename T>
 inline constexpr bool has_vector_h2h_read_v = has_vector_h2h_read<T>::value;
 
+template <typename T, typename = void>
+struct has_vector_h2h_read_explicit : std::false_type {};
+
+template <typename T>
+struct has_vector_h2h_read_explicit<
+    T, std::void_t<decltype(std::declval<T&>().H2hReadExplicit(
+           std::declval<const std::vector<RaidenTransferEndpoint>&>(),
+           std::declval<const std::vector<int>&>(),
+           std::declval<const std::vector<int>&>()))>> : std::true_type {};
+
+template <typename T>
+inline constexpr bool has_vector_h2h_read_explicit_v =
+    has_vector_h2h_read_explicit<T>::value;
+
+template <typename T, typename = void>
+struct has_vector_h2d_read : std::false_type {};
+
+template <typename T>
+struct has_vector_h2d_read<
+    T, std::void_t<decltype(std::declval<T&>().H2dRead(
+           std::declval<const std::vector<RaidenTransferEndpoint>&>(),
+           std::declval<const std::vector<int64_t>&>(),
+           std::declval<const std::vector<int64_t>&>(),
+           std::declval<const std::vector<int64_t>&>(),
+           std::declval<const std::vector<int64_t>&>()))>> : std::true_type {};
+
+template <typename T>
+inline constexpr bool has_vector_h2d_read_v = has_vector_h2d_read<T>::value;
+
 }  // namespace internal
 
 // Type-erased wrapper for any KV Cache Manager or Transfer Manager
@@ -158,6 +187,12 @@ class KVManagerHolder {
         const std::vector<int64_t>& copy_sizes) = 0;
     virtual absl::StatusOr<raiden::PjRtCopyFuture> H2dRead(
         absl::string_view peer, const std::vector<int64_t>& src_host_offsets,
+        const std::vector<int64_t>& dst_host_offsets,
+        const std::vector<int64_t>& dst_device_offsets,
+        const std::vector<int64_t>& copy_sizes) = 0;
+    virtual absl::StatusOr<raiden::PjRtCopyFuture> H2dRead(
+        const std::vector<RaidenTransferEndpoint>& remote_descriptors,
+        const std::vector<int64_t>& src_host_offsets,
         const std::vector<int64_t>& dst_host_offsets,
         const std::vector<int64_t>& dst_device_offsets,
         const std::vector<int64_t>& copy_sizes) = 0;
@@ -210,8 +245,19 @@ class KVManagerHolder {
         const std::vector<RaidenTransferEndpoint>& remote_descriptors,
         const std::vector<int64_t>& src_offsets,
         const std::vector<int64_t>& dst_offsets) override {
-      (void)dst_offsets;
       ASSIGN_OR_RETURN(std::vector<int> src_ids, SafeCastOffsets(src_offsets));
+      // When the caller named its destination blocks, land the data THERE.
+      // Plain H2hRead auto-allocates, which is fine for a fire-and-forget pull
+      // but wrong for a store-level read: the store already reserved landing
+      // blocks and commits those ids into its directory, so auto-allocated
+      // blocks would leave the directory pointing at the wrong memory.
+      if constexpr (internal::has_vector_h2h_read_explicit_v<T>) {
+        if (!dst_offsets.empty()) {
+          ASSIGN_OR_RETURN(std::vector<int> dst_ids,
+                           SafeCastOffsets(dst_offsets));
+          return impl_->H2hReadExplicit(remote_descriptors, src_ids, dst_ids);
+        }
+      }
       if constexpr (internal::has_vector_h2h_read_v<T>) {
         ASSIGN_OR_RETURN(auto res, impl_->H2hRead(remote_descriptors, src_ids));
         return res.second;
@@ -263,6 +309,24 @@ class KVManagerHolder {
       } else {
         return absl::UnimplementedError(
             "H2dRead is not implemented by the underlying transfer manager.");
+      }
+    }
+    absl::StatusOr<raiden::PjRtCopyFuture> H2dRead(
+        const std::vector<RaidenTransferEndpoint>& remote_descriptors,
+        const std::vector<int64_t>& src_host_offsets,
+        const std::vector<int64_t>& dst_host_offsets,
+        const std::vector<int64_t>& dst_device_offsets,
+        const std::vector<int64_t>& copy_sizes) override {
+      if constexpr (internal::has_vector_h2d_read_v<T>) {
+        return impl_->H2dRead(remote_descriptors, src_host_offsets,
+                              dst_host_offsets, dst_device_offsets, copy_sizes);
+      } else {
+        // Fall back to the single-peer overload (which itself handles impls
+        // without any H2dRead), mirroring the vector H2hRead/H2hWrite paths.
+        std::string peer =
+            remote_descriptors.empty() ? "" : remote_descriptors[0].endpoint;
+        return this->H2dRead(peer, src_host_offsets, dst_host_offsets,
+                             dst_device_offsets, copy_sizes);
       }
     }
     absl::StatusOr<raiden::PjRtCopyFuture> D2hWrite(
@@ -396,6 +460,19 @@ class KVManagerHolder {
     }
     return self_->H2dRead(peer, src_host_offsets, dst_host_offsets,
                           dst_device_offsets, copy_sizes);
+  }
+
+  absl::StatusOr<raiden::PjRtCopyFuture> H2dRead(
+      const std::vector<RaidenTransferEndpoint>& remote_descriptors,
+      const std::vector<int64_t>& src_host_offsets,
+      const std::vector<int64_t>& dst_host_offsets,
+      const std::vector<int64_t>& dst_device_offsets,
+      const std::vector<int64_t>& copy_sizes) const {
+    if (!self_) {
+      return absl::InternalError("KVManagerHolder is null");
+    }
+    return self_->H2dRead(remote_descriptors, src_host_offsets,
+                          dst_host_offsets, dst_device_offsets, copy_sizes);
   }
 
   absl::StatusOr<raiden::PjRtCopyFuture> D2hWrite(

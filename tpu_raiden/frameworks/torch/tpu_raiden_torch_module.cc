@@ -607,11 +607,13 @@ NB_MODULE(_tpu_raiden_torch, m) {
       .def(
           "read_remote",
           [](tpu_raiden::kv_cache::KVCacheStoreWrapper& self,
-             const std::vector<nb::bytes>& block_hashes) -> bool {
+             const std::vector<nb::bytes>& block_hashes,
+             const std::vector<int32_t>& device_block_ids) -> bool {
             auto hashes = ToStdStringVector(block_hashes);
-            return self->ReadRemote(hashes).ok();
+            return self->ReadRemote(hashes, device_block_ids).ok();
           },
-          nb::arg("block_hashes"))
+          nb::arg("block_hashes"),
+          nb::arg("device_block_ids") = std::vector<int32_t>())
       .def("poll_remote_read_status",
            [](tpu_raiden::kv_cache::KVCacheStoreWrapper& self) {
              auto [done, failed, pending] = self->PollRemoteReadStatus();

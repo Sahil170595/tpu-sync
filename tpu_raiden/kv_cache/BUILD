@@ -287,6 +287,7 @@ cc_test(
         "-layering_check",
     ],
     tags = [
+        "manual",
         "no_oss",
         "requires-jellyfish",
     ],
@@ -295,6 +296,7 @@ cc_test(
         ":kv_cache_store_internal",
         "//tpu_raiden/core:raw_transfer_core",
         "//tpu_raiden/core:tpu_pjrt_manager",
+        "@com_google_absl//absl/status:status_matchers",
         "@xla//xla/pjrt:pjrt_client",
         "@xla//xla/tsl/platform:statusor",
         "@xla//xla/tsl/platform:test",

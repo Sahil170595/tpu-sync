@@ -32,6 +32,7 @@
 #include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/escaping.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "absl/synchronization/mutex.h"
@@ -367,6 +368,15 @@ void KVCacheStore::Delete(const std::vector<std::string>& block_hashes,
                           const std::vector<RaidenBlockID>& slices) {
   absl::MutexLock lock(mutex_);
   for (const std::string& hash : block_hashes) {
+    // A pinned entry is in use (an in-flight remote read holds its blocks, or
+    // an attention query is reading them). Deleting it would pull the buffers
+    // out from under that user, so skip it entirely -- including the metadata
+    // clear, which must not run for an entry that survives.
+    if (lru_cache_.GetPinCount(hash) > 0) {
+      LOG(WARNING) << "Delete skipped pinned block hash (release it first): "
+                   << absl::BytesToHexString(hash);
+      continue;
+    }
     if (const RaidenBlockID* val = lru_cache_.PeekIncludingCandidates(hash)) {
       ClearMetadataEntry(*val);
     }
@@ -604,7 +614,8 @@ void KVCacheStore::UnpinHostBlocks(absl::Span<const std::string> block_hashes) {
 }
 
 absl::Status KVCacheStore::ReadRemote(
-    const std::vector<std::string>& block_hashes) {
+    const std::vector<std::string>& block_hashes,
+    const std::vector<int32_t>& device_block_ids) {
   std::vector<std::string> successfully_marked_as_reading;
   successfully_marked_as_reading.reserve(block_hashes.size());
   auto cleanup = absl::MakeCleanup([this, &successfully_marked_as_reading]() {
@@ -616,6 +627,13 @@ absl::Status KVCacheStore::ReadRemote(
 
   if (!raiden_controller_) {
     return absl::FailedPreconditionError("RaidenController is not initialized");
+  }
+  const bool to_hbm = !device_block_ids.empty();
+  if (to_hbm && device_block_ids.size() != block_hashes.size()) {
+    return absl::InvalidArgumentError(absl::StrCat(
+        "device_block_ids size ", device_block_ids.size(),
+        " must be empty (read to host) or match block_hashes size ",
+        block_hashes.size()));
   }
 
   std::vector<std::pair<RaidenId, int32_t>> src_info;
@@ -654,17 +672,12 @@ absl::Status KVCacheStore::ReadRemote(
                  << host_blocks_or.status().message();
     return host_blocks_or.status();
   }
-  const auto& dest_host_block_ids = host_blocks_or.value();
+  const auto& dst_host_block_ids = host_blocks_or.value();
 
-  {
-    absl::MutexLock lock(mutex_);
-    for (size_t i = 0; i < block_hashes.size(); ++i) {
-      RaidenBlockID* existing = lru_cache_.PeekMutable(block_hashes[i]);
-      if (existing) {
-        existing->host_block_id = dest_host_block_ids[i];
-      }
-    }
-  }
+  // NOTE: the landing block ids are deliberately NOT stamped into the LRU
+  // entries here. The entry's host_block_id is the PEER's coordinate until the
+  // read commits; overwriting it up front (as this code used to) corrupts the
+  // entry on every failure path, because nothing restores it.
 
   // Group by source RaidenId
   absl::flat_hash_map<RaidenId, std::vector<size_t>, RaidenIdHash> groups;
@@ -672,22 +685,33 @@ absl::Status KVCacheStore::ReadRemote(
     groups[src_info[i].first].push_back(i);
   }
 
+  // One lease per owning peer. The per-group futures are joined, so if ANY
+  // group fails -- transfer error or a verdict other than HELD -- the whole
+  // batch discards, including groups whose bytes landed perfectly. That is
+  // fail-closed and consistent with the commit-as-a-unit invariant. Committing
+  // only the healthy groups would need per-group RemoteReadState and is
+  // exactly where a partial-promote bug would enter; do not "optimise" it
+  // without splitting the state first.
   std::vector<tsl::Future<>> futures;
   futures.reserve(groups.size());
   for (const auto& [src_raiden_id, indices] : groups) {
     std::vector<int32_t> group_src_ids;
     std::vector<int32_t> group_dst_ids;
+    std::vector<int32_t> group_device_ids;
     std::vector<std::string> group_block_hashes;
     group_src_ids.reserve(indices.size());
     group_dst_ids.reserve(indices.size());
     group_block_hashes.reserve(indices.size());
+    if (to_hbm) group_device_ids.reserve(indices.size());
     for (size_t idx : indices) {
       group_src_ids.push_back(src_info[idx].second);
-      group_dst_ids.push_back(dest_host_block_ids[idx]);
+      group_dst_ids.push_back(dst_host_block_ids[idx]);
       group_block_hashes.push_back(block_hashes[idx]);
+      if (to_hbm) group_device_ids.push_back(device_block_ids[idx]);
     }
     futures.push_back(raiden_controller_->ReadRemote(
-        src_raiden_id, group_src_ids, group_dst_ids, group_block_hashes));
+        src_raiden_id, group_src_ids, group_dst_ids, group_block_hashes,
+        group_device_ids));
   }
 
   tsl::Future<> combined_future = tsl::JoinFutures(futures);
@@ -697,7 +721,8 @@ absl::Status KVCacheStore::ReadRemote(
     active_remote_reads_.emplace(std::move(combined_future),
                                  RemoteReadState{
                                      .block_hashes = block_hashes,
-                                     .host_block_ids = dest_host_block_ids,
+                                     .host_block_ids = dst_host_block_ids,
+                                     .device_block_ids = device_block_ids,
                                  });
   }
 
@@ -931,25 +956,57 @@ void KVCacheStore::PollRemoteReadsInternal(
   for (auto& [future, state] : ready_remote_reads) {
     absl::Status status = future.Await();
     absl::MutexLock lock(mutex_);
+
+    // The batch commits as a UNIT: all hashes promoted, or none. Verify every
+    // entry is still present and still pinned BEFORE promoting anything.
+    //
+    // With pinned entries protected from erase, an entry can only vanish
+    // mid-read if the caller broke the contract by releasing its pin early --
+    // so this is a bug detector, not a race handler. It replaces a loop that
+    // pushed a vanished hash onto done_remote_reads_ anyway, which told the
+    // caller "resident in HOST" about a landing block that had just been
+    // deallocated and reused.
+    std::vector<std::string> contract_violations;
+    if (status.ok()) {
+      for (const auto& hash : state.block_hashes) {
+        if (lru_cache_.Get(hash) == nullptr || lru_cache_.GetPinCount(hash) <= 0) {
+          contract_violations.push_back(hash);
+        }
+      }
+      if (!contract_violations.empty()) {
+        status = absl::FailedPreconditionError(absl::StrCat(
+            "read_remote caller released or deleted ", contract_violations.size(),
+            " of ", state.block_hashes.size(),
+            " entries before poll_remote_read_status reported them terminal; "
+            "the whole batch is discarded"));
+        LOG(ERROR) << status.message() << " First offending hash: "
+                   << absl::BytesToHexString(contract_violations.front());
+      }
+    }
+
     if (status.ok()) {
       std::vector<global_registry::Registration> write_through_regs;
       write_through_regs.reserve(state.block_hashes.size());
       for (size_t i = 0; i < state.block_hashes.size(); ++i) {
         const auto& hash = state.block_hashes[i];
         RaidenBlockID* existing = lru_cache_.Get(hash);
-        if (existing) {
-          existing->host_block_id = state.host_block_ids[i];
-          existing->status = BlockStatus::HOST;
-          SetMetadataEntry(hash, *existing);
-          if (registry_client_) {
-            write_through_regs.push_back({
-                .prefix_hash = hash,
-                .raiden_id = raiden_id_,
-                .block_id = state.host_block_ids[i],
-            });
-          }
+        existing->host_block_id = state.host_block_ids[i];
+        if (i < state.device_block_ids.size()) {
+          // Read-to-HBM: the bytes are in the caller's device blocks AND in
+          // the host landing blocks (which were the staging hop), so a later
+          // local load() can still reuse the host copy.
+          existing->device_block_id = state.device_block_ids[i];
+          existing->status = BlockStatus::HOST_AND_HBM;
         } else {
-          DeallocateBlockIds({state.host_block_ids[i]});
+          existing->status = BlockStatus::HOST;
+        }
+        SetMetadataEntry(hash, *existing);
+        if (registry_client_) {
+          write_through_regs.push_back({
+              .prefix_hash = hash,
+              .raiden_id = raiden_id_,
+              .block_id = state.host_block_ids[i],
+          });
         }
         done_remote_reads_.push_back(hash);
       }
@@ -968,6 +1025,10 @@ void KVCacheStore::PollRemoteReadsInternal(
         });
       }
     } else {
+      // Discard path. The entry keeps its ORIGINAL peer host_block_id (never
+      // stamped at issue time), so a retry is clean. In read-to-HBM mode the
+      // caller's device blocks may hold garbage -- by design: nothing in the
+      // LRU points at them, and the caller overwrites device blocks on reuse.
       LOG(WARNING) << "Async ReadRemote failed: " << status.ToString();
       DeallocateBlockIds(state.host_block_ids);
       for (const auto& hash : state.block_hashes) {

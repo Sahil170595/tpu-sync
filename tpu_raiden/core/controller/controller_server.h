@@ -51,9 +51,6 @@ class ControllerServer {
 
   void SetWorkerRegistry(std::shared_ptr<WorkerRegistry> worker_registry);
 
-  void SetTransferBuffersCallback(
-      RaidenControllerServiceImpl::TransferBuffersCallback cb);
-
   // Registers the ReadRemote step-6a verify/pin and unpin hooks on the hosted
   // service.
   void SetReadRemoteHooks(

@@ -276,6 +276,22 @@ cc_library(
     ],
 )
 
+cc_test(
+    name = "kv_manager_holder_test",
+    srcs = ["kv_manager_holder_test.cc"],
+    copts = [
+        "-fno-strict-aliasing",
+        "-fexceptions",
+    ],
+    features = ["-use_header_modules"],
+    deps = [
+        ":kv_manager_holder",
+        ":raiden_transfer_endpoint",
+        "//tpu_raiden/core/controller:test_util",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
 cc_library(
     name = "kv_cache_manager_with_transfer",
     srcs = [

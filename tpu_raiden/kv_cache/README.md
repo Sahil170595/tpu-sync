@@ -115,6 +115,38 @@ Python orchestration scripts via non-blocking tuple lambda futures.
   speeds, at the necessary cost of double-dispatch CPU overhead and slightly
   reduced local DMA speed due to JAX thread pinning restrictions.
 
+### Crash-Persistent KV Cache in Shared Memory (`RAIDEN_SHM_KEY`)
+
+* **Both planes persist in shm**: With `RAIDEN_SHM_KEY` set, the KV cache
+  data (each worker's host pool, one `<key>[_<server>]_dev_<id>` segment per
+  device) and the `KVCacheMetadata` table (one `<key>_metadata[_<server>]`
+  segment per store, a crash-persistent mirror of the LRU cache) live in
+  POSIX shared memory. Segment lifetime belongs to the `/dev/shm` tmpfs
+  mount, not to any process: an engine crash — even SIGKILL — leaves both
+  planes intact, and nothing in the serving stack ever unlinks them. On
+  restart, construction re-attaches and self-validates each segment
+  (magic/model_uid/geometry); a surviving table warm-starts the store via
+  `RecoverFromLocalManifest`, any mismatch reformats to a clean cold start.
+* **Expected lifecycle management**: Recovery therefore reduces to one
+  deployment requirement — the same `/dev/shm` mount and `RAIDEN_SHM_*`
+  environment must be there after the restart, preserved or wiped as a
+  whole (partial deletion of segments under one key is not supported).
+  * *Cloud VM / bare metal*: `/dev/shm` is host-wide, so any process
+    restart warm-starts for free; a reboot clears it (tmpfs). Decommission
+    is an explicit operator `shm_unlink`/`rm` of the deployment's
+    `/dev/shm/<key>*` segments.
+  * *Docker*: a container's private `/dev/shm` dies with the container.
+    To survive an engine container restart, place the segments on an IPC
+    mount that outlives the engine — share the IPC namespace with a
+    longer-lived container (`--ipc=container:<sidecar>`) or mount a shared
+    tmpfs volume — and size it for the KV pool (default `--shm-size` is
+    64MB).
+  * *Kubernetes*: mount a pod-level `emptyDir{medium: Memory}` volume at
+    `/dev/shm` in the engine container; a container crash/restart within
+    the pod keeps the volume, so the engine warm-starts. Deleting or
+    rescheduling the pod discards it — that is a clean cold start, not a
+    correctness issue.
+
 ---
 
 ## 3. Immediate Execution Roadmap (TODO List)

@@ -252,6 +252,7 @@ TEST(WeightSynchronizerListenerTest, PushWeightsReshardedSuccess) {
     e->set_src_offset_bytes(r * 4);
     e->set_dst_offset_bytes(r * 2);
     e->set_size_bytes(2);
+    e->set_layer_idx(0);
   }
   push_schedules[0] = s0_sched;
 
@@ -264,6 +265,7 @@ TEST(WeightSynchronizerListenerTest, PushWeightsReshardedSuccess) {
     e->set_src_offset_bytes(r * 4);
     e->set_dst_offset_bytes(8 + r * 2);
     e->set_size_bytes(2);
+    e->set_layer_idx(0);
   }
   push_schedules[2] = s2_sched;
 

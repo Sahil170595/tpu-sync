@@ -102,6 +102,8 @@ class WeightSynchronizerTorchTest(parameterized.TestCase):
 
     # Source pushes weights to both dest1 and dest2 socket servers E2E!
     ws_source.push_weights([peer_dest1, peer_dest2])
+    ws_dest1.h2d()
+    ws_dest2.h2d()
 
     # Assert both destinations have received the trainer's weights on their TPU HBM!
     for l in range(self.num_layers):

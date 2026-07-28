@@ -486,7 +486,7 @@ class RaidenControllerTest(absltest.TestCase):
     self.assertLen(entries, 256)
     for entry in entries:
       self.assertEqual(entry[4], 256 * 1024)
-      self.assertEqual(entry[7:], (0, 0, 1, 0))
+      self.assertEqual(entry[7:], (0, 0, 1, 0, 0))
     entries_by_dst_block = {
         block_id: [entry for entry in entries if entry[6] == block_id]
         for block_id in dst_ids
@@ -592,7 +592,7 @@ class RaidenControllerTest(absltest.TestCase):
     self.assertLen(entries, 256)
     for entry in entries:
       self.assertEqual(entry[4], 256 * 1024)
-      self.assertEqual(entry[7:], (0, 0, 1, 0))
+      self.assertEqual(entry[7:], (0, 0, 1, 0, 0))
     entries_by_dst_block = {
         block_id: [entry for entry in entries if entry[6] == block_id]
         for block_id in dst_ids
@@ -676,8 +676,8 @@ class RaidenControllerTest(absltest.TestCase):
 
     for unit in src_units:
       unit_entries = plan.shard_push_schedules[unit][0]
-      fa_entries = [e for e in unit_entries if e[10] == 0]
-      conv_entries = [e for e in unit_entries if e[10] == 1]
+      fa_entries = [e for e in unit_entries if e[11] == 0]
+      conv_entries = [e for e in unit_entries if e[11] == 1]
       self.assertLen(fa_entries, 8)
       self.assertLen(conv_entries, 1)
       self.assertEqual(conv_entries[0][5], 17)
@@ -871,7 +871,7 @@ class RaidenControllerTest(absltest.TestCase):
     # 65,024 ends 512 tokens into its final decode page. The 3,584-token
     # quantity is the tail within the source page, not the final wire entry.
     self.assertEqual(tail_entry[4], 512 * 1024)
-    self.assertEqual(tail_entry[7:], (0, 0, 1, 0))
+    self.assertEqual(tail_entry[7:], (0, 0, 1, 0, 0))
 
     _, _, n2_src_units, _, n2_ids, n2_plan = self._build_stage3_plan(
         dst_page_tokens=2048, src_page_slice_tokens=256
@@ -973,7 +973,7 @@ class RaidenControllerTest(absltest.TestCase):
         {0, 540_672, 1_081_344, 1_622_016},
     )
     self.assertTrue(all(entry[4] == 262_144 for entry in entries))
-    self.assertTrue(all(entry[7:] == (0, 0, 1, 0) for entry in entries))
+    self.assertTrue(all(entry[7:] == (0, 0, 1, 0, 0) for entry in entries))
     # The receiving worker's executor independently converts these physical
     # schedules back to compact-live coverage at arm time (the C++
     # receiver-coverage validation, exercised in

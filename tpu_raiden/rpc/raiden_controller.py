@@ -30,6 +30,7 @@
 import asyncio
 import dataclasses
 import enum
+import functools
 import json
 import logging
 import math
@@ -771,8 +772,10 @@ class WorkerRpcClient:
                   src_stride,
                   dst_stride,
                   count,
-              ) = entry_tuple[:10]
-              pool_group = entry_tuple[10] if len(entry_tuple) > 10 else 0
+                  *extra,
+              ) = entry_tuple
+              layer_idx = extra[0] if extra else 0
+              pool_group = extra[1] if len(extra) > 1 else 0
               if dst_peer in target_endpoints:
                 entry_proto = schedule_proto.entries.add()
                 entry_proto.dst_peer = dst_peer
@@ -785,6 +788,7 @@ class WorkerRpcClient:
                 entry_proto.src_stride_bytes = src_stride
                 entry_proto.dst_stride_bytes = dst_stride
                 entry_proto.count = count
+                entry_proto.layer_idx = layer_idx
                 entry_proto.pool_group = pool_group
             if len(schedule_proto.entries) > 0:
               start_req.shard_push_schedules[key_idx].CopyFrom(schedule_proto)
@@ -806,7 +810,10 @@ class WorkerRpcClient:
                   src_stride,
                   dst_stride,
                   count,
-              ) = entry_tuple[:10]
+                  *extra,
+              ) = entry_tuple
+              layer_idx = extra[0] if extra else 0
+              pool_group = extra[1] if len(extra) > 1 else 0
               entry_proto = schedule_proto.entries.add()
               entry_proto.dst_peer = dst_peer
               entry_proto.dst_shard_idx = dst_shard_idx
@@ -818,9 +825,8 @@ class WorkerRpcClient:
               entry_proto.src_stride_bytes = src_stride
               entry_proto.dst_stride_bytes = dst_stride
               entry_proto.count = count
-              entry_proto.pool_group = (
-                  entry_tuple[10] if len(entry_tuple) > 10 else 0
-              )
+              entry_proto.layer_idx = layer_idx
+              entry_proto.pool_group = pool_group
             start_req.shard_push_schedules[shard_idx].CopyFrom(schedule_proto)
 
     req.start_transfer_request.CopyFrom(start_req)
@@ -2234,6 +2240,7 @@ class RaidenController:
                 0,
                 0,
                 1,
+                0,
                 group_idx,
             )
             schedules.setdefault(src_unit, {}).setdefault(0, []).append(
@@ -2361,7 +2368,8 @@ class RaidenController:
         controller.
       src_controller_address: BNS/IP network address of the source controller.
     """
-    # key: (src_unit, shard_idx, src_block_id, src_block_offset, size, src_stride, count)
+    # key: (src_unit, shard_idx, src_block_id, src_block_offset, size,
+    #       src_stride, count, layer_idx, pool_group)
     (
         src_unit,
         shard_idx,
@@ -2370,6 +2378,8 @@ class RaidenController:
         size,
         src_stride,
         count,
+        layer_idx,
+        pool_group,
     ) = key
 
     available_sources = [src_unit]
@@ -2414,6 +2424,8 @@ class RaidenController:
               s_stride,
               dst_stride,
               count,
+              layer_idx,
+              pool_group,
           )
 
           hop_uuid = random.randint(1, 2**63 - 1)
@@ -2432,7 +2444,7 @@ class RaidenController:
               is_sender=True,
               expected_block_count=count,
               req_id=hop_req_id,
-              skip_d2h=final_plan.skip_d2h,
+              skip_d2h=final_plan.skip_d2h or (s != src_unit),
           )
 
           async def _run_single_transfer(s_node, d_node, plan):
@@ -2444,19 +2456,21 @@ class RaidenController:
               loop = asyncio.get_running_loop()
               success = await loop.run_in_executor(
                   None,
-                  dst_facade.register_transfer_schedule,
-                  [s_node],
-                  [d_node],
-                  plan.req_id,
-                  True,
-                  s_node not in self._registered_shards,
-                  plan.expected_block_count,
-                  plan.uuid,
-                  dst_controller_address,
-                  src_controller_address,
-                  plan.shard_push_schedules,
-                  dst_mem_type,
-                  skip_d2h=plan.skip_d2h,
+                  functools.partial(
+                      dst_facade.register_transfer_schedule,
+                      [s_node],
+                      [d_node],
+                      plan.req_id,
+                      True,
+                      s_node not in self._registered_shards,
+                      plan.expected_block_count,
+                      plan.uuid,
+                      dst_controller_address,
+                      src_controller_address,
+                      plan.shard_push_schedules,
+                      dst_mem_type,
+                      skip_d2h=plan.skip_d2h,
+                  ),
               )
               if not success:
                 raise RuntimeError(
@@ -2965,12 +2979,24 @@ class RaidenController:
           else:
             computed_slices = {}
 
+            is_legacy_by_unit = {}
             # Source slices (always local to sender controller)
             for unit in src_units:
               with self._lock:
-                global_shape = self._registered_global_shapes.get(unit)
-                mesh_shape = self._registered_mesh_shapes.get(unit)
-                layout = self._registered_layouts.get(unit)
+                variables = self._registered_variables.get(unit)
+              if variables:
+                var = variables[0]
+                global_shape = var.shape
+                mesh_shape = var.mesh_shape
+                layout = var.layout
+                is_legacy_by_unit[unit] = False
+              else:
+                with self._lock:
+                  global_shape = self._registered_global_shapes.get(unit)
+                  mesh_shape = self._registered_mesh_shapes.get(unit)
+                  layout = self._registered_layouts.get(unit)
+                is_legacy_by_unit[unit] = True
+
               if global_shape and mesh_shape and layout:
                 phys_shape, phys_mesh = to_physical(
                     global_shape, mesh_shape, layout
@@ -2987,11 +3013,23 @@ class RaidenController:
               unit = _raiden_id_from_proto(meta.unit)
               for shard in meta.shards:
                 data_address_to_unit[shard] = unit
-              if meta.global_shape and meta.mesh_shape and meta.layout:
+              if meta.variables:
+                var = meta.variables[0]
+                global_shape = list(var.shape)
+                mesh_shape = list(var.mesh_shape)
+                layout = list(var.layout)
+                is_legacy_by_unit[unit] = False
+              else:
+                global_shape = (
+                    list(meta.global_shape) if meta.global_shape else []
+                )
+                mesh_shape = list(meta.mesh_shape) if meta.mesh_shape else []
+                layout = list(meta.layout) if meta.layout else []
+                is_legacy_by_unit[unit] = True
+
+              if global_shape and mesh_shape and layout:
                 phys_shape, phys_mesh = to_physical(
-                    list(meta.global_shape),
-                    list(meta.mesh_shape),
-                    list(meta.layout),
+                    global_shape, mesh_shape, layout
                 )
                 self._computed_phys_meshes[unit] = phys_mesh
                 slices = nd_slice_math.compute_nd_shard_slices(
@@ -3010,7 +3048,12 @@ class RaidenController:
 
               # Get itemsize
               with self._lock:
-                itemsize = self._registered_itemsizes.get(src_unit)
+                variables = self._registered_variables.get(src_unit)
+              if variables:
+                itemsize = variables[0].item_size
+              else:
+                with self._lock:
+                  itemsize = self._registered_itemsizes.get(src_unit)
               if not itemsize:
                 itemsize = 4  # default fallback
 
@@ -3131,9 +3174,16 @@ class RaidenController:
                         src_block_id = src_offset // src_block_bytes
                         dst_block_id = dst_offset // dst_block_bytes
 
-                        # Make offsets block-relative
-                        src_block_offset = src_offset % src_block_bytes
-                        dst_block_offset = dst_offset % dst_block_bytes
+                        is_legacy = is_legacy_by_unit.get(
+                            src_unit, True
+                        ) or is_legacy_by_unit.get(dst_unit, True)
+                        if is_legacy:
+                          # Make offsets block-relative
+                          src_block_offset = src_offset % src_block_bytes
+                          dst_block_offset = dst_offset % dst_block_bytes
+                        else:
+                          src_block_offset = src_offset
+                          dst_block_offset = dst_offset
 
                         shard_entries.append((
                             dst_peer,
@@ -3146,6 +3196,8 @@ class RaidenController:
                             src_stride,
                             dst_stride,
                             count,
+                            0,
+                            0,
                         ))
 
                 if shard_entries:
@@ -3205,6 +3257,8 @@ class RaidenController:
                       src_stride,
                       dst_stride,
                       count,
+                      layer_idx,
+                      pool_group,
                   ) = entry
                   dst_unit = data_address_to_unit.get(dst_peer)
                   if not dst_unit:
@@ -3217,6 +3271,8 @@ class RaidenController:
                       size,
                       src_stride,
                       count,
+                      layer_idx,
+                      pool_group,
                   )
                   val = (
                       dst_unit,
@@ -3242,6 +3298,8 @@ class RaidenController:
                   size,
                   src_stride,
                   count,
+                  layer_idx,
+                  pool_group,
               ) = key
               if len(targets) <= 1:
                 # Re-assemble entry for flat schedule
@@ -3264,6 +3322,8 @@ class RaidenController:
                       src_stride,
                       dst_stride,
                       count,
+                      layer_idx,
+                      pool_group,
                   )
                   direct_schedules.setdefault(src_unit, {}).setdefault(
                       shard_idx, []
@@ -3819,6 +3879,7 @@ class RaidenControllerServer:
                       entry.src_stride_bytes,
                       entry.dst_stride_bytes,
                       entry.count,
+                      entry.layer_idx,
                       entry.pool_group,
                   )
                   for entry in schedule_proto.entries
@@ -4270,7 +4331,10 @@ class RaidenControllerClientFacade:
                 src_stride,
                 dst_stride,
                 count,
-            ) = entry_tuple[:10]
+                *extra,
+            ) = entry_tuple
+            layer_idx = extra[0] if extra else 0
+            pool_group = extra[1] if len(extra) > 1 else 0
             entry_proto = schedule_proto.entries.add()
             entry_proto.dst_peer = dst_peer
             entry_proto.dst_shard_idx = dst_shard_idx
@@ -4282,6 +4346,8 @@ class RaidenControllerClientFacade:
             entry_proto.src_stride_bytes = src_stride
             entry_proto.dst_stride_bytes = dst_stride
             entry_proto.count = count
+            entry_proto.layer_idx = layer_idx
+            entry_proto.pool_group = pool_group
           if len(schedule_proto.entries) > 0:
             start_req.shard_push_schedules[key_idx].CopyFrom(schedule_proto)
 

@@ -117,6 +117,28 @@ py_test(
 )
 
 py_test(
+    name = "kv_cache_store_recovery_e2e_test",
+    srcs = ["kv_cache_store_recovery_e2e_test.py"],
+    tags = [
+        "cpu:8",
+        "notap",
+        "requires-accel-hbm",
+        "requires-ghostlite:8",
+        "requires-net:external",
+    ],
+    deps = [
+        ":kv_cache_manager_torch_py",
+        ":kv_cache_store",
+        "@com_google_absl_py//absl:app",
+        "@com_google_absl_py//absl/flags",
+        "@com_google_absl_py//absl/testing:absltest",
+        "@pypi//numpy",
+        "@torch_tpu//shims/torch:pytorch",
+        "@torch_tpu//torch_tpu",
+    ],
+)
+
+py_test(
     name = "kv_cache_manager_transfer_test",
     srcs = ["kv_cache_manager_transfer_test.py"],
     tags = [

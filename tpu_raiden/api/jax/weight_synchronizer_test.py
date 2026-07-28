@@ -15,17 +15,18 @@
 """Integration tests for JAX WeightSynchronizer Python API."""
 
 import os
-
-os.environ["XLA_FLAGS"] = "--xla_force_host_platform_device_count=8"
+import socket
 
 from absl.testing import absltest  # pylint: disable=g-import-not-at-top
 import jax
 import jax.numpy as jnp
-import socket
 import numpy as np
 
 from tpu_raiden.api.jax import weight_synchronizer
 from tpu_raiden.rpc import raiden_service_pb2
+
+
+os.environ["XLA_FLAGS"] = "--xla_force_host_platform_device_count=8"
 
 WeightSynchronizer = weight_synchronizer.WeightSynchronizer
 
@@ -104,12 +105,13 @@ class WeightSynchronizerIntegrationTest(absltest.TestCase):
     assert resp.success
     sock.close()
 
+    ws_dest1.h2d()
+    ws_dest2.h2d()
+
     for arr in dst1_arrs:
       np.testing.assert_array_equal(np.asarray(arr), 5.0)
     for arr in dst2_arrs:
       np.testing.assert_array_equal(np.asarray(arr), 5.0)
-
-
 
 
 if __name__ == "__main__":

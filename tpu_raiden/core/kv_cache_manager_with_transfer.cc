@@ -1815,12 +1815,15 @@ std::vector<kv_cache::KVCacheHostSpan> KVCacheManagerWithTransfer::LayerSpans(
 
   spans.reserve(num_layers() * num_shards() * runs.size());
   for (size_t layer_idx = 0; layer_idx < num_layers(); ++layer_idx) {
+    const int64_t per_layer = LayerBlockByteSize(layer_idx);
+    const size_t layer_bytes =
+        per_layer > 0 ? static_cast<size_t>(per_layer) : slice_byte_size_;
     for (size_t shard_idx = 0; shard_idx < num_shards(); ++shard_idx) {
       const auto& shard_info = layers_[layer_idx].shards[shard_idx];
       for (const auto& run : runs) {
         const size_t byte_offset =
-            static_cast<size_t>(run.start_block_id) * slice_byte_size_;
-        const size_t nbytes = static_cast<size_t>(run.size) * slice_byte_size_;
+            static_cast<size_t>(run.start_block_id) * layer_bytes;
+        const size_t nbytes = static_cast<size_t>(run.size) * layer_bytes;
         spans.push_back(kv_cache::KVCacheHostSpan{
             .ptr = const_cast<uint8_t*>(shard_info.host_ptr) + byte_offset,
             .nbytes = nbytes,

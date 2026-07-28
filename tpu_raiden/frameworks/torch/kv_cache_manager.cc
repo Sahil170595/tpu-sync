@@ -221,7 +221,7 @@ absl::StatusOr<std::string> TorchKVCacheManager::ReadBlockBytes(
   if (block_id < 0) {
     return absl::InvalidArgumentError("block_id must be non-negative");
   }
-  const size_t block_bytes = bytes_per_block();
+  const size_t block_bytes = this->block_bytes(layer_idx);
   const size_t host_size = GetHostSize(layer_idx, shard_idx);
   const uint8_t* base = GetHostPointer(layer_idx, shard_idx);
   if (base == nullptr) {
@@ -243,7 +243,7 @@ absl::Status TorchKVCacheManager::WriteBlockBytes(size_t layer_idx,
   if (block_id < 0) {
     return absl::InvalidArgumentError("block_id must be non-negative");
   }
-  const size_t block_bytes = bytes_per_block();
+  const size_t block_bytes = this->block_bytes(layer_idx);
   if (payload.size() != block_bytes) {
     return absl::InvalidArgumentError(
         absl::StrCat("payload size must equal block size: got ", payload.size(),

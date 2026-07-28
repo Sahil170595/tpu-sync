@@ -1336,6 +1336,10 @@ size_t KVCacheManagerBase::num_block_arrays() const {
 
 size_t KVCacheManagerBase::block_bytes(size_t block_array_idx) const {
   if (!explicit_pools_) {
+    const int64_t per_layer = LayerBlockByteSize(block_array_idx);
+    if (per_layer > 0) {
+      return static_cast<size_t>(per_layer);
+    }
     return bytes_per_block();
   }
   if (block_array_idx >= pools_.size() ||
@@ -1396,7 +1400,7 @@ absl::StatusOr<uintptr_t> KVCacheManagerBase::GetBlockHostPointerValue(
   if (block_id < 0) {
     return absl::InvalidArgumentError("block_id must be non-negative");
   }
-  const size_t block_bytes = bytes_per_block();
+  const size_t block_bytes = this->block_bytes(layer_idx);
   const size_t host_size = GetHostSize(layer_idx, shard_idx);
   const uint8_t* base = GetHostPointer(layer_idx, shard_idx);
   if (base == nullptr) {
@@ -2149,7 +2153,7 @@ KVCacheManagerBase::GetBlockChunks(size_t layer_idx, size_t shard_idx,
   // Resolve addressing geometry. With explicit pools the wire index is a pool
   // index: blocks stride at the pool's own stride from the pool's base offset
   // inside its storage. Otherwise the legacy uniform layer addressing applies.
-  size_t block_size_bytes = bytes_per_block();
+  size_t block_size_bytes = block_bytes(layer_idx);
   uint8_t* base_host_ptr = nullptr;
   if (explicit_pools_) {
     if (layer_idx >= pools_.size()) {

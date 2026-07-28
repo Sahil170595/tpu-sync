@@ -203,6 +203,77 @@ class KVCacheManagerTorchTest(parameterized.TestCase):
         self.assertTrue(sync.is_materialized(shard))
     self.assertIsNotNone(manager.local_port)
 
+  def test_heterogeneous_layer_block_sizes_transfer(self):
+    """Layers with different per-block byte sizes transfer byte-exactly."""
+
+    num_host_blocks = 4
+    # Layer 0 rows are 4x larger than layer 1 rows (128*8 vs 128*2 fp32).
+    shapes = [(num_host_blocks, 128, 8), (num_host_blocks, 128, 2)]
+
+    src_tensors = []
+    dst_tensors = []
+    for layer_idx, shape in enumerate(shapes):
+      numel = int(np.prod(shape))
+      pattern = torch.arange(numel, dtype=torch.float32).reshape(
+          shape
+      ) + 1000.0 * (layer_idx + 1)
+      src_tensors.append([pattern.to(self.device)])
+      dst_tensors.append(
+          [torch.zeros(shape, dtype=torch.float32, device=self.device)]
+      )
+
+    ws_source = _kv_cache_manager.KVCacheManager(
+        src_tensors,
+        local_port=0,
+        host_blocks_to_allocate=num_host_blocks,
+        parallelism=1,
+    )
+    ws_dest = _kv_cache_manager.KVCacheManager(
+        dst_tensors,
+        local_port=0,
+        host_blocks_to_allocate=num_host_blocks,
+        parallelism=1,
+    )
+    peer_dest = ws_dest.get_local_endpoints()[0]["endpoint"]
+
+    # Stage rows 2..3 at host blocks 2..3 -- a NONZERO host base. The
+    # regression only manifests when the wire's layer-0-derived offsets and
+    # the DMA's per-layer offsets address disjoint regions, which a
+    # contiguous-from-zero staging accidentally masks.
+    d2h_future = ws_source.D2h(
+        src_offsets_major_dim=[2],
+        dst_offsets_major_dim=[2],
+        copy_sizes_major_dim=[2],
+    )
+    d2h_future.Await()
+
+    write_ids, write_future = ws_source.H2hWrite(
+        peer_dest, src_block_ids=[2, 3]
+    )
+    write_future.Await()
+    self.assertLen(write_ids, 2)
+
+    h2d_future = ws_dest.H2d(
+        src_offsets_major_dim=[write_ids[0]],
+        dst_offsets_major_dim=[2],
+        copy_sizes_major_dim=[2],
+    )
+    h2d_future.Await()
+
+    for layer_idx in range(len(shapes)):
+      actual = dst_tensors[layer_idx][0].cpu().numpy()
+      expected = src_tensors[layer_idx][0].cpu().numpy()
+      np.testing.assert_array_equal(
+          actual[2:4],
+          expected[2:4],
+          err_msg=f"layer {layer_idx} bytes corrupted in heterogeneous transfer",
+      )
+      np.testing.assert_array_equal(
+          actual[0:2],
+          np.zeros_like(expected[0:2]),
+          err_msg=f"layer {layer_idx} untouched rows unexpectedly written",
+      )
+
 
 if __name__ == "__main__":
   absltest.main()

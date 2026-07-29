@@ -33,6 +33,7 @@
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "absl/synchronization/mutex.h"
+#include "tpu_raiden/transport/lib/chunk.h"
 
 namespace tpu_raiden::transport::lib {
 
@@ -61,20 +62,6 @@ class RawBufferTransportDelegate {
 
 // Standalone raw buffer POSIX TCP socket transport engine.
 class RawBufferTransport {
- protected:
-  // Compact 32-byte binary packet header layout.
-  struct alignas(8) PacketHeader {
-    uint8_t op;     // 3=BytePull, 5=ByteSlicePush, 1,2,4,6=HigherLevelBlockOps
-    uint8_t flags;  // Holds major_order or protocol flags
-    uint16_t buffer_id;      // Multidimensional Buffer / Layer ID coordinate
-    uint16_t reserved;       // Holds parallelism/expected chunks count
-    uint16_t padding;        // Unused padding to align fields
-    uint32_t remote_id;      // Remote block ID or linear memory offset
-    uint32_t local_id;       // Local block ID or target shard index
-    uint32_t count_or_size;  // Number of blocks or continuous payload bytes
-    uint64_t uuid;           // Globally unique transaction routing ID
-  };
-
  public:
   RawBufferTransport(RawBufferTransportDelegate* delegate, int local_port,
                      const std::vector<std::string>& local_ips = {});
@@ -105,7 +92,7 @@ class RawBufferTransport {
   absl::Status ProcessPeerRequest(int client_fd);
 
   virtual absl::Status HandleCustomRequest(int client_fd,
-                                           const PacketHeader& header) {
+                                           const ChunkHeader& header) {
     return absl::UnimplementedError(
         absl::StrCat("Unsupported raw transport op code: ", header.op));
   }

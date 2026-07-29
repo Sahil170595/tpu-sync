@@ -20,6 +20,11 @@ load("@rules_cc//cc:defs.bzl", "cc_library", "cc_test")
 package(default_visibility = ["//visibility:public"])
 
 cc_library(
+    name = "chunk",
+    hdrs = ["chunk.h"],
+)
+
+cc_library(
     name = "raw_buffer_transport",
     srcs = ["raw_buffer_transport.cc"],
     hdrs = ["raw_buffer_transport.h"],
@@ -29,6 +34,7 @@ cc_library(
     ],
     features = ["-use_header_modules"],
     deps = [
+        ":chunk",
         "//tpu_raiden/core:status_macros",
         "//tpu_raiden/transport/lib/socket:util",
         "//tpu_raiden/transport/peregrine/src/api:socket_util",

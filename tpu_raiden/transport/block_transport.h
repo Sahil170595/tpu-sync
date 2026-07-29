@@ -35,6 +35,7 @@
 #include "absl/strings/string_view.h"
 #include "absl/synchronization/mutex.h"
 #include "absl/types/span.h"
+#include "tpu_raiden/transport/lib/chunk.h"
 #include "tpu_raiden/transport/lib/raw_buffer_transport.h"
 
 namespace tpu_raiden {
@@ -260,7 +261,7 @@ class BlockTransport final : public lib::RawBufferTransport {
 
  private:
   absl::Status HandleCustomRequest(int client_fd,
-                                   const PacketHeader& header) override;
+                                   const lib::ChunkHeader& header) override;
 
  private:
   struct WriteTask {
@@ -301,8 +302,10 @@ class BlockTransport final : public lib::RawBufferTransport {
                      BlockReceivedCallback on_block_received,
                      uint64_t uuid = 0);
 
-  absl::Status HandleIncomingPush(int client_fd, const PacketHeader& header);
-  absl::Status HandleIncomingPull(int client_fd, const PacketHeader& header);
+  absl::Status HandleIncomingPush(int client_fd,
+                                  const lib::ChunkHeader& header);
+  absl::Status HandleIncomingPull(int client_fd,
+                                  const lib::ChunkHeader& header);
 
   struct SendStreamState {
     int client_fd;

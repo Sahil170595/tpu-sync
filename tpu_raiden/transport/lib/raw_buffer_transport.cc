@@ -41,6 +41,7 @@
 #include "absl/strings/string_view.h"
 #include "absl/synchronization/mutex.h"
 #include "tpu_raiden/core/status_macros.h"
+#include "tpu_raiden/transport/lib/chunk.h"
 #include "tpu_raiden/transport/lib/socket/util.h"
 #include "tpu_raiden/transport/peregrine/src/api/socket_util.h"
 
@@ -258,7 +259,7 @@ void RawBufferTransport::ClosePooledConnections() {
 }
 
 absl::Status RawBufferTransport::ProcessPeerRequest(int client_fd) {
-  PacketHeader header = {};
+  ChunkHeader header = {};
   RETURN_IF_ERROR(ReadExact(client_fd, &header, sizeof(header)));
 
   if (header.op == 5) {  // peer push request
@@ -416,7 +417,7 @@ absl::Status RawBufferTransport::PullBuffer(
   auto fd_cleaner =
       absl::MakeCleanup([&] { ReturnConnection(ok_to_pool, fd, peer); });
 
-  const PacketHeader header = {
+  const ChunkHeader header = {
       .op = 3,
       .buffer_id = static_cast<uint16_t>(buffer_id),
       .remote_id = static_cast<uint32_t>(src_offset_bytes),
@@ -477,7 +478,7 @@ absl::Status RawBufferTransport::PushBuffer(absl::string_view peer,
   auto fd_cleaner =
       absl::MakeCleanup([&] { ReturnConnection(ok_to_pool, fd, peer); });
 
-  const PacketHeader header = {
+  const ChunkHeader header = {
       .op = 5,
       .buffer_id = static_cast<uint16_t>(buffer_id),
       .remote_id = static_cast<uint32_t>(dst_offset_bytes),

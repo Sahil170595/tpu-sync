@@ -46,6 +46,7 @@
 #include "absl/synchronization/mutex.h"
 #include "absl/types/span.h"
 #include "tpu_raiden/core/status_macros.h"
+#include "tpu_raiden/transport/lib/chunk.h"
 #include "tpu_raiden/transport/lib/raw_buffer_transport.h"
 #include "tpu_raiden/transport/peregrine/src/api/socket_util.h"
 
@@ -220,8 +221,8 @@ std::unique_ptr<BlockTransport::WriteTask> BlockTransport::SelectNextTask() {
   return nullptr;
 }
 
-absl::Status BlockTransport::HandleCustomRequest(int client_fd,
-                                                 const PacketHeader& header) {
+absl::Status BlockTransport::HandleCustomRequest(
+    int client_fd, const lib::ChunkHeader& header) {
   LOG(INFO) << "HandleCustomRequest (H2H read start): client_fd=" << client_fd
             << ", op=" << static_cast<int>(header.op)
             << ", uuid=" << header.uuid
@@ -245,8 +246,8 @@ absl::Status BlockTransport::HandleCustomRequest(int client_fd,
   }
 }
 
-absl::Status BlockTransport::HandleIncomingPush(int client_fd,
-                                                const PacketHeader& header) {
+absl::Status BlockTransport::HandleIncomingPush(
+    int client_fd, const lib::ChunkHeader& header) {
   ASSIGN_OR_RETURN(MajorOrder major_order, ParseMajorOrder(header.flags));
   std::vector<int> target_layers;
   if (header.local_id == 0xFFFFFFFF) {
@@ -446,8 +447,8 @@ absl::Status BlockTransport::HandleIncomingPush(int client_fd,
   return absl::OkStatus();
 }
 
-absl::Status BlockTransport::HandleIncomingPull(int client_fd,
-                                                const PacketHeader& header) {
+absl::Status BlockTransport::HandleIncomingPull(
+    int client_fd, const lib::ChunkHeader& header) {
   ASSIGN_OR_RETURN(MajorOrder major_order, ParseMajorOrder(header.flags));
   if (block_delegate_->shard_factor() == 0) {
     return absl::InvalidArgumentError("shard_factor must be positive");
@@ -456,7 +457,7 @@ absl::Status BlockTransport::HandleIncomingPull(int client_fd,
     return absl::InvalidArgumentError(
         "Requested remote block count is not divisible by shard_factor");
   }
-  const PacketHeader resp_header = {
+  const lib::ChunkHeader resp_header = {
       .op = 2,
       .flags = header.flags,
       .remote_id = header.local_id,
@@ -811,7 +812,7 @@ void BlockTransport::H2hWriteWorker(int stream_idx, absl::string_view peer,
   auto fd_cleaner = absl::MakeCleanup(
       [&] { ReturnConnection(ok_to_pool, fd, peer, local_ip); });
 
-  const PacketHeader header = {
+  const lib::ChunkHeader header = {
       .op = static_cast<uint8_t>(dst_block_ids.empty() ? 1 : 6),
       .flags = static_cast<uint8_t>(major_order),
       .buffer_id = 0,
@@ -1007,7 +1008,7 @@ void BlockTransport::H2hReadWorker(
       return;
     }
 
-    const PacketHeader header = {
+    const lib::ChunkHeader header = {
         .op = 2,  // Pull request
         .flags = static_cast<uint8_t>(major_order),
         .remote_id = static_cast<uint32_t>(remote_read_block_id),
@@ -1020,7 +1021,7 @@ void BlockTransport::H2hReadWorker(
       return;
     }
 
-    PacketHeader resp_header = {};
+    lib::ChunkHeader resp_header = {};
     s = ReadExact(fd, &resp_header, sizeof(resp_header));
     if (!s.ok()) {
       statuses[stream_idx] = s;

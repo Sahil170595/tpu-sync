@@ -45,9 +45,11 @@ os.environ.setdefault("GOOGLE_LOG_DIR", _LOG_DIR)
 os.environ.setdefault("TMPDIR", _LOG_DIR)
 
 import torch
+import torch_tpu
 import torch.distributed as dist
 import torch.multiprocessing as mp
 
+from google3.pyglib.contrib.g3_multiprocessing import g3_multiprocessing
 from tpu_raiden.frameworks.torch import _tpu_raiden_torch as _kv_cache_manager
 
 _GOOGLE_PCI_VENDOR_ID = "0x1ae0"
@@ -214,4 +216,4 @@ class KVCacheManagerMpmdTest(absltest.TestCase):
 
 if __name__ == "__main__":
   mp.set_start_method("spawn", force=True)
-  absltest.main()
+  g3_multiprocessing.handle_test_main(absltest.main)

@@ -37,6 +37,7 @@ from absl.testing import absltest
 from absl.testing import parameterized
 import numpy as np
 import torch
+import torch_tpu
 
 resources = None
 from tpu_raiden.api.torch import kv_cache_manager
@@ -180,10 +181,9 @@ class KVCacheStoreE2ETest(parameterized.TestCase):
   def setUp(self):
     super().setUp()
     start_servers()
-    try:
-      self.device = torch.device("tpu")
-    except RuntimeError:
-      self.device = torch.device("cpu")
+    self.device = torch.device("tpu")
+    assert self.device.type == "tpu", f"Expected real PyTorch TPU device, got {self.device}"
+    print(f"=== [DEVICE VERIFIED] Using real PyTorch TPU device: {self.device} ===")
 
     self.num_devices = 1  # E2E tests for PyTorch currently use single device logic for kv caches
     self.num_layers = 1
@@ -194,7 +194,7 @@ class KVCacheStoreE2ETest(parameterized.TestCase):
     super().tearDown()
 
   def test_e2e_save_and_load(self):
-    num_blocks = 2
+    num_blocks = 4
     shape = (num_blocks, 128, 8, 8, 128)
 
     # 1. Generate sequential distinct cache data
@@ -203,7 +203,10 @@ class KVCacheStoreE2ETest(parameterized.TestCase):
     host_data = np.arange(np.prod(shape), dtype=np.float32).reshape(shape)
     tpu_cache = torch.tensor(host_data, device=self.device)
 
-    expected_ref = host_data
+    # Expected reference after loading saved blocks 0 and 1 into blocks 2 and 3: [a, b, a, b]
+    expected_ref = host_data.copy()
+    expected_ref[2] = host_data[0]
+    expected_ref[3] = host_data[1]
 
     # 2. Get free port for controller
     controller_port = find_free_port()
@@ -213,6 +216,7 @@ class KVCacheStoreE2ETest(parameterized.TestCase):
     shard_size_bytes = (block_elements * 4) // self.num_devices
 
     # 3. Create KVCacheStore (Controller)
+    print("=== [Step 3/9] Creating KVCacheStore (Controller) ===")
     rid = kv_cache_store.RaidenId("e2e_job", "0", "e2e_cache", 0)
     store = kv_cache_store.KVCacheStore(
         capacity=num_blocks,
@@ -223,6 +227,7 @@ class KVCacheStoreE2ETest(parameterized.TestCase):
     )
 
     # 4. Create KVCacheManager (Worker)
+    print("=== [Step 4/9] Creating KVCacheManager (Worker) ===")
     manager = kv_cache_manager.KVCacheManager(
         kv_caches=[tpu_cache],
         local_control_port=0,
@@ -240,6 +245,7 @@ class KVCacheStoreE2ETest(parameterized.TestCase):
     )
 
     # 5. Insert HBM blocks to KVCacheStore
+    print("=== [Step 5/9] Inserting HBM blocks into KVCacheStore ===")
     hashes = [b"hash_0", b"hash_1"]
     slices = [
         kv_cache_store.RaidenBlockID(
@@ -268,6 +274,7 @@ class KVCacheStoreE2ETest(parameterized.TestCase):
     self.assertEqual(lookup_res[1][1].device_block_id, 1)
 
     # 6. Save HBM blocks to host memory
+    print("=== [Step 6/9] Saving HBM blocks to Host DRAM (store.save) ===")
     self.assertTrue(store.pin(hashes))
 
     def get_slice_e2e(x):
@@ -303,18 +310,10 @@ class KVCacheStoreE2ETest(parameterized.TestCase):
     )
     self.assertEqual(lookup_res[1][1].host_block_id, 1)
 
-    # 7. Overwrite device memory with zeros
-    # host blocks 2 and 3 are empty/uninitialized, containing zeros
-    manager.h2d([2, 2], [0, 1]).wait()
-
-    # Verify they are indeed zeros using JIT sum to avoid host caching
-    # sum_val = jax.jit(jnp.sum)(tpu_cache)
-    # self.assertEqual(float(sum_val), 0.0)
-    # print(f"DEBUG: tpu_cache.cpu().numpy() after overwrite with zeros: {tpu_cache.cpu().numpy()[0, 0, 0, 0, 0:5]}")
-
-    # 8. Load from host DRAM back to device HBM
+    # 7. Load from host DRAM into device HBM blocks [2, 3]
+    print("=== [Step 7/8] Loading checkpoint from Host DRAM into TPU HBM blocks [2, 3] (store.load) ===")
     self.assertTrue(store.pin(hashes))
-    store.load(hashes, [0, 1])
+    store.load(hashes, [2, 3])
 
     # Wait for load completion
     done = False
@@ -330,8 +329,14 @@ class KVCacheStoreE2ETest(parameterized.TestCase):
     # Release at the very end
     store.release(hashes)
 
-    # 9. Verify device memory contains the original random data
+    try:
+      torch.tpu.synchronize()
+    except (AttributeError, RuntimeError):
+      pass
+    # 8. Verify device memory blocks [2, 3] match saved blocks [0, 1]
+    print("=== [Step 8/8] Verifying restored TPU memory matches expected array [a, b, a, b] ===")
     np.testing.assert_array_equal(tpu_cache.cpu().numpy(), expected_ref)
+    print("=== [SUCCESS] E2E Save/Load [0, 1] -> [2, 3] roundtrip verified on physical TPU! ===")
 
 
 if __name__ == "__main__":

@@ -456,13 +456,13 @@ absl::Status BlockTransport::HandleIncomingPull(int client_fd,
     return absl::InvalidArgumentError(
         "Requested remote block count is not divisible by shard_factor");
   }
-  PacketHeader resp_header = {};
-  resp_header.op = 2;
-  resp_header.flags = header.flags;
-  resp_header.remote_id = header.local_id;
-  resp_header.local_id = 0;
-  resp_header.count_or_size = header.count_or_size;
-
+  const PacketHeader resp_header = {
+      .op = 2,
+      .flags = header.flags,
+      .remote_id = header.local_id,
+      .local_id = 0,
+      .count_or_size = header.count_or_size,
+  };
   RETURN_IF_ERROR(WriteExact(client_fd, &resp_header, sizeof(resp_header)));
 
   size_t local_blocks = header.count_or_size / block_delegate_->shard_factor();
@@ -795,6 +795,11 @@ void BlockTransport::H2hWriteWorker(int stream_idx, absl::string_view peer,
                                     std::vector<absl::Status>& statuses,
                                     MajorOrder major_order, uint64_t uuid,
                                     int layer_idx, int parallelism) {
+  if (block_count > std::numeric_limits<uint32_t>::max()) {
+    statuses[stream_idx] = absl::OutOfRangeError("Block count exceeds uint32");
+    return;
+  }
+
   auto status_or_fd = BorrowConnection(peer, local_ip);
   if (!status_or_fd.ok()) {
     statuses[stream_idx] = status_or_fd.status();
@@ -806,21 +811,17 @@ void BlockTransport::H2hWriteWorker(int stream_idx, absl::string_view peer,
   auto fd_cleaner = absl::MakeCleanup(
       [&] { ReturnConnection(ok_to_pool, fd, peer, local_ip); });
 
-  PacketHeader header = {};
-  header.op = dst_block_ids.empty() ? 1 : 6;
-  header.flags = static_cast<uint8_t>(major_order);
-  header.buffer_id = 0;
-  header.remote_id = static_cast<uint32_t>(block_delegate_->node_id());
-  header.local_id =
-      (layer_idx == -1) ? 0xFFFFFFFF : static_cast<uint32_t>(layer_idx);
-  header.uuid = uuid;
-  header.reserved = static_cast<uint16_t>(parallelism);
-  if (block_count > std::numeric_limits<uint32_t>::max()) {
-    statuses[stream_idx] = absl::OutOfRangeError("Block count exceeds uint32");
-    return;
-  }
-  header.count_or_size = static_cast<uint32_t>(block_count);
-
+  const PacketHeader header = {
+      .op = static_cast<uint8_t>(dst_block_ids.empty() ? 1 : 6),
+      .flags = static_cast<uint8_t>(major_order),
+      .buffer_id = 0,
+      .reserved = static_cast<uint16_t>(parallelism),
+      .remote_id = static_cast<uint32_t>(block_delegate_->node_id()),
+      .local_id =
+          layer_idx == -1 ? 0xFFFFFFFF : static_cast<uint32_t>(layer_idx),
+      .count_or_size = static_cast<uint32_t>(block_count),
+      .uuid = uuid,
+  };
   absl::Status s = WriteExact(fd, &header, sizeof(header));
   if (!s.ok()) {
     statuses[stream_idx] = s;
@@ -995,10 +996,7 @@ void BlockTransport::H2hReadWorker(
   }
 
   for (const auto& chunk : chunks) {
-    PacketHeader header = {};
-    header.op = 2;  // Pull request
-    header.flags = static_cast<uint8_t>(major_order);
-    int remote_read_block_id =
+    const int remote_read_block_id =
         block_delegate_->GetRemoteReadBlockId(chunk.base_remote_id, 0);
     if (remote_read_block_id < 0 ||
         static_cast<uint64_t>(remote_read_block_id) >
@@ -1008,10 +1006,14 @@ void BlockTransport::H2hReadWorker(
           absl::OutOfRangeError("Remote block range exceeds transport header");
       return;
     }
-    header.remote_id = static_cast<uint32_t>(remote_read_block_id);
-    header.count_or_size = static_cast<uint32_t>(chunk.remote_count);
-    header.uuid = uuid;
 
+    const PacketHeader header = {
+        .op = 2,  // Pull request
+        .flags = static_cast<uint8_t>(major_order),
+        .remote_id = static_cast<uint32_t>(remote_read_block_id),
+        .count_or_size = static_cast<uint32_t>(chunk.remote_count),
+        .uuid = uuid,
+    };
     absl::Status s = WriteExact(fd, &header, sizeof(header));
     if (!s.ok()) {
       statuses[stream_idx] = s;

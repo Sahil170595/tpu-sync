@@ -15,13 +15,13 @@
 # Only for internal implementations.
 
 package_group(
-    name = "public_api",
+    name = "peregrine_api",
     packages = ["//tpu_raiden/transport/peregrine/src/api/..."],
 )
 
 package_group(
-    name = "internal_impl",
-    includes = [":public_api"],
+    name = "peregrine_internal",
+    includes = [":peregrine_api"],
     packages = ["//tpu_raiden/transport/peregrine/src/internal/..."],
 )
 

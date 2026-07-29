@@ -27,6 +27,7 @@
 #include "absl/base/thread_annotations.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
+#include "absl/memory/memory.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
@@ -36,6 +37,8 @@
 #include "tpu_raiden/core/numa_thread_pool.h"
 #include "tpu_raiden/core/raw_transfer_core.h"
 #include "tpu_raiden/kv_cache/kv_cache_metadata.h"
+#include "tpu_raiden/kv_cache/kv_cache_store_backend.h"
+#include "tpu_raiden/kv_cache/kv_cache_store_backend_factory.h"
 #include "tpu_raiden/kv_cache/lru_cache.h"
 #include "tpu_raiden/kv_cache/raiden_id.h"
 
@@ -51,51 +54,47 @@ namespace global_registry {
 class GlobalRegistryClient;
 }
 
-enum class BlockStatus {
-  INIT,
-  REMOTE,
-  HBM,
-  HOST,
-  HOST_AND_HBM,
-};
-
-struct RaidenBlockID {
-  RaidenId raiden_id;
-  // When status is REMOTE, it represents the remote host block ID.
-  // When status is HOST or HOST_AND_HBM, it represents the local host block ID.
-  int host_block_id = -1;
-  int device_block_id = -1;
-  BlockStatus status = BlockStatus::INIT;
-
-  RaidenBlockID() = default;
-  /* implicit */ RaidenBlockID(RaidenId id, int host_id = -1,
-                               BlockStatus stat = BlockStatus::INIT)
-      : raiden_id(std::move(id)), host_block_id(host_id), status(stat) {}
-
-  RaidenBlockID(RaidenId id, int host_block_id, int device_block_id,
-                BlockStatus stat = BlockStatus::INIT)
-      : raiden_id(std::move(id)),
-        host_block_id(host_block_id),
-        device_block_id(device_block_id),
-        status(stat) {}
-
-  bool operator==(const RaidenBlockID& other) const {
-    return raiden_id == other.raiden_id &&
-           host_block_id == other.host_block_id &&
-           device_block_id == other.device_block_id && status == other.status;
-  }
-  bool operator!=(const RaidenBlockID& other) const {
-    return !(*this == other);
-  }
-};
-
-using BlockSliceList = std::vector<std::pair<std::string, RaidenBlockID>>;
-
 // KV Store that manages the indices and routing of prefix cache across serving
 // nodes and microservice slices.
 class KVCacheStore {
  public:
   friend class KVCacheStoreTest;
+
+  // Safe factory method to create KVCacheStore from a single BackendConfig.
+  static absl::StatusOr<std::unique_ptr<KVCacheStore>> Create(
+      const BackendConfig& config, size_t capacity = 0,
+      absl::string_view global_registry_address = "", RaidenId raiden_id = {},
+      int num_shards = 0, int64_t shard_size_bytes = 0,
+      absl::string_view raiden_orchestrator_address = "",
+      absl::string_view raiden_controller_address = "",
+      std::optional<KVCacheMetadata> metadata = std::nullopt);
+
+  // Safe factory method to create KVCacheStore from a list of BackendConfigs.
+  static absl::StatusOr<std::unique_ptr<KVCacheStore>> Create(
+      absl::Span<const BackendConfig> backend_configs, size_t capacity = 0,
+      absl::string_view global_registry_address = "", RaidenId raiden_id = {},
+      int num_shards = 0, int64_t shard_size_bytes = 0,
+      absl::string_view raiden_orchestrator_address = "",
+      absl::string_view raiden_controller_address = "",
+      std::optional<KVCacheMetadata> metadata = std::nullopt);
+
+  // Flexible constructor accepting a custom root backend
+  explicit KVCacheStore(std::shared_ptr<KVCacheStoreBackend> backend,
+                        RaidenId raiden_id = {}, int num_shards = 0,
+                        int64_t shard_size_bytes = 0,
+                        absl::string_view raiden_orchestrator_address = "",
+                        absl::string_view raiden_controller_address = "");
+
+  // Constructor accepting an ordered list of backends.
+  explicit KVCacheStore(
+      std::vector<std::shared_ptr<KVCacheStoreBackend>> backends,
+      RaidenId raiden_id = {}, int num_shards = 0, int64_t shard_size_bytes = 0,
+      absl::string_view raiden_orchestrator_address = "",
+      absl::string_view raiden_controller_address = "");
+
+  // Links RaidenController to all backends in backends_.
+  void SetRaidenController(
+      tpu_raiden::controller::RaidenController* controller);
 
   // If `metadata` is provided, every LRU cache entry whose data lives in
   // local host memory is mirrored into it, keeping a crash-persistent copy of
@@ -219,6 +218,14 @@ class KVCacheStore {
 
   size_t capacity() const;
   std::string raiden_controller_address() const;
+
+  const std::vector<std::shared_ptr<KVCacheStoreBackend>>& backends() const {
+    return backends_;
+  }
+
+  const std::shared_ptr<KVCacheStoreBackend>& backend() const {
+    return backends_[0];
+  }
 
   const RaidenId& raiden_id() const { return raiden_id_; }
 
@@ -347,24 +354,8 @@ class KVCacheStore {
     }
   };
 
-  // Records `block`'s LRU cache binding in the crash-persistent metadata
-  // table under `hash`. No-op when no table is attached or the block's data
-  // does not live in local host memory.
-  void SetMetadataEntry(absl::string_view hash, const RaidenBlockID& block)
-      ABSL_EXCLUSIVE_LOCKS_REQUIRED(mutex_);
-
-  // Removes `block`'s entry from the metadata table. No-op when no table is
-  // attached or the block's data does not live in local host memory.
-  void ClearMetadataEntry(const RaidenBlockID& block)
-      ABSL_EXCLUSIVE_LOCKS_REQUIRED(mutex_);
-
   mutable absl::Mutex mutex_;
-  mutable LRUCache<std::string, RaidenBlockID> lru_cache_
-      ABSL_GUARDED_BY(mutex_);
-  std::optional<KVCacheMetadata> metadata_ ABSL_GUARDED_BY(mutex_);
-  // Recency stamp for metadata entries; strictly increases with every
-  // metadata write so recovery can rebuild the LRU order.
-  uint64_t next_metadata_seq_ ABSL_GUARDED_BY(mutex_) = 0;
+  std::vector<std::shared_ptr<KVCacheStoreBackend>> backends_;
   std::shared_ptr<global_registry::GlobalRegistryClient> registry_client_;
   RaidenId raiden_id_;
   std::unique_ptr<tpu_raiden::controller::RaidenController> raiden_controller_;
@@ -399,12 +390,6 @@ class KVCacheStore {
       std::vector<std::pair<tsl::Future<>, RemoteReadState>>
           ready_remote_reads);
   void PollFuturesInternal();
-
-  std::vector<std::string> GetSortedHashes(
-      const std::vector<std::string>& hashes) const;
-
-  absl::flat_hash_map<std::vector<std::string>, size_t> pending_eviction_counts_
-      ABSL_GUARDED_BY(mutex_);
 };
 
 }  // namespace kv_cache

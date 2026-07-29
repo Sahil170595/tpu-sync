@@ -1,0 +1,177 @@
+// Copyright 2026 Google LLC.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+#ifndef THIRD_PARTY_TPU_RAIDEN_KV_CACHE_KV_CACHE_STORE_BACKEND_H_
+#define THIRD_PARTY_TPU_RAIDEN_KV_CACHE_KV_CACHE_STORE_BACKEND_H_
+
+#include <cstddef>
+#include <memory>
+#include <string>
+#include <utility>
+#include <vector>
+
+#include "absl/status/statusor.h"
+#include "absl/strings/string_view.h"
+#include "absl/types/span.h"
+#include "tpu_raiden/kv_cache/raiden_id.h"
+
+namespace tpu_raiden {
+
+namespace controller {
+class RaidenController;
+}  // namespace controller
+
+namespace kv_cache {
+
+enum class BlockStatus {
+  INIT,
+  REMOTE,
+  HBM,
+  HOST,
+  HOST_AND_HBM,
+};
+
+struct RaidenBlockID {
+  RaidenId raiden_id;
+  // When status is REMOTE, it represents the remote host block ID.
+  // When status is HOST or HOST_AND_HBM, it represents the local host block ID.
+  int host_block_id = -1;
+  int device_block_id = -1;
+  BlockStatus status = BlockStatus::INIT;
+
+  RaidenBlockID() = default;
+  /* implicit */ RaidenBlockID(RaidenId id, int host_id = -1,
+                               BlockStatus stat = BlockStatus::INIT)
+      : raiden_id(std::move(id)), host_block_id(host_id), status(stat) {}
+
+  RaidenBlockID(RaidenId id, int host_block_id, int device_block_id,
+                BlockStatus stat = BlockStatus::INIT)
+      : raiden_id(std::move(id)),
+        host_block_id(host_block_id),
+        device_block_id(device_block_id),
+        status(stat) {}
+
+  bool operator==(const RaidenBlockID& other) const {
+    return raiden_id == other.raiden_id &&
+           host_block_id == other.host_block_id &&
+           device_block_id == other.device_block_id && status == other.status;
+  }
+  bool operator!=(const RaidenBlockID& other) const {
+    return !(*this == other);
+  }
+};
+
+using BlockSliceList = std::vector<std::pair<std::string, RaidenBlockID>>;
+
+// Options controlling lookup behavior across storage tiers.
+struct LookupOptions {
+  // Maximum tier index to search (inclusive).
+  // -1 means search all available tiers.
+  // 0 means search local Tier 0 only (preserves enable_global = false
+  // semantics).
+  int max_tier = -1;
+};
+
+// Abstract interface for KV cache index storage backends.
+// Implementations must be thread-safe.
+class KVCacheStoreBackend {
+ public:
+  virtual ~KVCacheStoreBackend() = default;
+
+  // Links RaidenController to backend for DMA/async orchestration.
+  virtual void SetRaidenController(
+      tpu_raiden::controller::RaidenController* controller) {}
+
+  // Name identifying the backend type (e.g., "LruCacheBackend",
+  // "GlobalMemoryPoolingBackend").
+  virtual std::string name() const = 0;
+
+  // Resolves cached block hashes in sequence.
+  // Returns a list of matched (block_hash, RaidenBlockID) pairs up to the first
+  // miss.
+  virtual absl::StatusOr<BlockSliceList> Lookup(
+      absl::Span<const std::string> block_hashes,
+      const LookupOptions& options = {}) = 0;
+
+  // Inserts key-block mappings into the backend.
+  // Returns:
+  //   - bool: true if all hashes were newly inserted (none already existed)
+  //   - BlockSliceList: entries evicted from this backend during insertion
+  virtual std::pair<bool, BlockSliceList> Insert(
+      absl::Span<const std::string> block_hashes,
+      absl::Span<const RaidenBlockID> slices, bool on_host) = 0;
+
+  // Pins existing hashes and inserts & locks new hashes if space permits.
+  // Performs complete rollback on failure. Returns true on full success.
+  virtual bool InsertAndLock(absl::Span<const std::string> block_hashes,
+                             absl::Span<const RaidenBlockID> slices,
+                             bool on_host) = 0;
+
+  // Reverts an InsertAndLock operation: unpins hashes, erases non-host blocks
+  // whose pin count drops to 0, and restores candidate evictions.
+  // Returns the number of deleted blocks.
+  virtual size_t ReleaseAndDelete(
+      absl::Span<const std::string> block_hashes) = 0;
+
+  // Explicitly deletes cached block entries from the backend.
+  virtual void Delete(absl::Span<const std::string> block_hashes,
+                      absl::Span<const RaidenBlockID> slices) = 0;
+
+  // Pins block hashes to protect them from LRU eviction.
+  // Returns true if all hashes exist and were successfully pinned.
+  virtual bool Pin(absl::Span<const std::string> block_hashes) = 0;
+
+  // Releases (unpins) previously pinned block hashes.
+  virtual void Release(absl::Span<const std::string> block_hashes) = 0;
+
+  // Returns current pin count for a single hash (0 if absent).
+  virtual int GetPinCount(const std::string& hash) const = 0;
+
+  // Maximum capacity of entries supported by this backend.
+  virtual size_t GetCapacity() const = 0;
+
+  // Current number of active entries stored in this backend.
+  virtual size_t GetSize() const = 0;
+
+  // Remaining evictable/unpinned space in this backend.
+  virtual size_t GetAvailableSpace() const = 0;
+
+  // Reconstructs index entries from a local persistent manifest/metadata table.
+  // Default implementation returns 0 (no recovery).
+  virtual absl::StatusOr<size_t> RecoverFromLocalManifest() { return 0; }
+
+  // Validates host DRAM block IDs and pins them in local memory.
+  // Default implementation returns false.
+  virtual bool ValidateAndPinHostBlocks(absl::Span<const int> host_block_ids) {
+    return false;
+  }
+
+  // Retrieves evictable keys from the backend.
+  virtual std::vector<std::string> GetEvictableKeys(size_t count) { return {}; }
+
+  // Evicts keys from the backend and returns deallocated host block IDs.
+  virtual std::vector<int> Evict(const std::vector<std::string>& block_hashes) {
+    Delete(block_hashes, {});
+    return {};
+  }
+
+  // Retrieves eviction candidate keys from the backend (for
+  // testing/diagnostics).
+  virtual std::vector<std::string> GetEvictCandidateKeys() const { return {}; }
+};
+
+}  // namespace kv_cache
+}  // namespace tpu_raiden
+
+#endif  // THIRD_PARTY_TPU_RAIDEN_KV_CACHE_KV_CACHE_STORE_BACKEND_H_

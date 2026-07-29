@@ -46,6 +46,11 @@ struct RaidenId {
   std::string data_name;
   int data_replica_idx = 0;
 
+  bool empty() const {
+    return job_name.empty() && job_replica_id.empty() && data_name.empty() &&
+           data_replica_idx == 0;
+  }
+
   bool operator==(const RaidenId& other) const {
     return job_name == other.job_name &&
            job_replica_id == other.job_replica_id &&

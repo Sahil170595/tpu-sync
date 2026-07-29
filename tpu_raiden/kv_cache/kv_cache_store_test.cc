@@ -44,8 +44,10 @@
 #include "tpu_raiden/core/controller/raiden_orchestrator.h"
 #include "tpu_raiden/core/controller/test_util.h"
 #include "tpu_raiden/core/kv_manager_holder.h"
+#include "tpu_raiden/kv_cache/global_memory_pooling_backend.h"
 #include "tpu_raiden/kv_cache/global_registry/global_registry_client.h"
 #include "tpu_raiden/kv_cache/global_registry/global_registry_server.h"
+#include "tpu_raiden/kv_cache/host_offload_backend.h"
 #include "tpu_raiden/kv_cache/kv_cache_metadata.h"
 #include "tpu_raiden/kv_cache/lru_cache.h"
 #include "tpu_raiden/kv_cache/raiden_id.h"
@@ -74,8 +76,8 @@ class KVCacheStoreTest {
 
   static std::vector<std::string> GetEvictCandidateKeys(
       const KVCacheStore& store) {
-    absl::MutexLock lock(store.mutex_);
-    return store.lru_cache_.GetEvictCandidateKeys();
+    return store.backend() ? store.backend()->GetEvictCandidateKeys()
+                           : std::vector<std::string>{};
   }
 };
 
@@ -620,14 +622,15 @@ TEST(KVCacheStoreTest, LookupAvailableSpaceLimit) {
   // Pin 101. Pinned count = 1. Available space = 3 - 1 = 2.
   EXPECT_TRUE(store.Pin({"101"}));
 
-  // Lookup 4 hashes. Since available space is 2, it should only return the
-  // first 2.
+  // Lookup 4 hashes. Lookup is non-mutating and unbounded by available space,
+  // returning all 3 cached blocks up to the first miss ("104").
   std::vector<std::string> lookup_hashes = {"101", "102", "103", "104"};
   auto lookup_res = store.Lookup(lookup_hashes);
   ASSERT_TRUE(lookup_res.ok());
-  EXPECT_EQ(lookup_res->size(), 2);
+  EXPECT_EQ(lookup_res->size(), 3);
   EXPECT_EQ((*lookup_res)[0].first, "101");
   EXPECT_EQ((*lookup_res)[1].first, "102");
+  EXPECT_EQ((*lookup_res)[2].first, "103");
 }
 
 TEST(KVCacheStoreTest, InsertAndLock) {
@@ -2795,6 +2798,113 @@ TEST(KVCacheStoreTest, RecoverFromLocalManifestPreconditions) {
   auto recovered_or = store_empty.RecoverFromLocalManifest();
   ASSERT_TRUE(recovered_or.ok()) << recovered_or.status().ToString();
   EXPECT_EQ(*recovered_or, 0);
+}
+
+TEST(KVCacheStoreTest, MultiBackendPriorityLookupChain) {
+  auto b1 = std::make_shared<HostOffloadBackend>(/*capacity=*/4);
+  auto b2 = std::make_shared<HostOffloadBackend>(/*capacity=*/2);
+
+  RaidenId id{"job", "0", "cache", 0};
+  std::vector<std::string> b1_hashes = {"h1", "h2"};
+  std::vector<RaidenBlockID> b1_slices = {
+      RaidenBlockID(id, 1, BlockStatus::HOST),
+      RaidenBlockID(id, 2, BlockStatus::HOST)};
+  b1->Insert(b1_hashes, b1_slices, /*on_host=*/true);
+
+  std::vector<std::string> b2_hashes = {"h3", "h4"};
+  std::vector<RaidenBlockID> b2_slices = {
+      RaidenBlockID(id, 3, BlockStatus::HOST),
+      RaidenBlockID(id, 4, BlockStatus::HOST)};
+  b2->Insert(b2_hashes, b2_slices, /*on_host=*/true);
+
+  KVCacheStore store(std::vector<std::shared_ptr<KVCacheStoreBackend>>{b1, b2});
+
+  auto lookup_res =
+      store.Lookup({"h1", "h2", "h3", "h4"}, /*enable_global=*/true);
+  ASSERT_TRUE(lookup_res.ok());
+  ASSERT_EQ(lookup_res->size(), 4);
+  EXPECT_EQ((*lookup_res)[0].first, "h1");
+  EXPECT_EQ((*lookup_res)[0].second.host_block_id, 1);
+  EXPECT_EQ((*lookup_res)[1].first, "h2");
+  EXPECT_EQ((*lookup_res)[1].second.host_block_id, 2);
+  EXPECT_EQ((*lookup_res)[2].first, "h3");
+  EXPECT_EQ((*lookup_res)[2].second.host_block_id, 3);
+  EXPECT_EQ((*lookup_res)[3].first, "h4");
+  EXPECT_EQ((*lookup_res)[3].second.host_block_id, 4);
+}
+
+TEST(KVCacheStoreTest, MultiBackendTierGatingWhenGlobalDisabled) {
+  auto b1 = std::make_shared<HostOffloadBackend>(/*capacity=*/2);
+  auto b2 = std::make_shared<HostOffloadBackend>(/*capacity=*/2);
+
+  RaidenId id{"job", "0", "cache", 0};
+  b1->Insert({"h1"}, {RaidenBlockID(id, 1, BlockStatus::HOST)},
+             /*on_host=*/true);
+  b2->Insert({"h2"}, {RaidenBlockID(id, 2, BlockStatus::HOST)},
+             /*on_host=*/true);
+
+  KVCacheStore store(std::vector<std::shared_ptr<KVCacheStoreBackend>>{b1, b2});
+
+  // enable_global = false => max_tier = 0 => stops after Tier 0
+  auto gated_res = store.Lookup({"h1", "h2"}, /*enable_global=*/false);
+  ASSERT_TRUE(gated_res.ok());
+  ASSERT_EQ(gated_res->size(), 1);
+  EXPECT_EQ((*gated_res)[0].first, "h1");
+
+  // enable_global = true => max_tier = -1 => queries Tier 0 and Tier 1
+  auto ungated_res = store.Lookup({"h1", "h2"}, /*enable_global=*/true);
+  ASSERT_TRUE(ungated_res.ok());
+  ASSERT_EQ(ungated_res->size(), 2);
+  EXPECT_EQ((*ungated_res)[0].first, "h1");
+  EXPECT_EQ((*ungated_res)[1].first, "h2");
+}
+
+TEST(KVCacheStoreTest, MultiBackendInsertAndLockRollback) {
+  auto b1 = std::make_shared<HostOffloadBackend>(/*capacity=*/2);
+  auto b2 = std::make_shared<HostOffloadBackend>(/*capacity=*/1);
+
+  KVCacheStore store(std::vector<std::shared_ptr<KVCacheStoreBackend>>{b1, b2});
+
+  RaidenId id{"job", "0", "cache", 0};
+  std::vector<std::string> hashes = {"h1", "h2"};
+  std::vector<RaidenBlockID> slices = {
+      RaidenBlockID(id, 1, BlockStatus::REMOTE),
+      RaidenBlockID(id, 2, BlockStatus::REMOTE)};
+
+  // b1 capacity=2 supports 2 blocks, but b2 capacity=1 fails on 2 blocks.
+  bool status = store.InsertAndLock(hashes, slices, /*on_host=*/true);
+  EXPECT_FALSE(status);
+
+  // Verify rollback on b1: no locks or entries remain.
+  EXPECT_EQ(b1->GetSize(), 0);
+  EXPECT_EQ(b1->GetPinCount("h1"), 0);
+  EXPECT_EQ(b1->GetPinCount("h2"), 0);
+  EXPECT_EQ(b2->GetSize(), 0);
+}
+
+TEST(KVCacheStoreTest, MultiBackendPinAndRelease) {
+  auto b1 = std::make_shared<HostOffloadBackend>(/*capacity=*/2);
+  auto b2 = std::make_shared<HostOffloadBackend>(/*capacity=*/2);
+
+  RaidenId id{"job", "0", "cache", 0};
+  b1->Insert({"h1"}, {RaidenBlockID(id, 1, BlockStatus::HOST)},
+             /*on_host=*/true);
+  b2->Insert({"h2"}, {RaidenBlockID(id, 2, BlockStatus::HOST)},
+             /*on_host=*/true);
+
+  KVCacheStore store(std::vector<std::shared_ptr<KVCacheStoreBackend>>{b1, b2});
+
+  EXPECT_TRUE(store.Pin({"h1", "h2"}));
+  EXPECT_EQ(store.GetPinCount("h1"), 1);
+  EXPECT_EQ(store.GetPinCount("h2"), 1);
+  EXPECT_EQ(b1->GetPinCount("h1"), 1);
+  EXPECT_EQ(b2->GetPinCount("h2"), 1);
+
+  store.Release({"h1", "h2"});
+  EXPECT_EQ(store.GetPinCount("h1"), 0);
+  EXPECT_EQ(store.GetPinCount("h2"), 0);
+  EXPECT_EQ(b1->GetPinCount("h1"), 0);
+  EXPECT_EQ(b2->GetPinCount("h2"), 0);
 }
 
 }  // namespace

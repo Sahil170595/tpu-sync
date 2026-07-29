@@ -328,6 +328,98 @@ cc_library(
 )
 
 cc_library(
+    name = "kv_cache_store_backend",
+    hdrs = ["kv_cache_store_backend.h"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":raiden_id",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
+    ],
+)
+
+cc_library(
+    name = "host_offload_backend",
+    srcs = ["host_offload_backend.cc"],
+    hdrs = ["host_offload_backend.h"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":kv_cache_metadata",
+        ":kv_cache_store_backend",
+        ":kv_cache_store_backend_factory",
+        ":lru_cache",
+        ":raiden_id",
+        "//tpu_raiden/core/controller:raiden_controller",
+        "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/container:flat_hash_map",
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/synchronization",
+        "@com_google_absl//absl/types:span",
+    ],
+    alwayslink = 1,
+)
+
+cc_library(
+    name = "global_memory_pooling_backend",
+    srcs = ["global_memory_pooling_backend.cc"],
+    hdrs = ["global_memory_pooling_backend.h"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":kv_cache_store_backend",
+        ":kv_cache_store_backend_factory",
+        ":raiden_id",
+        "//tpu_raiden/kv_cache/global_registry:global_registry_client_cc",
+        "@com_github_grpc_grpc//:grpc++",
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/types:span",
+    ],
+    alwayslink = 1,
+)
+
+cc_library(
+    name = "kv_cache_store_backend_factory",
+    srcs = ["kv_cache_store_backend_factory.cc"],
+    hdrs = ["kv_cache_store_backend_factory.h"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":kv_cache_metadata",
+        ":kv_cache_store_backend",
+        ":raiden_id",
+        "//tpu_raiden/core:status_macros",
+        "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/base:no_destructor",
+        "@com_google_absl//absl/container:flat_hash_map",
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/synchronization",
+    ],
+    alwayslink = 1,
+)
+
+cc_test(
+    name = "kv_cache_store_backend_factory_test",
+    srcs = ["kv_cache_store_backend_factory_test.cc"],
+    deps = [
+        ":host_offload_backend",
+        ":kv_cache_store",
+        ":kv_cache_store_backend",
+        ":kv_cache_store_backend_factory",
+        ":raiden_id",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_googletest//:gtest",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+cc_library(
     name = "kv_cache_store",
     srcs = ["kv_cache_store.cc"],
     hdrs = ["kv_cache_store.h"],
@@ -338,12 +430,17 @@ cc_library(
     features = ["-use_header_modules"],
     visibility = ["//visibility:public"],
     deps = [
+        ":global_memory_pooling_backend",
+        ":host_offload_backend",
         ":kv_cache_metadata",
+        ":kv_cache_store_backend",
+        ":kv_cache_store_backend_factory",
         ":lru_cache",
         ":raiden_id",
         "//tpu_raiden/core:buffer",
         "//tpu_raiden/core:numa_thread_pool",
         "//tpu_raiden/core:raw_transfer_core",
+        "//tpu_raiden/core:status_macros",
         "//tpu_raiden/core/controller:raiden_controller",
         "//tpu_raiden/kv_cache/global_registry:global_registry_client_cc",
         "//tpu_raiden/rpc:raiden_service_cc_proto",
@@ -353,6 +450,7 @@ cc_library(
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/container:flat_hash_set",
         "@com_google_absl//absl/log",
+        "@com_google_absl//absl/memory",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
@@ -372,6 +470,8 @@ cc_test(
     ],
     features = ["-use_header_modules"],
     deps = [
+        ":global_memory_pooling_backend",
+        ":host_offload_backend",
         ":kv_cache_metadata",
         ":kv_cache_store",
         ":lru_cache",
@@ -394,6 +494,46 @@ cc_test(
         "@com_google_googletest//:gtest",
         "@com_google_googletest//:gtest_main",
         "@xla//xla/tsl/concurrency:future",
+    ],
+)
+
+cc_test(
+    name = "host_offload_backend_test",
+    srcs = ["host_offload_backend_test.cc"],
+    copts = [
+        "-fno-strict-aliasing",
+        "-fexceptions",
+    ],
+    features = ["-use_header_modules"],
+    deps = [
+        ":host_offload_backend",
+        ":kv_cache_store_backend",
+        ":raiden_id",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_googletest//:gtest",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "global_memory_pooling_backend_test",
+    srcs = ["global_memory_pooling_backend_test.cc"],
+    copts = [
+        "-fno-strict-aliasing",
+        "-fexceptions",
+    ],
+    features = ["-use_header_modules"],
+    deps = [
+        ":global_memory_pooling_backend",
+        ":kv_cache_store_backend",
+        ":raiden_id",
+        "//tpu_raiden/kv_cache/global_registry:global_registry_client_cc",
+        "//tpu_raiden/kv_cache/global_registry:global_registry_server_lib",
+        "@com_github_grpc_grpc//:grpc++",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_googletest//:gtest",
+        "@com_google_googletest//:gtest_main",
     ],
 )
 

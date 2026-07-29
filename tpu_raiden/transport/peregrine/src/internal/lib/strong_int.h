@@ -27,6 +27,14 @@
 
 #include "absl/hash/hash.h"
 
+// Defines a strong integer type `type_name` based on `value_type`.
+// For example, `DEFINE_STRONG_INT_TYPE(Fd, int)`.
+#define DEFINE_STRONG_INT_TYPE(type_name, value_type)               \
+  struct type_name##_strong_int_tag_ {};                            \
+  using type_name =                                                 \
+      ::peregrine::internal::StrongInt<type_name##_strong_int_tag_, \
+                                       value_type>;
+
 namespace peregrine::internal {
 
 // `StrongInt` is a wrapper around a native integer value type `T` with
@@ -98,12 +106,6 @@ template <typename Tag>
 std::ostream& operator<<(std::ostream& os, StrongInt<Tag, uint8_t> v) {
   return os << static_cast<unsigned int>(v.value());
 }
-
-#define DEFINE_STRONG_INT_TYPE(type_name, value_type, ...)          \
-  struct type_name##_strong_int_tag_ {};                            \
-  using type_name =                                                 \
-      ::peregrine::internal::StrongInt<type_name##_strong_int_tag_, \
-                                       value_type>;
 
 }  // namespace peregrine::internal
 

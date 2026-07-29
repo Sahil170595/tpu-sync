@@ -220,7 +220,7 @@ class BlockTransportDelegate : public lib::RawBufferTransportDelegate {
 };
 
 // High-speed Key-Value block transport engine extending RawBufferTransport.
-class BlockTransport : public lib::RawBufferTransport {
+class BlockTransport final : public lib::RawBufferTransport {
  public:
   BlockTransport(BlockTransportDelegate* delegate, int local_port,
                  const std::vector<std::string>& local_ips = {},

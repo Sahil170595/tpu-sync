@@ -111,8 +111,8 @@ class RawBufferTransport {
   }
 
  protected:
-  virtual absl::StatusOr<int> BorrowConnection(absl::string_view peer,
-                                               absl::string_view local_ip = "");
+  absl::StatusOr<int> BorrowConnection(absl::string_view peer,
+                                       absl::string_view local_ip = "");
   void ReturnConnection(bool ok, int fd, absl::string_view peer,
                         absl::string_view local_ip = "");
   void ClosePooledConnections();

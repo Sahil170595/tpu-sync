@@ -301,7 +301,12 @@ KVCacheManager::KVCacheManager(
   StartGrpcServer(raiden_worker_port, raiden_controller_address, worker_id);
 }
 
-KVCacheManager::~KVCacheManager() = default;
+KVCacheManager::~KVCacheManager() {
+  if (private_grpc_server_) {
+    private_grpc_server_->SetTransferManager(nullptr);
+  }
+  controller::WorkerServiceServer::GetInstance().SetTransferManager(nullptr);
+}
 
 void KVCacheManager::StartGrpcServer(
     int raiden_worker_port,

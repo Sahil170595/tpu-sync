@@ -2121,6 +2121,115 @@ class RaidenControllerTest(absltest.TestCase):
       controller.start_transfer = original_start_transfer
       server.stop()
 
+  def test_multi_variable_resharding_planning(self):
+    """Verifies resharding planning for multiple variables using absolute offsets."""
+    client = RecordingWorkerRpcClient()
+    controller = raiden_controller.RaidenController(
+        port=10000, worker_rpc_client=client
+    )
+
+    src_unit = raiden_controller.RaidenId(
+        "prefill", "engine-rank0", "weights", 0
+    )
+    dst_unit = raiden_controller.RaidenId(
+        "decode", "engine-rank0", "weights", 0
+    )
+
+    # 1. Register source unit with 2 variables
+    controller.register_work_unit(
+        src_unit,
+        shards=["127.0.0.1:8000"] * 4,
+        control_plane_rpc_address="127.0.0.1:9000",
+        variables=[
+            raiden_service_pb2.VariableMetadataProto(
+                name="weights_0",
+                shape=[128, 1024],
+                mesh_shape=[1, 4],
+                layout=[0, 1],
+                item_size=4,
+                layer_idx=0,
+            ),
+            raiden_service_pb2.VariableMetadataProto(
+                name="weights_1",
+                shape=[4, 512],
+                mesh_shape=[1, 4],
+                layout=[0, 1],
+                item_size=2,
+                layer_idx=1,
+            ),
+        ],
+    )
+
+    # 2. Register destination unit with matching variables but different sharding
+    controller.register_work_unit(
+        dst_unit,
+        shards=["127.0.0.1:8001"] * 4,
+        control_plane_rpc_address="127.0.0.1:9001",
+        variables=[
+            raiden_service_pb2.VariableMetadataProto(
+                name="weights_0",
+                shape=[128, 1024],
+                mesh_shape=[2, 2],
+                layout=[0, 1],
+                item_size=4,
+                layer_idx=0,
+            ),
+            raiden_service_pb2.VariableMetadataProto(
+                name="weights_1",
+                shape=[4, 512],
+                mesh_shape=[2, 2],
+                layout=[0, 1],
+                item_size=2,
+                layer_idx=1,
+            ),
+        ],
+    )
+
+    # 3. Trigger transfer
+    future = controller.start_transfer(
+        src_units=[src_unit],
+        dst_units=[dst_unit],
+        req_id="multi-var-req",
+        use_block_chunks=True,
+    )
+    asyncio.run(future.wait())
+
+    # Verify calls
+    self.assertNotEmpty(client.calls)
+
+    # 4. Verify that the generated schedules in the plan contain entries for both variables.
+    plan = controller.get_plan("multi-var-req")
+    self.assertIsNotNone(plan)
+
+    unit_entries = plan.shard_push_schedules[src_unit][0]
+    self.assertNotEmpty(unit_entries)
+
+    # 5. Assert that the entries have the correct layer_idx (0 and 1 respectively)
+    layer_indices = {entry[10] for entry in unit_entries}
+    self.assertEqual(layer_indices, {0, 1})
+
+    # 6. Assert that absolute offsets are used (since both register variables, they are not legacy).
+    has_large_offset = False
+    for shard_idx, entries in plan.shard_push_schedules[src_unit].items():
+      for entry in entries:
+        dst_offset = entry[2]
+        src_offset = entry[3]
+        layer_idx = entry[10]
+        if layer_idx == 0:
+          # Block sizes (inner dimensions): src = 512, dst = 256.
+          # Absolute offset (e.g. 65536) strictly exceeds these.
+          if dst_offset >= 2048 or src_offset >= 1024:
+            has_large_offset = True
+        elif layer_idx == 1:
+          # Block sizes (inner dimensions): src = 8, dst = 4.
+          # Absolute offset (e.g. 512) strictly exceeds these.
+          if dst_offset >= 512 or src_offset >= 256:
+            has_large_offset = True
+
+    self.assertTrue(
+        has_large_offset, "Expected absolute offsets to exceed block sizes"
+    )
+
 
 def _byte_spans_for_rank(
     rank,

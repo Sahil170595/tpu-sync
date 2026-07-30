@@ -468,27 +468,27 @@ class KVCacheManagerPerfTest(parameterized.TestCase):
 
     print(
         f"[{dtype}, {num_layers} layers, shape={shape}] KVCacheManager"
-        f" D2H bandwidth: {mgr_d2h_bw:.3f} GB/s"
+        f" D2H bandwidth: {mgr_d2h_bw:.3f} GiB/s"
     )
     print(
         f"[{dtype}, {num_layers} layers, shape={shape}] KVCacheManager"
-        f" H2D bandwidth: {mgr_h2d_bw:.3f} GB/s"
+        f" H2D bandwidth: {mgr_h2d_bw:.3f} GiB/s"
     )
     print(
         f"[{dtype}, {num_layers} layers, shape={shape}] JAX Pinned D2H"
-        f" bandwidth: {jax_pinned_d2h_bw:.3f} GB/s"
+        f" bandwidth: {jax_pinned_d2h_bw:.3f} GiB/s"
     )
     print(
         f"[{dtype}, {num_layers} layers, shape={shape}] JAX Pinned H2D"
-        f" bandwidth: {jax_pinned_h2d_bw:.3f} GB/s"
+        f" bandwidth: {jax_pinned_h2d_bw:.3f} GiB/s"
     )
     print(
         f"[{dtype}, {num_layers} layers, shape={shape}] JAX Standard D2H"
-        f" bandwidth: {jax_std_d2h_bw:.3f} GB/s"
+        f" bandwidth: {jax_std_d2h_bw:.3f} GiB/s"
     )
     print(
         f"[{dtype}, {num_layers} layers, shape={shape}] JAX Standard H2D"
-        f" bandwidth: {jax_std_h2d_bw:.3f} GB/s"
+        f" bandwidth: {jax_std_h2d_bw:.3f} GiB/s"
     )
 
     log_telemetry(
@@ -727,27 +727,27 @@ class KVCacheManagerPerfTest(parameterized.TestCase):
 
     print(
         f"[{dtype}, {num_layers} layers, shape={shape}] KVCacheManager"
-        f" D2H bandwidth: {mgr_d2h_bw:.3f} GB/s"
+        f" D2H bandwidth: {mgr_d2h_bw:.3f} GiB/s"
     )
     print(
         f"[{dtype}, {num_layers} layers, shape={shape}] KVCacheManager"
-        f" H2D bandwidth: {mgr_h2d_bw:.3f} GB/s"
+        f" H2D bandwidth: {mgr_h2d_bw:.3f} GiB/s"
     )
     print(
         f"[{dtype}, {num_layers} layers, shape={shape}] JAX Pinned D2H"
-        f" bandwidth: {jax_pinned_d2h_bw:.3f} GB/s"
+        f" bandwidth: {jax_pinned_d2h_bw:.3f} GiB/s"
     )
     print(
         f"[{dtype}, {num_layers} layers, shape={shape}] JAX Pinned H2D"
-        f" bandwidth: {jax_pinned_h2d_bw:.3f} GB/s"
+        f" bandwidth: {jax_pinned_h2d_bw:.3f} GiB/s"
     )
     print(
         f"[{dtype}, {num_layers} layers, shape={shape}] JAX Standard D2H"
-        f" bandwidth: {jax_std_d2h_bw:.3f} GB/s"
+        f" bandwidth: {jax_std_d2h_bw:.3f} GiB/s"
     )
     print(
         f"[{dtype}, {num_layers} layers, shape={shape}] JAX Standard H2D"
-        f" bandwidth: {jax_std_h2d_bw:.3f} GB/s"
+        f" bandwidth: {jax_std_h2d_bw:.3f} GiB/s"
     )
 
     log_telemetry(

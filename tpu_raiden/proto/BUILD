@@ -96,3 +96,36 @@ cc_grpc_library(
     visibility = ["//visibility:public"],
     deps = [":orchestrator_service_cc_proto"],
 )
+
+proto_library(
+    name = "kv_cache_store_service_proto",
+    srcs = ["kv_cache_store_service.proto"],
+    deps = ["//tpu_raiden/rpc:raiden_service_proto"],
+)
+
+cc_proto_library(
+    name = "kv_cache_store_service_cc_proto",
+    visibility = ["//visibility:public"],
+    deps = [":kv_cache_store_service_proto"],
+)
+
+cc_grpc_library(
+    name = "kv_cache_store_service_cc_grpc",
+    srcs = [":kv_cache_store_service_proto"],
+    generate_mocks = True,
+    visibility = ["//visibility:public"],
+    deps = [":kv_cache_store_service_cc_proto"],
+)
+
+py_proto_library(
+    name = "kv_cache_store_service_py_pb2",
+    visibility = ["//visibility:public"],
+    deps = [":kv_cache_store_service_proto"],
+)
+
+py_grpc_library(
+    name = "kv_cache_store_service_py_pb2_grpc",
+    srcs = [":kv_cache_store_service_proto"],
+    visibility = ["//visibility:public"],
+    deps = [":kv_cache_store_service_py_pb2"],
+)

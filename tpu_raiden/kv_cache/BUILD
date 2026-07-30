@@ -537,6 +537,118 @@ cc_test(
     ],
 )
 
+cc_library(
+    name = "kv_cache_store_service",
+    srcs = ["kv_cache_store_service.cc"],
+    hdrs = ["kv_cache_store_service.h"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":kv_cache_store",
+        "//tpu_raiden/proto:kv_cache_store_service_cc_grpc",
+        "//tpu_raiden/proto:kv_cache_store_service_cc_proto",
+        "@com_github_grpc_grpc//:grpc++",
+        "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/container:flat_hash_set",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/synchronization",
+        "@com_google_absl//absl/time",
+    ],
+)
+
+cc_library(
+    name = "kv_cache_store_server",
+    srcs = ["kv_cache_store_server.cc"],
+    hdrs = ["kv_cache_store_server.h"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":kv_cache_store",
+        ":kv_cache_store_service",
+        "@com_github_grpc_grpc//:grpc++",
+        "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/base:no_destructor",
+        "@com_google_absl//absl/memory",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/synchronization",
+    ],
+)
+
+cc_test(
+    name = "kv_cache_store_server_test",
+    srcs = ["kv_cache_store_server_test.cc"],
+    copts = [
+        "-fno-strict-aliasing",
+        "-fexceptions",
+    ],
+    features = ["-use_header_modules"],
+    deps = [
+        ":host_offload_backend",
+        ":kv_cache_store",
+        ":kv_cache_store_client",
+        ":kv_cache_store_server",
+        ":kv_cache_store_service",
+        ":raiden_id",
+        "//tpu_raiden/core:kv_manager_holder",
+        "//tpu_raiden/core/controller:controller_client",
+        "//tpu_raiden/core/controller:orchestrator_service_client",
+        "//tpu_raiden/core/controller:raiden_controller",
+        "//tpu_raiden/core/controller:raiden_orchestrator",
+        "//tpu_raiden/core/controller:test_util",
+        "@com_github_grpc_grpc//:grpc++",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_googletest//:gtest",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+cc_library(
+    name = "kv_cache_store_client",
+    srcs = ["kv_cache_store_client.cc"],
+    hdrs = ["kv_cache_store_client.h"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//tpu_raiden/proto:kv_cache_store_service_cc_grpc",
+        "//tpu_raiden/proto:kv_cache_store_service_cc_proto",
+        "@com_github_grpc_grpc//:grpc++",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
+    ],
+)
+
+cc_test(
+    name = "kv_cache_store_service_test",
+    srcs = ["kv_cache_store_service_test.cc"],
+    copts = [
+        "-fno-strict-aliasing",
+        "-fexceptions",
+    ],
+    features = ["-use_header_modules"],
+    deps = [
+        ":host_offload_backend",
+        ":kv_cache_store",
+        ":kv_cache_store_client",
+        ":kv_cache_store_service",
+        ":raiden_id",
+        "//tpu_raiden/core:kv_manager_holder",
+        "//tpu_raiden/core/controller:controller_client",
+        "//tpu_raiden/core/controller:orchestrator_service_client",
+        "//tpu_raiden/core/controller:raiden_controller",
+        "//tpu_raiden/core/controller:raiden_orchestrator",
+        "//tpu_raiden/core/controller:test_util",
+        "//tpu_raiden/proto:kv_cache_store_service_cc_grpc",
+        "@com_github_grpc_grpc//:grpc++",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_googletest//:gtest",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
 py_library(
     name = "kv_cache_controller",
     srcs = ["kv_cache_controller.py"],

@@ -1,0 +1,51 @@
+// Copyright 2026 Google LLC.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+syntax = "proto3";
+
+package tpu_raiden.kv_cache.proto;
+
+option java_multiple_files = true;
+option java_outer_classname = "KVCacheStoreServiceProto";
+
+// Service exposing remote access to KV cache block transfers.
+service KVCacheStoreService {
+  // Fetches remote KV cache blocks to local host memory or device memory.
+  rpc Fetch(FetchRequest) returns (FetchResponse);
+}
+
+// Request to fetch one or more KV cache blocks by hash.
+message FetchRequest {
+  // Required: Sequence of block hashes to retrieve from the remote server.
+  repeated string block_hashes = 1;
+
+  // Optional: Physical device block IDs on the destination TPU.
+  // - If NON-EMPTY: Target memory is device buffer (HBM). Must match
+  // block_hashes length.
+  // - If EMPTY: Target memory is local host buffer (DRAM).
+  repeated int32 device_block_ids = 2;
+
+  // Optional: Host block IDs as a sanity check.
+  // - If NON-EMPTY: Must match block_hashes size.
+  repeated int32 host_block_ids = 3;
+}
+
+// Response describing the outcome of a fetch request.
+message FetchResponse {
+  // List of block hashes that were successfully fetched into the target buffer.
+  repeated string done_block_hashes = 1;
+
+  // List of block hashes that failed to be fetched.
+  repeated string failed_block_hashes = 2;
+}

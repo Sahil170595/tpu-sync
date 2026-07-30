@@ -28,9 +28,10 @@
 
 // Deviceless executor unit tier (X1/X4): the ValidatePoolReshardPlan
 // accept/reject table, the device-only rejection at the public entry points,
-// and the tag-neutral skip summary. The executor byte path and the pool
-// receive lifecycle are device-only by design and are exercised on real chips
-// by the D-series harness.
+// the tag-neutral skip summary, and the sender-side pool selection (including
+// the no-bytes-owned sender completing without device work). The executor
+// byte path and the pool receive lifecycle are device-only by design and are
+// exercised on real chips by the D-series harness.
 
 #include <cstdint>
 #include <limits>
@@ -62,6 +63,11 @@ class TestManager : public KVCacheManagerWithTransfer {
             timeout_s) {}
 
   using KVCacheManagerWithTransfer::ValidatePoolReshardPlan;
+
+  // Passes the device-attached gate with no real device state. Only paths
+  // that never touch the holds (validation and the no-bytes-owned sender
+  // completion) may rely on it.
+  void AttachPlaceholderDeviceHold() { buffer_holds_.emplace_back(); }
 };
 
 kv_cache::PoolSpec DensePool(std::string tag, int64_t block_stride = 128,
@@ -553,7 +559,45 @@ TEST(PoolReshardValidationTest, RejectsBlockIdsOutsideDeclaredPool) {
                 "must not be empty");
 }
 
+// Extends ValidPlan's single-group shape with a second group holding pool 1;
+// the base plan's only schedule entry stays in group 0.
+rpc::StartTransferRequest TwoGroupPlan(int64_t uuid) {
+  rpc::StartTransferRequest plan =
+      ValidPlan(uuid, /*dtype_tags=*/{"bf16", "bf16"},
+                /*transferred_pools=*/{0});
+  auto* group = plan.add_pool_groups();
+  group->add_pool_indices(1);
+  group->add_dst_device_block_ids(0);
+  group->set_expected_pushes(1);
+  group->add_dst_expected_extent_bytes(16);
+  return plan;
+}
 
+TEST(PoolReshardSendTest, SenderWithNoBytesForAnyTransferredPoolCompletes) {
+  TestManager manager;
+  ASSERT_TRUE(
+      manager.RegisterPools({DensePool("fa"), DensePool("state")}).ok());
+  manager.AttachPlaceholderDeviceHold();
+
+  // The sender's only schedule entry names group 1, while the transfer set
+  // holds just pool 0 (group 0) — the shape of a PCP rank owning no bytes of
+  // any transferred pool. Such a sender must finish as done_sending with no
+  // device work; failing the plan here is the regression that turned a
+  // short-prefix transfer into a plan-wide INVALID_ARGUMENT.
+  rpc::StartTransferRequest plan = TwoGroupPlan(/*uuid=*/2004);
+  (*plan.mutable_shard_push_schedules())[0].mutable_entries(0)->set_pool_group(
+      1);
+
+  const absl::Status push_status =
+      manager.PoolReshardPush(plan, std::vector<int64_t>{0});
+  ASSERT_TRUE(push_status.ok()) << push_status.ToString();
+
+  const auto [done_sending, done_recving, failed_recving] =
+      manager.CompleteReadRaw();
+  EXPECT_EQ(done_sending, std::vector<std::string>{plan.req_id()});
+  EXPECT_TRUE(done_recving.empty()) << done_recving.size();
+  EXPECT_TRUE(failed_recving.empty()) << failed_recving.size();
+}
 
 }  // namespace
 }  // namespace tpu_raiden

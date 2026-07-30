@@ -1240,12 +1240,14 @@ absl::Status KVCacheManagerWithTransfer::PoolReshardPush(
       }
       pool_src_block_ids.assign(group_src_ids.begin(), group_src_ids.end());
       if (pool_src_block_ids.empty()) {
-        FinishPoolReshardSend(
-            plan.uuid(),
-            absl::InvalidArgumentError(absl::StrCat(
-                "pool ", pool_idx, " has no schedule entries in its group")));
-        return absl::InvalidArgumentError(
-            absl::StrCat("pool ", pool_idx, " has no group entries"));
+        // This sender owns none of the group's bytes (e.g. a PCP rank whose
+        // interleave slices all fall past a short prefix): release the pool's
+        // per-peer completion slots instead of failing the plan. The
+        // receiver's expected pushes count only senders with scheduled pairs.
+        for (size_t peer_idx = 0; peer_idx < peers.size(); ++peer_idx) {
+          FinishPoolReshardSend(plan.uuid(), absl::OkStatus());
+        }
+        continue;
       }
     }
     auto future_or = D2hPoolBlocks(pool_idx, pool_src_block_ids);

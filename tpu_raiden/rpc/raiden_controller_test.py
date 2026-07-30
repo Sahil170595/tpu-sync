@@ -2230,6 +2230,151 @@ class RaidenControllerTest(absltest.TestCase):
         has_large_offset, "Expected absolute offsets to exceed block sizes"
     )
 
+  def test_upfront_d2h_optimization_legacy_path(self):
+    client = RecordingWorkerRpcClient()
+    controller = raiden_controller.RaidenController(
+        port=10004, worker_rpc_client=client
+    )
+    controller.broadcast_k = 2
+
+    src = raiden_controller.RaidenId(
+        job_name="trainer", job_replica_id="0", data_name="weights"
+    )
+    target_0 = raiden_controller.RaidenId(
+        job_name="inference_server", job_replica_id="0", data_name="weights"
+    )
+    target_1 = raiden_controller.RaidenId(
+        job_name="inference_server", job_replica_id="1", data_name="weights"
+    )
+    target_2 = raiden_controller.RaidenId(
+        job_name="inference_server", job_replica_id="2", data_name="weights"
+    )
+
+    controller.register_work_unit(
+        src,
+        ["10.0.0.1:8000"],
+        mesh_shape=[1, 1],
+        layout=[1, 0],
+        global_shape=[128, 128],
+        itemsize=4,
+        control_plane_rpc_address="10.0.0.1:9000",
+    )
+    controller.register_work_unit(
+        target_0,
+        ["10.0.0.2:8000"],
+        mesh_shape=[1, 1],
+        layout=[1, 0],
+        global_shape=[128, 128],
+        itemsize=4,
+        control_plane_rpc_address="10.0.0.2:9000",
+    )
+    controller.register_work_unit(
+        target_1,
+        ["10.0.0.3:8000"],
+        mesh_shape=[1, 1],
+        layout=[1, 0],
+        global_shape=[128, 128],
+        itemsize=4,
+        control_plane_rpc_address="10.0.0.3:9000",
+    )
+    controller.register_work_unit(
+        target_2,
+        ["10.0.0.4:8000"],
+        mesh_shape=[1, 1],
+        layout=[1, 0],
+        global_shape=[128, 128],
+        itemsize=4,
+        control_plane_rpc_address="10.0.0.4:9000",
+    )
+
+    future = controller.start_transfer(
+        src_units=[src],
+        dst_units=[target_0, target_1, target_2],
+        use_block_chunks=True,
+    )
+    asyncio.run(future.wait())
+
+    self.assertTrue(len(client.calls) > 0)
+    first_target_id, first_plan = client.calls[0]
+
+    self.assertEqual(first_target_id, src)
+    self.assertFalse(first_plan.skip_d2h)
+    self.assertEqual(first_plan.shard_push_schedules, {src: {0: []}})
+    self.assertEqual(first_plan.expected_block_count, 0)
+
+    for target_id, plan in client.calls[1:]:
+      self.assertTrue(plan.skip_d2h)
+
+  def test_skip_d2h_true_no_upfront_copy_legacy_path(self):
+    client = RecordingWorkerRpcClient()
+    controller = raiden_controller.RaidenController(
+        port=10004, worker_rpc_client=client
+    )
+    controller.broadcast_k = 2
+
+    src = raiden_controller.RaidenId(
+        job_name="trainer", job_replica_id="0", data_name="weights"
+    )
+    target_0 = raiden_controller.RaidenId(
+        job_name="inference_server", job_replica_id="0", data_name="weights"
+    )
+    target_1 = raiden_controller.RaidenId(
+        job_name="inference_server", job_replica_id="1", data_name="weights"
+    )
+    target_2 = raiden_controller.RaidenId(
+        job_name="inference_server", job_replica_id="2", data_name="weights"
+    )
+
+    controller.register_work_unit(
+        src,
+        ["10.0.0.1:8000"],
+        mesh_shape=[1, 1],
+        layout=[1, 0],
+        global_shape=[128, 128],
+        itemsize=4,
+        control_plane_rpc_address="10.0.0.1:9000",
+    )
+    controller.register_work_unit(
+        target_0,
+        ["10.0.0.2:8000"],
+        mesh_shape=[1, 1],
+        layout=[1, 0],
+        global_shape=[128, 128],
+        itemsize=4,
+        control_plane_rpc_address="10.0.0.2:9000",
+    )
+    controller.register_work_unit(
+        target_1,
+        ["10.0.0.3:8000"],
+        mesh_shape=[1, 1],
+        layout=[1, 0],
+        global_shape=[128, 128],
+        itemsize=4,
+        control_plane_rpc_address="10.0.0.3:9000",
+    )
+    controller.register_work_unit(
+        target_2,
+        ["10.0.0.4:8000"],
+        mesh_shape=[1, 1],
+        layout=[1, 0],
+        global_shape=[128, 128],
+        itemsize=4,
+        control_plane_rpc_address="10.0.0.4:9000",
+    )
+
+    future = controller.start_transfer(
+        src_units=[src],
+        dst_units=[target_0, target_1, target_2],
+        use_block_chunks=True,
+        skip_d2h=True,
+    )
+    asyncio.run(future.wait())
+
+    self.assertTrue(len(client.calls) > 0)
+    for target_id, plan in client.calls:
+      self.assertTrue(plan.skip_d2h)
+      self.assertNotEqual(plan.shard_push_schedules, {target_id: {0: []}})
+
 
 def _byte_spans_for_rank(
     rank,

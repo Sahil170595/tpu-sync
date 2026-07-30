@@ -2899,6 +2899,7 @@ class RaidenController:
         self._active_transfers[req_id] = plan
 
     async def _execute_transfer() -> None:
+      nonlocal skip_d2h
       if use_block_chunks:
         # === NEW SYMMETRIC DECENTRALIZED WORKFLOW ===
 
@@ -3357,6 +3358,35 @@ class RaidenController:
                       dst_stride,
                   )
                   groups.setdefault(key, []).append(val)
+
+            # Trigger D2H on all source workers upfront (if not skipped)
+            if not final_plan.skip_d2h:
+              d2h_futures = []
+              for src_unit in src_units:
+                # Build a dummy plan to trigger D2H
+                d2h_uuid = random.randint(1, 2**63 - 1)
+                d2h_req_id = f"{req_id}_d2h_{src_unit.job_name}_{src_unit.job_replica_id}_{d2h_uuid}"
+                d2h_plan = TransferPlan(
+                    src_units=[src_unit],
+                    dst_units=[],
+                    plan=None,
+                    shard_push_schedules={src_unit: {0: []}},
+                    worker_rpc_addresses=dict(final_plan.worker_rpc_addresses),
+                    worker_data_addresses={},
+                    uuid=d2h_uuid,
+                    dst_mem_type=dst_mem_type,
+                    use_block_chunks=True,
+                    is_sender=True,
+                    expected_block_count=0,
+                    req_id=d2h_req_id,
+                    skip_d2h=False,
+                )
+                d2h_futures.append(
+                    self.worker_rpc_client.start_transfer(src_unit, d2h_plan)
+                )
+              await asyncio.gather(*d2h_futures)
+              final_plan.skip_d2h = True
+              skip_d2h = True
 
             # Partition slices into direct transfers and tree-broadcast
             # transfers.

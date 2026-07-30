@@ -77,13 +77,8 @@ echo "=== Navigating to workspace directory ==="
 cd "${WORKSPACE_DIR}"
 TORCH_TPU_MODULE_PATH="${TORCH_TPU_MODULE_PATH:-../torch_tpu}"
 
-# 0. Set up standalone Bazel environment based on .bazelversion in /tmp
-BAZEL_VERSION="7.7.0"
-VERSION_FILE="${WORKSPACE_DIR}/.bazelversion"
-if [[ -f "${VERSION_FILE}" ]]; then
-  BAZEL_VERSION="$(cat "${VERSION_FILE}" | tr -d '\r\n ')"
-  echo "Parsed target Bazel version from .bazelversion: ${BAZEL_VERSION}"
-fi
+# 0. Set up standalone Bazel environment in /tmp
+BAZEL_VERSION="$(cat .bazelversion | tr -d '[:space:]')"
 
 BAZEL_BIN="/tmp/bazel-bootstrap-${BAZEL_VERSION}"
 if [[ ! -f "${BAZEL_BIN}" ]]; then
@@ -223,6 +218,7 @@ mkdir -p "${BAZEL_DISK_CACHE}" "${BAZEL_REPO_CACHE}" "$(dirname "${BAZEL_OUTPUT_
 
 echo "=== Building targets with Bazel ==="
 "${BAZEL_BIN}" --install_base="${BAZEL_OUTPUT_BASE}/install_base" --output_base="${BAZEL_OUTPUT_BASE}" --host_jvm_args="-Xmx32g" --host_jvm_args="-Xms2g" build -c opt --check_visibility=false --verbose_failures --experimental_repo_remote_exec --incompatible_disallow_empty_glob=false \
+  --cxxopt="-std=c++17" \
   --repo_env=HERMETIC_PYTHON_VERSION=${HERMETIC_PYTHON_VERSION:-3.12} \
   --repo_env=PIP_INDEX_URL="https://pypi.org/simple" \
   --repo_env=PIP_EXTRA_INDEX_URL="" \

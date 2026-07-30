@@ -34,7 +34,9 @@
 #include <thread>  // NOLINT(build/c++11)
 #include <vector>
 
+#include <gmock/gmock.h>
 #include <gtest/gtest.h>
+#include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
 #include "grpcpp/grpcpp.h"
 #include "tpu_raiden/core/controller/controller_client.h"
@@ -43,7 +45,9 @@
 #include "tpu_raiden/core/controller/raiden_orchestrator.h"
 #include "tpu_raiden/core/controller/test_util.h"
 #include "tpu_raiden/core/kv_manager_holder.h"
+#include "tpu_raiden/core/raiden_future.h"
 #include "tpu_raiden/kv_cache/host_offload_backend.h"
+#include "tpu_raiden/kv_cache/kv_cache_metadata.h"
 #include "tpu_raiden/kv_cache/kv_cache_store.h"
 #include "tpu_raiden/kv_cache/kv_cache_store_client.h"
 
@@ -117,19 +121,20 @@ class KVCacheStoreServiceTest : public ::testing::Test {
         "dst_worker_0", test_worker_server_->server_address,
         {{test_worker_server_->server_address, {}}}));
 
-    // Pre-populate and pin test blocks in store so ReadRemote succeeds
+    // Pre-populate and pin test blocks in store so Fetch succeeds
     std::vector<std::string> test_hashes = {
         "block_hash_1", "block_hash_2", "block_hash_dev_1", "block_hash_dev_2"};
     std::vector<RaidenBlockID> slices = {
-        RaidenBlockID(src_raiden_id, 10, BlockStatus::REMOTE),
-        RaidenBlockID(src_raiden_id, 11, BlockStatus::REMOTE),
-        RaidenBlockID(src_raiden_id, 12, BlockStatus::REMOTE),
-        RaidenBlockID(src_raiden_id, 13, BlockStatus::REMOTE),
+        RaidenBlockID(src_raiden_id, 10, BlockStatus::HOST),
+        RaidenBlockID(src_raiden_id, 11, BlockStatus::HOST),
+        RaidenBlockID(src_raiden_id, 12, BlockStatus::HOST),
+        RaidenBlockID(src_raiden_id, 13, BlockStatus::HOST),
     };
     ASSERT_TRUE(store_->InsertAndLock(test_hashes, slices, /*on_host=*/true));
 
     // Setup KVCacheStoreServiceImpl & gRPC server
-    service_ = std::make_unique<KVCacheStoreServiceImpl>(store_.get());
+    service_ = std::make_unique<KVCacheStoreServiceImpl>(
+        store_->backend().get(), store_->raiden_controller());
     ::grpc::ServerBuilder builder;
     int selected_port = 0;
     builder.AddListeningPort("localhost:0", ::grpc::InsecureServerCredentials(),
@@ -168,56 +173,68 @@ class KVCacheStoreServiceTest : public ::testing::Test {
 
 TEST_F(KVCacheStoreServiceTest, FetchEmptyRequest) {
   std::vector<std::string> empty_hashes;
-  auto fetch_res = client_->Fetch(empty_hashes);
-  ASSERT_OK(fetch_res.status());
-  EXPECT_TRUE(fetch_res->empty());
+  tsl::Future<proto::FetchResponse> future = client_->Fetch(empty_hashes);
+  auto response_or = future.Await();
+  ASSERT_OK(response_or.status());
+  EXPECT_EQ(response_or->done_block_hashes_size(), 0);
 }
 
-TEST_F(KVCacheStoreServiceTest, FetchToHostBuffer) {
+TEST_F(KVCacheStoreServiceTest, Fetch5StepWorkflowSuccess) {
   std::vector<std::string> hashes = {"block_hash_1", "block_hash_2"};
-  // Test fetching into host DRAM buffer (device_block_ids empty)
-  auto fetch_res = client_->Fetch(hashes);
-  ASSERT_OK(fetch_res.status());
-  EXPECT_THAT(*fetch_res, UnorderedElementsAre("block_hash_1", "block_hash_2"));
+  std::vector<int32_t> host_block_ids = {100, 101};
+  rpc::RaidenIdProto client_id;
+  client_id.set_job_name("client_job");
+  client_id.set_job_replica_id("0");
+
+  tsl::Future<proto::FetchResponse> future = client_->Fetch(
+      hashes, /*device_block_ids=*/{}, host_block_ids, client_id);
+  auto response_or = future.Await();
+  ASSERT_OK(response_or.status());
+  EXPECT_THAT(response_or->done_block_hashes(),
+              UnorderedElementsAre("block_hash_1", "block_hash_2"));
+  EXPECT_EQ(response_or->failed_block_hashes_size(), 0);
 }
 
-TEST_F(KVCacheStoreServiceTest, FetchToDeviceBuffer) {
-  std::vector<std::string> hashes = {"block_hash_dev_1", "block_hash_dev_2"};
-  std::vector<int32_t> device_block_ids = {100, 101};
-  // Test fetching into device HBM buffer with target device block IDs
-  auto fetch_res = client_->Fetch(hashes, device_block_ids);
-  ASSERT_OK(fetch_res.status());
-  EXPECT_THAT(*fetch_res,
-              UnorderedElementsAre("block_hash_dev_1", "block_hash_dev_2"));
-}
+TEST_F(KVCacheStoreServiceTest, FetchValidationFailsForMissingHash) {
+  std::vector<std::string> hashes = {"non_existent_hash"};
+  std::vector<int32_t> host_block_ids = {100};
 
-TEST_F(KVCacheStoreServiceTest, FetchMismatchedDeviceBlockCount) {
-  std::vector<std::string> hashes = {"block_hash_1", "block_hash_2"};
-  std::vector<int32_t> device_block_ids = {100};  // Mismatched size!
-  auto fetch_res = client_->Fetch(hashes, device_block_ids);
-  EXPECT_THAT(fetch_res.status(), StatusIs(absl::StatusCode::kInvalidArgument));
-}
-
-TEST_F(KVCacheStoreServiceTest, FetchWithValidHostBlockIdsSanityCheck) {
-  std::vector<std::string> hashes = {"block_hash_1", "block_hash_2"};
-  std::vector<int32_t> host_block_ids = {10, 20};  // Valid matching size
-  auto fetch_res =
+  tsl::Future<proto::FetchResponse> future =
       client_->Fetch(hashes, /*device_block_ids=*/{}, host_block_ids);
-  ASSERT_OK(fetch_res.status());
-  EXPECT_THAT(*fetch_res, UnorderedElementsAre("block_hash_1", "block_hash_2"));
+  auto response_or = future.Await();
+  EXPECT_THAT(response_or.status(), StatusIs(absl::StatusCode::kNotFound));
+}
+
+TEST_F(KVCacheStoreServiceTest, FetchValidationFailsForNonHostBlock) {
+  RaidenId src_raiden_id{"src_job", "0", "src_data", 0};
+  std::vector<std::string> hashes = {"remote_only_hash"};
+  std::vector<RaidenBlockID> slices = {
+      RaidenBlockID(src_raiden_id, 50, BlockStatus::REMOTE),
+  };
+  ASSERT_TRUE(store_->InsertAndLock(hashes, slices, /*on_host=*/false));
+
+  std::vector<int32_t> host_block_ids = {100};
+  tsl::Future<proto::FetchResponse> future =
+      client_->Fetch(hashes, /*device_block_ids=*/{}, host_block_ids);
+  auto response_or = future.Await();
+  EXPECT_THAT(response_or.status(),
+              StatusIs(absl::StatusCode::kFailedPrecondition));
 }
 
 TEST_F(KVCacheStoreServiceTest, FetchMismatchedHostBlockCount) {
   std::vector<std::string> hashes = {"block_hash_1", "block_hash_2"};
-  std::vector<int32_t> host_block_ids = {10};  // Mismatched size!
-  auto fetch_res =
+  std::vector<int32_t> host_block_ids = {100};  // Mismatched size!
+
+  tsl::Future<proto::FetchResponse> future =
       client_->Fetch(hashes, /*device_block_ids=*/{}, host_block_ids);
-  EXPECT_THAT(fetch_res.status(), StatusIs(absl::StatusCode::kInvalidArgument));
+  auto response_or = future.Await();
+  EXPECT_THAT(response_or.status(),
+              StatusIs(absl::StatusCode::kInvalidArgument));
 }
 
 TEST_F(KVCacheStoreServiceTest, FetchNullStoreHandling) {
-  // Test server behavior when store pointer is null
-  auto null_service = std::make_unique<KVCacheStoreServiceImpl>(nullptr);
+  auto null_service =
+      std::make_unique<KVCacheStoreServiceImpl>(nullptr, nullptr);
   ::grpc::ServerBuilder builder;
   int port = 0;
   builder.AddListeningPort("localhost:0", ::grpc::InsecureServerCredentials(),
@@ -230,8 +247,11 @@ TEST_F(KVCacheStoreServiceTest, FetchNullStoreHandling) {
                             ::grpc::InsecureChannelCredentials()));
 
   std::vector<std::string> hashes = {"block_hash_1"};
-  auto fetch_res = null_client->Fetch(hashes);
-  EXPECT_THAT(fetch_res.status(),
+  std::vector<int32_t> host_block_ids = {100};
+  tsl::Future<proto::FetchResponse> future =
+      null_client->Fetch(hashes, /*device_block_ids=*/{}, host_block_ids);
+  auto response_or = future.Await();
+  EXPECT_THAT(response_or.status(),
               StatusIs(absl::StatusCode::kFailedPrecondition));
   null_server->Shutdown();
 }
@@ -247,7 +267,7 @@ TEST_F(KVCacheStoreServiceTest, ConcurrentFetchRPCs) {
   for (int i = 0; i < kNumThreads * 2; ++i) {
     extra_hashes.push_back("concurrent_hash_" + std::to_string(i));
     extra_slices.push_back(
-        RaidenBlockID(src_raiden_id, 100 + i, BlockStatus::REMOTE));
+        RaidenBlockID(src_raiden_id, 100 + i, BlockStatus::HOST));
   }
   ASSERT_TRUE(
       store_->InsertAndLock(extra_hashes, extra_slices, /*on_host=*/true));
@@ -255,14 +275,16 @@ TEST_F(KVCacheStoreServiceTest, ConcurrentFetchRPCs) {
   std::vector<std::thread> threads;
   threads.reserve(kNumThreads);
 
-  std::vector<absl::StatusOr<std::vector<std::string>>> results(kNumThreads);
+  std::vector<absl::StatusOr<proto::FetchResponse>> results(kNumThreads);
 
   for (int i = 0; i < kNumThreads; ++i) {
     threads.emplace_back([this, i, &results]() {
       std::vector<std::string> hashes = {
           "concurrent_hash_" + std::to_string(2 * i),
           "concurrent_hash_" + std::to_string(2 * i + 1)};
-      results[i] = client_->Fetch(hashes);
+      std::vector<int32_t> host_ids = {200 + 2 * i, 200 + 2 * i + 1};
+      results[i] =
+          client_->Fetch(hashes, /*device_block_ids=*/{}, host_ids).Await();
     });
   }
 
@@ -273,7 +295,7 @@ TEST_F(KVCacheStoreServiceTest, ConcurrentFetchRPCs) {
   for (int i = 0; i < kNumThreads; ++i) {
     ASSERT_OK(results[i].status());
     EXPECT_THAT(
-        *results[i],
+        results[i]->done_block_hashes(),
         UnorderedElementsAre("concurrent_hash_" + std::to_string(2 * i),
                              "concurrent_hash_" + std::to_string(2 * i + 1)));
   }

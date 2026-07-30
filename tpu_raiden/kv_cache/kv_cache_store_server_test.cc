@@ -33,6 +33,7 @@
 #include <string>
 #include <vector>
 
+#include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include "absl/status/status_matchers.h"
 #include "grpcpp/grpcpp.h"
@@ -43,6 +44,7 @@
 #include "tpu_raiden/core/controller/test_util.h"
 #include "tpu_raiden/core/kv_manager_holder.h"
 #include "tpu_raiden/kv_cache/host_offload_backend.h"
+#include "tpu_raiden/kv_cache/kv_cache_metadata.h"
 #include "tpu_raiden/kv_cache/kv_cache_store.h"
 #include "tpu_raiden/kv_cache/kv_cache_store_client.h"
 
@@ -120,8 +122,8 @@ class KVCacheStoreServerTest : public ::testing::Test {
     // Pre-populate test blocks
     std::vector<std::string> test_hashes = {"block_hash_1", "block_hash_2"};
     std::vector<RaidenBlockID> slices = {
-        RaidenBlockID(src_raiden_id, 10, BlockStatus::REMOTE),
-        RaidenBlockID(src_raiden_id, 11, BlockStatus::REMOTE),
+        RaidenBlockID(src_raiden_id, 10, BlockStatus::HOST),
+        RaidenBlockID(src_raiden_id, 11, BlockStatus::HOST),
     };
     ASSERT_TRUE(store_->InsertAndLock(test_hashes, slices, /*on_host=*/true));
   }
@@ -150,7 +152,8 @@ class KVCacheStoreServerTest : public ::testing::Test {
 
 TEST_F(KVCacheStoreServerTest, StartServerWithRawPointerStore) {
   server_ = KVCacheStoreServer::Create();
-  ASSERT_OK(server_->StartServer(store_.get(), "[::]:0"));
+  ASSERT_OK(server_->StartServer(store_->backend().get(),
+                                 store_->raiden_controller(), "[::]:0"));
 
   int port = server_->GetGrpcPort();
   EXPECT_GT(port, 0);
@@ -162,18 +165,22 @@ TEST_F(KVCacheStoreServerTest, StartServerWithRawPointerStore) {
   KVCacheStoreClient client(channel);
 
   std::vector<std::string> hashes = {"block_hash_1", "block_hash_2"};
-  auto fetch_res = client.Fetch(hashes);
+  std::vector<int32_t> host_ids = {100, 101};
+  auto fetch_res =
+      client.Fetch(hashes, /*device_block_ids=*/{}, host_ids).Await();
   ASSERT_OK(fetch_res.status());
-  EXPECT_THAT(*fetch_res, UnorderedElementsAre("block_hash_1", "block_hash_2"));
+  EXPECT_THAT(fetch_res->done_block_hashes(),
+              UnorderedElementsAre("block_hash_1", "block_hash_2"));
 
   server_->Shutdown();
   EXPECT_EQ(server_->GetGrpcPort(), 0);
   EXPECT_TRUE(server_->GetServerAddress().empty());
 }
 
-TEST_F(KVCacheStoreServerTest, SetStoreUpdatesStoreOnRunningServer) {
+TEST_F(KVCacheStoreServerTest, SetBackendAndControllerUpdatesOnRunningServer) {
   server_ = KVCacheStoreServer::Create();
-  ASSERT_OK(server_->StartServer(store_.get(), "[::]:0"));
+  ASSERT_OK(server_->StartServer(store_->backend().get(),
+                                 store_->raiden_controller(), "[::]:0"));
 
   RaidenId dst_raiden_id2{"dst_job_2", "0", "dst_data_2", 0};
   auto store2 = std::make_unique<KVCacheStore>(
@@ -182,23 +189,26 @@ TEST_F(KVCacheStoreServerTest, SetStoreUpdatesStoreOnRunningServer) {
       /*shard_size_bytes=*/1024, orchestrator_address_,
       /*raiden_controller_address=*/"");
 
-  // Dynamic store update with raw pointer
-  server_->SetStore(store2.get());
+  // Dynamic update with raw pointer
+  server_->SetBackendAndController(store2->backend().get(),
+                                   store2->raiden_controller());
 
-  // Dynamic store update with shared_ptr
+  // Dynamic update with shared_ptr (passing raw pointer backend)
   auto store3 = std::make_shared<KVCacheStore>(
       /*capacity=*/100, orchestrator_address_, dst_raiden_id2,
       /*num_shards=*/1,
       /*shard_size_bytes=*/1024, orchestrator_address_,
       /*raiden_controller_address=*/"");
-  server_->SetStore(store3);
+  server_->SetBackendAndController(store3->backend().get(),
+                                   store3->raiden_controller());
 
   server_->Shutdown();
 }
 
 TEST_F(KVCacheStoreServerTest, RestartServerAfterShutdown) {
   server_ = KVCacheStoreServer::Create();
-  ASSERT_OK(server_->StartServer(store_.get(), "[::]:0"));
+  ASSERT_OK(server_->StartServer(store_->backend().get(),
+                                 store_->raiden_controller(), "[::]:0"));
   int first_port = server_->GetGrpcPort();
   EXPECT_GT(first_port, 0);
 
@@ -207,7 +217,8 @@ TEST_F(KVCacheStoreServerTest, RestartServerAfterShutdown) {
   EXPECT_TRUE(server_->GetServerAddress().empty());
 
   // Restart server on a new ephemeral port
-  ASSERT_OK(server_->StartServer(store_.get(), "[::]:0"));
+  ASSERT_OK(server_->StartServer(store_->backend().get(),
+                                 store_->raiden_controller(), "[::]:0"));
   int second_port = server_->GetGrpcPort();
   EXPECT_GT(second_port, 0);
 
@@ -217,20 +228,25 @@ TEST_F(KVCacheStoreServerTest, RestartServerAfterShutdown) {
   KVCacheStoreClient client(channel);
 
   std::vector<std::string> hashes = {"block_hash_1", "block_hash_2"};
-  auto fetch_res = client.Fetch(hashes);
+  std::vector<int32_t> host_ids = {100, 101};
+  auto fetch_res =
+      client.Fetch(hashes, /*device_block_ids=*/{}, host_ids).Await();
   ASSERT_OK(fetch_res.status());
-  EXPECT_THAT(*fetch_res, UnorderedElementsAre("block_hash_1", "block_hash_2"));
+  EXPECT_THAT(fetch_res->done_block_hashes(),
+              UnorderedElementsAre("block_hash_1", "block_hash_2"));
 
   server_->Shutdown();
 }
 
 TEST_F(KVCacheStoreServerTest, MultipleServersCanRunConcurrently) {
   auto server1 = KVCacheStoreServer::Create();
-  ASSERT_OK(server1->StartServer(store_.get(), "[::]:0"));
+  ASSERT_OK(server1->StartServer(store_->backend().get(),
+                                 store_->raiden_controller(), "[::]:0"));
   int port1 = server1->GetGrpcPort();
 
   auto server2 = KVCacheStoreServer::Create();
-  ASSERT_OK(server2->StartServer(store_.get(), "[::]:0"));
+  ASSERT_OK(server2->StartServer(store_->backend().get(),
+                                 store_->raiden_controller(), "[::]:0"));
   int port2 = server2->GetGrpcPort();
 
   EXPECT_GT(port1, 0);
@@ -244,7 +260,8 @@ TEST_F(KVCacheStoreServerTest, MultipleServersCanRunConcurrently) {
 TEST_F(KVCacheStoreServerTest, StartServerWithInvalidAddressFails) {
   auto server = KVCacheStoreServer::Create();
   absl::Status status =
-      server->StartServer(store_.get(), "invalid_address:999999");
+      server->StartServer(store_->backend().get(), store_->raiden_controller(),
+                          "invalid_address:999999");
   EXPECT_FALSE(status.ok());
   EXPECT_EQ(server->GetGrpcPort(), 0);
 }

@@ -22,11 +22,20 @@
 #include <utility>
 #include <vector>
 
+#include "absl/base/thread_annotations.h"
+#include "absl/container/flat_hash_map.h"
+#include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/synchronization/mutex.h"
 #include "absl/types/span.h"
+#include "xla/tsl/concurrency/future.h"
+#include "tpu_raiden/core/controller/raiden_controller.h"
 #include "tpu_raiden/kv_cache/global_registry/global_registry_client.h"
 #include "tpu_raiden/kv_cache/kv_cache_store_backend.h"
+#include "tpu_raiden/kv_cache/kv_cache_store_client.h"
+#include "tpu_raiden/kv_cache/kv_cache_store_server.h"
 #include "tpu_raiden/kv_cache/raiden_id.h"
+#include "tpu_raiden/proto/kv_cache_store_service.pb.h"
 
 namespace tpu_raiden {
 namespace kv_cache {
@@ -37,9 +46,12 @@ class GlobalMemoryPoolingBackend : public KVCacheStoreBackend {
       std::shared_ptr<global_registry::GlobalRegistryClient> registry_client,
       RaidenId raiden_id = {});
 
-  ~GlobalMemoryPoolingBackend() override = default;
+  ~GlobalMemoryPoolingBackend() override;
 
   std::string name() const override { return "GlobalMemoryPoolingBackend"; }
+
+  void SetRaidenController(
+      tpu_raiden::controller::RaidenController* controller) override;
 
   absl::StatusOr<BlockSliceList> Lookup(
       absl::Span<const std::string> block_hashes,
@@ -74,9 +86,31 @@ class GlobalMemoryPoolingBackend : public KVCacheStoreBackend {
     return std::numeric_limits<size_t>::max();
   }
 
+  KVCacheStoreServer* server() const { return server_.get(); }
+  std::string GetServerAddress() const;
+  int GetGrpcPort() const;
+
+  // Loads blocks stored in remote host memory into local device memory (HBM).
+  tsl::Future<> Load(const RaidenId& remote_id,
+                     absl::Span<const std::string> block_hashes,
+                     absl::Span<const int32_t> device_block_ids = {});
+
+  absl::StatusOr<std::shared_ptr<KVCacheStoreClient>> GetKVCacheStoreClient(
+      const RaidenId& remote_id);
+
+  void SetStoreClient(const RaidenId& remote_id,
+                      std::shared_ptr<KVCacheStoreClient> client);
+
  private:
   std::shared_ptr<global_registry::GlobalRegistryClient> registry_client_;
   RaidenId raiden_id_;
+  tpu_raiden::controller::RaidenController* controller_ = nullptr;
+  std::unique_ptr<KVCacheStoreServer> server_;
+
+  mutable absl::Mutex mutex_;
+  absl::flat_hash_map<RaidenId, std::shared_ptr<KVCacheStoreClient>,
+                      RaidenIdHash>
+      store_clients_ ABSL_GUARDED_BY(mutex_);
 };
 
 }  // namespace kv_cache

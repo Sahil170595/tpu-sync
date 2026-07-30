@@ -18,6 +18,7 @@
 #ifndef THIRD_PARTY_TPU_RAIDEN_CORE_STATUS_MACROS_H_
 #define THIRD_PARTY_TPU_RAIDEN_CORE_STATUS_MACROS_H_
 
+#include <type_traits>
 #include <utility>
 
 #include "absl/log/log.h"
@@ -41,6 +42,13 @@ class StatusBuilder {
   }
 
   operator absl::Status() const { return status_; }
+
+  template <typename T, typename = std::enable_if_t<
+                            !std::is_same_v<std::decay_t<T>, absl::Status> &&
+                            std::is_constructible_v<T, const absl::Status&>>>
+  operator T() const {
+    return T(status_);
+  }
 
  private:
   absl::Status status_;

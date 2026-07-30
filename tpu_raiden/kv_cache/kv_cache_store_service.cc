@@ -26,149 +26,184 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// Service implementation for KVCacheStoreService.
+
 #include "tpu_raiden/kv_cache/kv_cache_store_service.h"
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
-#include <tuple>
 #include <utility>
 #include <vector>
 
-#include "absl/container/flat_hash_set.h"
+#include "absl/cleanup/cleanup.h"
 #include "absl/status/status.h"
+#include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "absl/synchronization/mutex.h"
-#include "absl/time/clock.h"
-#include "absl/time/time.h"
 #include "grpcpp/server_context.h"
 #include "grpcpp/support/status.h"
-#include "tpu_raiden/kv_cache/kv_cache_store.h"
+#include "xla/tsl/concurrency/future.h"
+#include "tpu_raiden/core/buffer.h"
+#include "tpu_raiden/core/controller/raiden_controller.h"
+#include "tpu_raiden/core/status_macros.h"
+#include "tpu_raiden/kv_cache/kv_cache_metadata.h"
+#include "tpu_raiden/kv_cache/kv_cache_store_backend.h"
 #include "tpu_raiden/proto/kv_cache_store_service.pb.h"
 
 namespace tpu_raiden {
 namespace kv_cache {
 
-KVCacheStoreServiceImpl::KVCacheStoreServiceImpl(KVCacheStore* store)
-    : store_(store) {}
-
 KVCacheStoreServiceImpl::KVCacheStoreServiceImpl(
-    std::shared_ptr<KVCacheStore> store)
-    : store_(store.get()), store_shared_ptr_(std::move(store)) {}
+    KVCacheStoreBackend* backend,
+    tpu_raiden::controller::RaidenController* controller)
+    : backend_(backend), controller_(controller) {}
 
-void KVCacheStoreServiceImpl::SetStore(KVCacheStore* store) {
-  absl::MutexLock lock(&mutex_);
-  store_ = store;
-  store_shared_ptr_.reset();
-}
-
-void KVCacheStoreServiceImpl::SetStore(std::shared_ptr<KVCacheStore> store) {
-  absl::MutexLock lock(&mutex_);
-  store_ = store.get();
-  store_shared_ptr_ = std::move(store);
+void KVCacheStoreServiceImpl::SetBackendAndController(
+    KVCacheStoreBackend* backend,
+    tpu_raiden::controller::RaidenController* controller) {
+  absl::MutexLock lock(mutex_);
+  backend_ = backend;
+  controller_ = controller;
 }
 
 ::grpc::Status KVCacheStoreServiceImpl::Fetch(
     ::grpc::ServerContext* context, const proto::FetchRequest* request,
     proto::FetchResponse* response) {
-  KVCacheStore* store_ptr = nullptr;
-  std::shared_ptr<KVCacheStore> store_shared;
+  KVCacheStoreBackend* backend = nullptr;
+  tpu_raiden::controller::RaidenController* controller = nullptr;
   {
-    absl::MutexLock lock(&mutex_);
-    store_ptr = store_;
-    store_shared = store_shared_ptr_;
+    absl::MutexLock lock(mutex_);
+    backend = backend_;
+    controller = controller_;
   }
 
-  if (store_ptr == nullptr) {
+  if (backend == nullptr || controller == nullptr) {
     return ::grpc::Status(::grpc::StatusCode::FAILED_PRECONDITION,
-                          "KVCacheStore is null");
+                          "Backend or RaidenController non-initialized");
   }
 
-  std::vector<std::string> block_hashes(request->block_hashes().begin(),
-                                        request->block_hashes().end());
-  std::vector<int32_t> device_block_ids(request->device_block_ids().begin(),
-                                        request->device_block_ids().end());
+  const std::vector<std::string> block_hashes(request->block_hashes().begin(),
+                                              request->block_hashes().end());
+  const std::vector<int32_t> dst_host_block_ids(
+      request->host_block_ids().begin(), request->host_block_ids().end());
 
   if (block_hashes.empty()) {
     return ::grpc::Status::OK;
   }
 
-  if (!device_block_ids.empty() &&
-      device_block_ids.size() != block_hashes.size()) {
-    return ::grpc::Status(
-        ::grpc::StatusCode::INVALID_ARGUMENT,
-        absl::StrCat("Mismatched device_block_ids count (",
-                     device_block_ids.size(), ") vs block_hashes count (",
-                     block_hashes.size(), ")."));
-  }
-
-  if (!request->host_block_ids().empty() &&
-      request->host_block_ids().size() != request->block_hashes().size()) {
+  if (dst_host_block_ids.size() != block_hashes.size()) {
     return ::grpc::Status(
         ::grpc::StatusCode::INVALID_ARGUMENT,
         "Mismatched host_block_ids count vs block_hashes count.");
   }
 
-  absl::Status status = store_ptr->ReadRemote(block_hashes, device_block_ids);
-  if (!status.ok()) {
-    return status;
+  // =========================================================================
+  // STEP 1: Validation
+  // Validate block_hashes exist in local index and reside in host memory.
+  // =========================================================================
+  auto lookup_or = backend->Lookup(block_hashes);
+  if (!lookup_or.ok()) {
+    return ::grpc::Status(
+        ::grpc::StatusCode::NOT_FOUND,
+        absl::StrCat("Validation failed: ", lookup_or.status().message()));
+  }
+  const auto& lookup_slices = lookup_or.value();
+  if (lookup_slices.size() < block_hashes.size()) {
+    return ::grpc::Status(
+        ::grpc::StatusCode::NOT_FOUND,
+        absl::StrCat("Partial block match: found ", lookup_slices.size(),
+                     " out of ", block_hashes.size()));
   }
 
-  absl::flat_hash_set<std::string> requested_set(block_hashes.begin(),
-                                                 block_hashes.end());
-  absl::flat_hash_set<std::string> done_set;
-  absl::flat_hash_set<std::string> failed_set;
-
-  {
-    absl::MutexLock lock(&fetch_mutex_);
-    while (done_set.size() + failed_set.size() < requested_set.size()) {
-      if (context != nullptr && context->IsCancelled()) {
-        for (const auto& hash : requested_set) {
-          completed_hashes_.erase(hash);
-          failed_hashes_.erase(hash);
-        }
-        return ::grpc::Status(::grpc::StatusCode::CANCELLED,
-                              "Client cancelled fetch request");
-      }
-
-      auto [done, failed, pending] = store_ptr->PollRemoteReadStatus();
-      bool new_events = !done.empty() || !failed.empty();
-      for (const auto& hash : done) {
-        completed_hashes_.insert(hash);
-      }
-      for (const auto& hash : failed) {
-        failed_hashes_.insert(hash);
-      }
-      if (new_events) {
-        fetch_cv_.SignalAll();
-      }
-
-      for (const auto& hash : requested_set) {
-        if (!done_set.contains(hash) && !failed_set.contains(hash)) {
-          if (completed_hashes_.contains(hash)) {
-            done_set.insert(hash);
-          } else if (failed_hashes_.contains(hash)) {
-            failed_set.insert(hash);
-          }
-        }
-      }
-
-      if (done_set.size() + failed_set.size() < requested_set.size()) {
-        fetch_cv_.WaitWithTimeout(&fetch_mutex_, absl::Milliseconds(10));
-      }
+  std::vector<int32_t> src_host_block_ids;
+  src_host_block_ids.reserve(lookup_slices.size());
+  for (const auto& [hash, slice] : lookup_slices) {
+    if (slice.status != BlockStatus::HOST &&
+        slice.status != BlockStatus::HOST_AND_HBM) {
+      return ::grpc::Status(
+          ::grpc::StatusCode::FAILED_PRECONDITION,
+          absl::StrCat("Block hash '", hash, "' is not resident in host DRAM"));
     }
-
-    for (const auto& hash : requested_set) {
-      completed_hashes_.erase(hash);
-      failed_hashes_.erase(hash);
-    }
+    src_host_block_ids.push_back(slice.host_block_id);
   }
 
-  for (const auto& hash : done_set) {
+  // =========================================================================
+  // STEP 2: Pinning
+  // Protect source host blocks against LRU eviction during DMA transfer.
+  // =========================================================================
+  if (!backend->Pin(block_hashes)) {
+    return ::grpc::Status(::grpc::StatusCode::RESOURCE_EXHAUSTED,
+                          "Failed to pin host blocks; blocks may be locked or "
+                          "undergoing eviction.");
+  }
+
+  // =========================================================================
+  // STEP 3: Unpinning Guarantee (RAII / absl::Cleanup)
+  // Ensure unpinning ALWAYS executes when exiting this scope, even on error
+  // or RPC cancellation.
+  // =========================================================================
+  auto unpin_cleanup = absl::MakeCleanup(
+      [backend, &block_hashes]() { backend->Release(block_hashes); });
+
+  // =========================================================================
+  // STEP 4: Transfer Execution
+  // Transfer data from local source host DRAM directly to destination host DRAM
+  // using RaidenController::TransferBuffers with Buffer structs.
+  // =========================================================================
+  RaidenId client_id{
+      request->client_raiden_id().job_name(),
+      request->client_raiden_id().job_replica_id(),
+      request->client_raiden_id().data_name(),
+      request->client_raiden_id().data_replica_idx(),
+  };
+  std::optional<std::string> client_address;
+  if (!client_id.empty()) {
+    client_address =
+        absl::StrCat(client_id.job_name, "/", client_id.job_replica_id, "/",
+                     client_id.data_name, "/", client_id.data_replica_idx);
+  }
+
+  std::vector<Buffer> src_buffers;
+  src_buffers.reserve(src_host_block_ids.size());
+  for (int id : src_host_block_ids) {
+    src_buffers.emplace_back(id, std::vector<BufferShard>{}, std::nullopt,
+                             rpc::MEMORY_TYPE_DRAM);
+  }
+
+  std::vector<Buffer> dst_buffers;
+  dst_buffers.reserve(dst_host_block_ids.size());
+  for (int id : dst_host_block_ids) {
+    dst_buffers.emplace_back(id, std::vector<BufferShard>{}, client_address,
+                             rpc::MEMORY_TYPE_DRAM);
+  }
+
+  tsl::Future<> transfer_future =
+      controller->TransferBuffers(src_buffers, dst_buffers);
+
+  absl::Status transfer_status = transfer_future.Await();
+
+  // Check RPC Cancellation Safety
+  if (context != nullptr && context->IsCancelled()) {
+    return ::grpc::Status(::grpc::StatusCode::CANCELLED,
+                          "Fetch request cancelled by client context");
+  }
+
+  if (!transfer_status.ok()) {
+    for (const auto& hash : block_hashes) {
+      response->add_failed_block_hashes(hash);
+    }
+    return ::grpc::Status(::grpc::StatusCode::INTERNAL,
+                          absl::StrCat("Host-to-Host transfer failed: ",
+                                       transfer_status.message()));
+  }
+
+  // =========================================================================
+  // STEP 5: Response Generation
+  // =========================================================================
+  for (const auto& hash : block_hashes) {
     response->add_done_block_hashes(hash);
-  }
-  for (const auto& hash : failed_set) {
-    response->add_failed_block_hashes(hash);
   }
 
   return ::grpc::Status::OK;

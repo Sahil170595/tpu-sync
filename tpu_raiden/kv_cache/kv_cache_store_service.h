@@ -33,11 +33,11 @@
 #include <string>
 
 #include "absl/base/thread_annotations.h"
-#include "absl/container/flat_hash_set.h"
 #include "absl/synchronization/mutex.h"
 #include "grpcpp/server_context.h"
 #include "grpcpp/support/status.h"
-#include "tpu_raiden/kv_cache/kv_cache_store.h"
+#include "tpu_raiden/core/controller/raiden_controller.h"
+#include "tpu_raiden/kv_cache/kv_cache_store_backend.h"
 #include "tpu_raiden/proto/kv_cache_store_service.grpc.pb.h"
 #include "tpu_raiden/proto/kv_cache_store_service.pb.h"
 
@@ -46,11 +46,12 @@ namespace kv_cache {
 
 class KVCacheStoreServiceImpl : public proto::KVCacheStoreService::Service {
  public:
-  explicit KVCacheStoreServiceImpl(KVCacheStore* store);
-  explicit KVCacheStoreServiceImpl(std::shared_ptr<KVCacheStore> store);
+  KVCacheStoreServiceImpl(KVCacheStoreBackend* backend,
+                          tpu_raiden::controller::RaidenController* controller);
 
-  void SetStore(KVCacheStore* store);
-  void SetStore(std::shared_ptr<KVCacheStore> store);
+  void SetBackendAndController(
+      KVCacheStoreBackend* backend,
+      tpu_raiden::controller::RaidenController* controller);
 
   ::grpc::Status Fetch(::grpc::ServerContext* context,
                        const proto::FetchRequest* request,
@@ -58,14 +59,9 @@ class KVCacheStoreServiceImpl : public proto::KVCacheStoreService::Service {
 
  private:
   mutable absl::Mutex mutex_;
-  KVCacheStore* store_ ABSL_GUARDED_BY(mutex_) = nullptr;
-  std::shared_ptr<KVCacheStore> store_shared_ptr_ ABSL_GUARDED_BY(mutex_);
-
-  mutable absl::Mutex fetch_mutex_;
-  absl::CondVar fetch_cv_ ABSL_GUARDED_BY(fetch_mutex_);
-  absl::flat_hash_set<std::string> completed_hashes_
-      ABSL_GUARDED_BY(fetch_mutex_);
-  absl::flat_hash_set<std::string> failed_hashes_ ABSL_GUARDED_BY(fetch_mutex_);
+  KVCacheStoreBackend* backend_ ABSL_GUARDED_BY(mutex_) = nullptr;
+  tpu_raiden::controller::RaidenController* controller_
+      ABSL_GUARDED_BY(mutex_) = nullptr;
 };
 
 }  // namespace kv_cache

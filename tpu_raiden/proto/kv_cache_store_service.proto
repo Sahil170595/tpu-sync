@@ -16,6 +16,8 @@ syntax = "proto3";
 
 package tpu_raiden.kv_cache.proto;
 
+import "tpu_raiden/rpc/raiden_service.proto";
+
 option java_multiple_files = true;
 option java_outer_classname = "KVCacheStoreServiceProto";
 
@@ -39,6 +41,10 @@ message FetchRequest {
   // Optional: Host block IDs as a sanity check.
   // - If NON-EMPTY: Must match block_hashes size.
   repeated int32 host_block_ids = 3;
+
+  // Target destination info: Unique RaidenId of the client node initiating the
+  // fetch.
+  tpu_raiden.rpc.RaidenIdProto client_raiden_id = 4;
 }
 
 // Response describing the outcome of a fetch request.
@@ -48,4 +54,7 @@ message FetchResponse {
 
   // List of block hashes that failed to be fetched.
   repeated string failed_block_hashes = 2;
+
+  // Error status code or message for detailed reporting.
+  string error_message = 3;
 }

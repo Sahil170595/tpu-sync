@@ -37,7 +37,9 @@
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "grpcpp/channel.h"
+#include "xla/tsl/concurrency/future.h"
 #include "tpu_raiden/proto/kv_cache_store_service.grpc.pb.h"
+#include "tpu_raiden/rpc/raiden_service.pb.h"
 
 namespace tpu_raiden {
 namespace kv_cache {
@@ -49,22 +51,13 @@ class KVCacheStoreClient {
   explicit KVCacheStoreClient(
       std::unique_ptr<proto::KVCacheStoreService::StubInterface> stub);
 
-  // Fetches remote KV cache blocks.
-  //
-  // Parameters:
-  // - block_hashes: Hashes of the blocks to fetch.
-  // - device_block_ids: Optional target TPU device block IDs for HBM fetch.
-  //   If empty, data is landed into host DRAM staging memory.
-  // - host_block_ids: Optional host block IDs for sanity check verification.
-  //   If non-empty, must match block_hashes count.
-  //
-  // Returns:
-  // - On success: Vector of successfully fetched block hashes.
-  // - On failure: absl::Status describing the error.
-  absl::StatusOr<std::vector<std::string>> Fetch(
+  // Asynchronous Non-Blocking Fetch RPC.
+  // Returns a Future that resolves with FetchResponse upon RPC completion.
+  tsl::Future<proto::FetchResponse> Fetch(
       absl::Span<const std::string> block_hashes,
       absl::Span<const int32_t> device_block_ids = {},
-      absl::Span<const int32_t> host_block_ids = {});
+      absl::Span<const int32_t> host_block_ids = {},
+      const rpc::RaidenIdProto& client_raiden_id = {});
 
  private:
   std::unique_ptr<proto::KVCacheStoreService::StubInterface> stub_;

@@ -41,8 +41,11 @@
 #include "grpcpp/channel.h"
 #include "grpcpp/client_context.h"
 #include "grpcpp/create_channel.h"
+#include "grpcpp/impl/status.h"
+#include "xla/tsl/concurrency/future.h"
 #include "tpu_raiden/proto/kv_cache_store_service.grpc.pb.h"
 #include "tpu_raiden/proto/kv_cache_store_service.pb.h"
+#include "tpu_raiden/rpc/raiden_service.pb.h"
 
 namespace tpu_raiden {
 namespace kv_cache {
@@ -55,25 +58,27 @@ KVCacheStoreClient::KVCacheStoreClient(
     std::unique_ptr<proto::KVCacheStoreService::StubInterface> stub)
     : stub_(std::move(stub)) {}
 
-absl::StatusOr<std::vector<std::string>> KVCacheStoreClient::Fetch(
+tsl::Future<proto::FetchResponse> KVCacheStoreClient::Fetch(
     absl::Span<const std::string> block_hashes,
     absl::Span<const int32_t> device_block_ids,
-    absl::Span<const int32_t> host_block_ids) {
+    absl::Span<const int32_t> host_block_ids,
+    const rpc::RaidenIdProto& client_raiden_id) {
   if (block_hashes.empty()) {
-    return std::vector<std::string>{};
+    return tsl::Future<proto::FetchResponse>(proto::FetchResponse{});
   }
 
   if (!device_block_ids.empty() &&
       device_block_ids.size() != block_hashes.size()) {
-    return absl::InvalidArgumentError(absl::StrCat(
-        "Mismatched device_block_ids count (", device_block_ids.size(),
-        ") vs block_hashes count (", block_hashes.size(), ")."));
+    return tsl::Future<proto::FetchResponse>(
+        absl::InvalidArgumentError(absl::StrCat(
+            "Mismatched device_block_ids count (", device_block_ids.size(),
+            ") vs block_hashes count (", block_hashes.size(), ").")));
   }
 
   if (!host_block_ids.empty() && host_block_ids.size() != block_hashes.size()) {
-    return absl::InvalidArgumentError(
+    return tsl::Future<proto::FetchResponse>(absl::InvalidArgumentError(
         absl::StrCat("Mismatched host_block_ids count (", host_block_ids.size(),
-                     ") vs block_hashes count (", block_hashes.size(), ")."));
+                     ") vs block_hashes count (", block_hashes.size(), ").")));
   }
 
   proto::FetchRequest request;
@@ -86,26 +91,25 @@ absl::StatusOr<std::vector<std::string>> KVCacheStoreClient::Fetch(
   for (int32_t host_id : host_block_ids) {
     request.add_host_block_ids(host_id);
   }
+  *request.mutable_client_raiden_id() = client_raiden_id;
 
-  proto::FetchResponse response;
-  ::grpc::ClientContext context;
-  ::grpc::Status status = stub_->Fetch(&context, request, &response);
-  if (!status.ok()) {
-    return status;
-  }
+  auto [promise, future] = tsl::MakePromise<proto::FetchResponse>();
+  auto context = std::make_shared<grpc::ClientContext>();
+  auto response = std::make_shared<proto::FetchResponse>();
 
-  if (response.failed_block_hashes_size() > 0) {
-    return absl::InternalError(
-        absl::StrCat("Fetch failed for ", response.failed_block_hashes_size(),
-                     " out of ", block_hashes.size(), " blocks."));
-  }
-
-  std::vector<std::string> done_hashes;
-  done_hashes.reserve(response.done_block_hashes_size());
-  for (const auto& hash : response.done_block_hashes()) {
-    done_hashes.push_back(hash);
-  }
-  return done_hashes;
+  stub_->async()->Fetch(
+      context.get(), &request, response.get(),
+      [context, response,
+       promise = std::move(promise).ToShared()](grpc::Status status) mutable {
+        if (!status.ok()) {
+          promise->Set(absl::Status(
+              static_cast<absl::StatusCode>(status.error_code()),
+              absl::StrCat("Fetch RPC failed: ", status.error_message())));
+        } else {
+          promise->Set(std::move(*response));
+        }
+      });
+  return future;
 }
 
 }  // namespace kv_cache

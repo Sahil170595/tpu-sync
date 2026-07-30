@@ -39,7 +39,8 @@
 #include "absl/synchronization/mutex.h"
 #include "grpcpp/security/server_credentials.h"
 #include "grpcpp/server_builder.h"
-#include "tpu_raiden/kv_cache/kv_cache_store.h"
+#include "tpu_raiden/core/controller/raiden_controller.h"
+#include "tpu_raiden/kv_cache/kv_cache_store_backend.h"
 #include "tpu_raiden/kv_cache/kv_cache_store_service.h"
 
 namespace tpu_raiden {
@@ -51,17 +52,19 @@ std::unique_ptr<KVCacheStoreServer> KVCacheStoreServer::Create() {
 
 KVCacheStoreServer::~KVCacheStoreServer() { Shutdown(); }
 
-absl::Status KVCacheStoreServer::StartServer(KVCacheStore* store,
-                                             absl::string_view server_address) {
+absl::Status KVCacheStoreServer::StartServer(
+    KVCacheStoreBackend* backend,
+    tpu_raiden::controller::RaidenController* controller,
+    absl::string_view server_address) {
   absl::MutexLock lock(&mutex_);
   if (started_) {
-    if (store && service_) {
-      service_->SetStore(store);
+    if (service_) {
+      service_->SetBackendAndController(backend, controller);
     }
     return absl::OkStatus();
   }
 
-  service_ = std::make_unique<KVCacheStoreServiceImpl>(store);
+  service_ = std::make_unique<KVCacheStoreServiceImpl>(backend, controller);
   return StartServerInternal(server_address);
 }
 
@@ -96,17 +99,12 @@ absl::Status KVCacheStoreServer::StartServerInternal(
   return absl::OkStatus();
 }
 
-void KVCacheStoreServer::SetStore(KVCacheStore* store) {
+void KVCacheStoreServer::SetBackendAndController(
+    KVCacheStoreBackend* backend,
+    tpu_raiden::controller::RaidenController* controller) {
   absl::MutexLock lock(&mutex_);
   if (service_) {
-    service_->SetStore(store);
-  }
-}
-
-void KVCacheStoreServer::SetStore(std::shared_ptr<KVCacheStore> store) {
-  absl::MutexLock lock(&mutex_);
-  if (service_) {
-    service_->SetStore(std::move(store));
+    service_->SetBackendAndController(backend, controller);
   }
 }
 

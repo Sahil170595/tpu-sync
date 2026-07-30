@@ -37,7 +37,8 @@
 #include "absl/strings/string_view.h"
 #include "absl/synchronization/mutex.h"
 #include "grpcpp/server.h"
-#include "tpu_raiden/kv_cache/kv_cache_store.h"
+#include "tpu_raiden/core/controller/raiden_controller.h"
+#include "tpu_raiden/kv_cache/kv_cache_store_backend.h"
 #include "tpu_raiden/kv_cache/kv_cache_store_service.h"
 
 namespace tpu_raiden {
@@ -57,17 +58,17 @@ class KVCacheStoreServer {
 
   ~KVCacheStoreServer();
 
-  // Starts the gRPC server hosting KVCacheStoreServiceImpl with a non-owning
-  // store pointer on the specified address/port (pass "" or "[::]:0" for
-  // ephemeral port). If the server is already started, updates the store and
-  // returns OkStatus().
-  absl::Status StartServer(KVCacheStore* store,
+  // Starts the gRPC server hosting KVCacheStoreServiceImpl with backend and
+  // controller pointers.
+  absl::Status StartServer(KVCacheStoreBackend* backend,
+                           tpu_raiden::controller::RaidenController* controller,
                            absl::string_view server_address = "");
 
-  // Updates the backing KVCacheStore instance while the server is running or
-  // before start.
-  void SetStore(KVCacheStore* store);
-  void SetStore(std::shared_ptr<KVCacheStore> store);
+  // Updates the backing KVCacheStoreBackend and RaidenController while running
+  // or before start.
+  void SetBackendAndController(
+      KVCacheStoreBackend* backend,
+      tpu_raiden::controller::RaidenController* controller);
 
   // Returns the port the gRPC server is listening on. Returns 0 if not running.
   int GetGrpcPort() const;

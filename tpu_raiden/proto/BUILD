@@ -113,6 +113,7 @@ cc_grpc_library(
     name = "kv_cache_store_service_cc_grpc",
     srcs = [":kv_cache_store_service_proto"],
     generate_mocks = True,
+    grpc_only = True,
     visibility = ["//visibility:public"],
     deps = [":kv_cache_store_service_cc_proto"],
 )

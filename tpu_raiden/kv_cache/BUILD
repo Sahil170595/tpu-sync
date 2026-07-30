@@ -239,70 +239,7 @@ cc_library(
     alwayslink = 1,
 )
 
-cc_library(
-    name = "kv_cache_store_internal",
-    srcs = [
-        "kv_cache_store_internal.cc",
-    ],
-    hdrs = [
-        "kv_cache_store_internal.h",
-    ],
-    copts = [
-        "-fno-strict-aliasing",
-        "-fexceptions",
-    ],
-    features = ["-use_header_modules"],
-    visibility = ["//visibility:public"],
-    deps = [
-        ":kv_cache_manager_base",
-        ":logical_block_manager",
-        "//tpu_raiden/core:raw_transfer_core",
-        "//tpu_raiden/core:status_macros",
-        "//tpu_raiden/kv_cache/global_registry:global_registry_client_cc",
-        "//tpu_raiden/transport:block_transport",
-        "@com_github_grpc_grpc//:grpc++",
-        "@com_google_absl//absl/base:core_headers",
-        "@com_google_absl//absl/container:flat_hash_map",
-        "@com_google_absl//absl/log",
-        "@com_google_absl//absl/status",
-        "@com_google_absl//absl/status:statusor",
-        "@com_google_absl//absl/strings",
-        "@com_google_absl//absl/strings:string_view",
-        "@com_google_absl//absl/synchronization",
-        "@com_google_absl//absl/types:span",
-    ],
-)
-
 # JAX test targets successfully relocated to api/jax/BUILD.
-
-cc_test(
-    name = "kv_cache_store_internal_test",
-    srcs = ["kv_cache_store_internal_test.cc"],
-    copts = [
-        "-fno-strict-aliasing",
-        "-fexceptions",
-    ],
-    features = [
-        "-use_header_modules",
-        "-layering_check",
-    ],
-    tags = [
-        "manual",
-        "no_oss",
-        "requires-jellyfish",
-    ],
-    deps = [
-        ":kv_cache_manager_base",
-        ":kv_cache_store_internal",
-        "//tpu_raiden/core:raw_transfer_core",
-        "//tpu_raiden/core:tpu_pjrt_manager",
-        "@com_google_absl//absl/status:status_matchers",
-        "@xla//xla/pjrt:pjrt_client",
-        "@xla//xla/tsl/platform:statusor",
-        "@xla//xla/tsl/platform:test",
-        "@xla//xla/tsl/platform:test_main",
-    ],
-)
 
 cc_library(
     name = "lru_cache",

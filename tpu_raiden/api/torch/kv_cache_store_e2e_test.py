@@ -32,6 +32,7 @@ import os
 import socket
 import subprocess
 import time
+import uuid
 
 from absl.testing import absltest
 from absl.testing import parameterized
@@ -42,10 +43,6 @@ import torch_tpu
 resources = None
 from tpu_raiden.api.torch import kv_cache_manager
 from tpu_raiden.api.torch import kv_cache_store
-
-# Set XLA flags to force CPU/Host platform devices if running locally on
-# simulator
-os.environ["XLA_FLAGS"] = "--xla_force_host_platform_device_count=8"
 
 
 def _pick_unused_port():
@@ -75,6 +72,8 @@ _orchestrator_process = None
 _registry_process = None
 _orchestrator_port = None
 _registry_port = None
+_orch_log_file = None
+_reg_log_file = None
 
 
 def start_servers():
@@ -107,27 +106,28 @@ def start_servers():
   )
   extra_flags = []
 
+  global _orch_log_file, _reg_log_file
   print(f"Starting Orchestrator on port {_orchestrator_port}")
-  orch_log = open("/tmp/raiden_orchestrator.log", "w")
+  _orch_log_file = open("/tmp/raiden_orchestrator.log", "w")
   _orchestrator_process = subprocess.Popen(
       [
           orchestrator_binary,
           f"--port={_orchestrator_port}",
       ]
       + extra_flags,
-      stdout=orch_log,
+      stdout=_orch_log_file,
       stderr=subprocess.STDOUT,
   )
 
   print(f"Starting Registry on port {_registry_port}")
-  reg_log = open("/tmp/raiden_registry.log", "w")
+  _reg_log_file = open("/tmp/raiden_registry.log", "w")
   _registry_process = subprocess.Popen(
       [
           registry_binary,
           f"--port={_registry_port}",
       ]
       + extra_flags,
-      stdout=reg_log,
+      stdout=_reg_log_file,
       stderr=subprocess.STDOUT,
   )
 
@@ -136,7 +136,7 @@ def start_servers():
 
 
 def stop_servers():
-  global _orchestrator_process, _registry_process
+  global _orchestrator_process, _registry_process, _orch_log_file, _reg_log_file
   if _orchestrator_process:
     code = _orchestrator_process.poll()
     if code is not None and code != 0:
@@ -149,6 +149,12 @@ def stop_servers():
     _orchestrator_process.terminate()
     _orchestrator_process.wait()
     _orchestrator_process = None
+  if _orch_log_file:
+    try:
+      _orch_log_file.close()
+    except Exception:
+      pass
+    _orch_log_file = None
   if _registry_process:
     code = _registry_process.poll()
     if code is not None and code != 0:
@@ -161,6 +167,12 @@ def stop_servers():
     _registry_process.terminate()
     _registry_process.wait()
     _registry_process = None
+  if _reg_log_file:
+    try:
+      _reg_log_file.close()
+    except Exception:
+      pass
+    _reg_log_file = None
 
 
 def setUpModule():
@@ -176,11 +188,15 @@ class KVCacheStoreE2ETest(parameterized.TestCase):
   @classmethod
   def setUpClass(cls):
     super().setUpClass()
-    cls.controller_port = find_free_port()
+    start_servers()
+
+  @classmethod
+  def tearDownClass(cls):
+    stop_servers()
+    super().tearDownClass()
 
   def setUp(self):
     super().setUp()
-    start_servers()
     self.device = torch.device("tpu")
     assert self.device.type == "tpu", f"Expected real PyTorch TPU device, got {self.device}"
     print(f"=== [DEVICE VERIFIED] Using real PyTorch TPU device: {self.device} ===")
@@ -190,7 +206,6 @@ class KVCacheStoreE2ETest(parameterized.TestCase):
     self.skip_lock = True
 
   def tearDown(self):
-    stop_servers()
     super().tearDown()
 
   def test_e2e_save_and_load(self):
@@ -217,7 +232,8 @@ class KVCacheStoreE2ETest(parameterized.TestCase):
 
     # 3. Create KVCacheStore (Controller)
     print("=== [Step 3/9] Creating KVCacheStore (Controller) ===")
-    rid = kv_cache_store.RaidenId("e2e_job", "0", "e2e_cache", 0)
+    tag = f"save_{uuid.uuid4().hex[:8]}"
+    rid = kv_cache_store.RaidenId(f"{tag}_job", "0", f"{tag}_cache", 0)
     store = kv_cache_store.KVCacheStore(
         capacity=num_blocks,
         raiden_id=rid,
@@ -241,7 +257,7 @@ class KVCacheStoreE2ETest(parameterized.TestCase):
         # so RegisterWorker never lands and Save fails with "No registered
         # workers available for TransferBuffers".
         raiden_controller_address=f"localhost:{controller_port}",
-        worker_id="worker_0",
+        worker_id=f"{tag}_worker_0",
     )
 
     # 5. Insert HBM blocks to KVCacheStore
@@ -337,6 +353,424 @@ class KVCacheStoreE2ETest(parameterized.TestCase):
     print("=== [Step 8/8] Verifying restored TPU memory matches expected array [a, b, a, b] ===")
     np.testing.assert_array_equal(tpu_cache.cpu().numpy(), expected_ref)
     print("=== [SUCCESS] E2E Save/Load [0, 1] -> [2, 3] roundtrip verified on physical TPU! ===")
+    del manager, store
+
+  def _run_remote_read_e2e_test(
+      self,
+      producer_node_id: int = 0,
+      consumer_node_id: int = 0,
+      expect_read_success: bool = True,
+  ):
+    num_blocks = 4
+    shape = (num_blocks, 128, 8, 8, 128)
+
+    # 1. Generate sequential distinct cache data for Job A
+    host_data_a = np.arange(np.prod(shape), dtype=np.float32).reshape(shape)
+    tpu_cache_a = torch.tensor(host_data_a, device=self.device)
+
+    # Create empty Job B device memory with zeros
+    zeros_b = np.zeros(shape, dtype=np.float32)
+    tpu_cache_b = torch.tensor(zeros_b, device=self.device)
+
+    # Calculate shard size in bytes
+    block_elements = 128 * 8 * 8 * 128
+    shard_size_bytes = (block_elements * 4) // self.num_devices
+
+    controller_port_a = find_free_port()
+    worker_port_a = find_free_port()
+    worker_port_b = find_free_port()
+
+    # 2. Create Job A's KVCacheStore & KVCacheManager
+    tag = f"read_{uuid.uuid4().hex[:8]}"
+    rid_a = kv_cache_store.RaidenId(f"{tag}_job_a", "0", f"{tag}_cache_a", 0)
+    store_a = kv_cache_store.KVCacheStore(
+        capacity=4,
+        global_registry_address=f"localhost:{_registry_port}",
+        raiden_id=rid_a,
+        num_shards=self.num_devices,
+        shard_size_bytes=shard_size_bytes,
+        raiden_orchestrator_address=f"localhost:{_orchestrator_port}",
+        raiden_controller_address=f"localhost:{controller_port_a}",
+    )
+    manager_a = kv_cache_manager.KVCacheManager(
+        kv_caches=[[tpu_cache_a]],
+        local_control_port=0,
+        max_blocks=num_blocks,
+        num_slots=2,
+        unsafe_skip_buffer_lock=self.skip_lock,
+        raiden_worker_port=worker_port_a,
+        raiden_controller_address=f"localhost:{controller_port_a}",
+        worker_id=f"{tag}_worker_a",
+        host_blocks_to_allocate=4,
+        node_id=producer_node_id,
+    )
+
+    controller_port_b = find_free_port()
+    # 3. Create Job B's KVCacheStore & KVCacheManager
+    rid_b = kv_cache_store.RaidenId(f"{tag}_job_b", "0", f"{tag}_cache_b", 0)
+    store_b = kv_cache_store.KVCacheStore(
+        capacity=4,
+        global_registry_address=f"localhost:{_registry_port}",
+        raiden_id=rid_b,
+        num_shards=self.num_devices,
+        shard_size_bytes=shard_size_bytes,
+        raiden_orchestrator_address=f"localhost:{_orchestrator_port}",
+        raiden_controller_address=f"localhost:{controller_port_b}",
+    )
+    manager_b = kv_cache_manager.KVCacheManager(
+        kv_caches=[[tpu_cache_b]],
+        local_control_port=0,
+        max_blocks=num_blocks,
+        num_slots=2,
+        unsafe_skip_buffer_lock=self.skip_lock,
+        raiden_worker_port=worker_port_b,
+        raiden_controller_address=f"localhost:{controller_port_b}",
+        worker_id=f"{tag}_worker_b",
+        host_blocks_to_allocate=4,
+        node_id=consumer_node_id,
+    )
+
+    try:
+      # Wait for listeners to start
+      time.sleep(1)
+
+      hashes = [f"{tag}_h0".encode(), f"{tag}_h1".encode()]
+
+      # 4. Job A inserts HBM status and calls Save
+      slices_a = [
+          kv_cache_store.RaidenBlockID(
+              rid_a,
+              host_block_id=-1,
+              device_block_id=0,
+              status=kv_cache_store.BlockStatus.HBM,
+          ),
+          kv_cache_store.RaidenBlockID(
+              rid_a,
+              host_block_id=-1,
+              device_block_id=1,
+              status=kv_cache_store.BlockStatus.HBM,
+          ),
+      ]
+      inserted_a, evicted_a = store_a.insert(hashes, slices_a, on_host=False)
+      self.assertTrue(inserted_a)
+      self.assertEmpty(evicted_a)
+
+      self.assertTrue(store_a.pin(hashes))
+      store_a.save(hashes)
+
+      # Wait for save completion
+      done = False
+      while not done:
+        save_done, save_failed, _ = store_a.poll_save_status()
+        if save_failed:
+          raise RuntimeError(f"Job A Async Save failed: {save_failed}")
+        if save_done:
+          done = True
+        if not done:
+          time.sleep(0.01)
+
+      store_a.release(hashes)
+
+      # 5. Job B calls Lookup (enable_global=True)
+      time.sleep(0.5)
+      lookup_res_b = store_b.lookup(hashes, enable_global=True)
+      self.assertLen(lookup_res_b, 2)
+
+      # Verify REMOTE status and owner job_a
+      self.assertEqual(lookup_res_b[0][0], f"{tag}_h0".encode())
+      self.assertEqual(
+          lookup_res_b[0][1].status, kv_cache_store.BlockStatus.REMOTE
+      )
+      self.assertEqual(lookup_res_b[0][1].raiden_id, rid_a)
+
+      self.assertEqual(lookup_res_b[1][0], f"{tag}_h1".encode())
+      self.assertEqual(
+          lookup_res_b[1][1].status, kv_cache_store.BlockStatus.REMOTE
+      )
+      self.assertEqual(lookup_res_b[1][1].raiden_id, rid_a)
+
+      # Verify correct source host block IDs
+      lookup_res_a = store_a.lookup(hashes)
+      self.assertEqual(
+          lookup_res_b[0][1].host_block_id, lookup_res_a[0][1].host_block_id
+      )
+      self.assertEqual(
+          lookup_res_b[1][1].host_block_id, lookup_res_a[1][1].host_block_id
+      )
+
+      # 6. Job B controller calls insert_and_lock for the remote slices
+      slices_b = [lookup_res_b[0][1], lookup_res_b[1][1]]
+      self.assertTrue(store_b.insert_and_lock(hashes, slices_b, on_host=True))
+
+      # 7. Job B calls ReadRemote
+      self.assertTrue(store_b.read_remote(hashes))
+
+      if not expect_read_success:
+        failed = False
+        for _ in range(500):
+          _, read_failed, _ = store_b.poll_remote_read_status()
+          if read_failed:
+            self.assertEqual(set(read_failed), set(hashes))
+            failed = True
+            break
+          time.sleep(0.01)
+        self.assertTrue(
+            failed,
+            "expected read_remote to fail on producer/consumer node_id mismatch",
+        )
+        return
+
+      # Wait for ReadRemote completion
+      done = False
+      while not done:
+        read_done, read_failed, _ = store_b.poll_remote_read_status()
+        if read_failed:
+          raise RuntimeError(f"Job B ReadRemote failed: {read_failed}")
+        if len(read_done) == 2:
+          done = True
+        if not done:
+          time.sleep(0.01)
+
+      # 8. Verify Job B's LRU block status becomes HOST
+      lookup_res_b_after = store_b.lookup(hashes)
+      self.assertLen(lookup_res_b_after, 2)
+      self.assertEqual(
+          lookup_res_b_after[0][1].status, kv_cache_store.BlockStatus.HOST
+      )
+      self.assertEqual(
+          lookup_res_b_after[1][1].status, kv_cache_store.BlockStatus.HOST
+      )
+
+      # 9. Job B controller calls Load to transfer data to TPU blocks [0, 1]
+      self.assertTrue(store_b.load(hashes, [0, 1]))
+
+      # Wait for Load completion
+      done = False
+      while not done:
+        load_done, load_failed, _ = store_b.poll_load_status()
+        if load_failed:
+          raise RuntimeError(f"Job B Load failed: {load_failed}")
+        if len(load_done) == 2:
+          done = True
+        if not done:
+          time.sleep(0.01)
+
+      store_b.release(hashes)
+
+      # 10. Verify byte-exact match on Job B TPU device
+      try:
+        torch.tpu.synchronize()
+      except (AttributeError, RuntimeError):
+        pass
+      np.testing.assert_array_equal(tpu_cache_b[0:2].cpu().numpy(), host_data_a[0:2])
+    finally:
+      del manager_a, manager_b, store_a, store_b
+
+  def test_remote_read_e2e_matching_node_id(self):
+    self._run_remote_read_e2e_test(
+        producer_node_id=7,
+        consumer_node_id=7,
+        expect_read_success=True,
+    )
+
+  def test_remote_read_e2e_mismatched_node_id_fails(self):
+    self._run_remote_read_e2e_test(
+        producer_node_id=1,
+        consumer_node_id=2,
+        expect_read_success=False,
+    )
+
+  def test_remote_read_e2e_source_missing_block_fails(self):
+    num_blocks = 4
+    shape = (num_blocks, 128, 8, 8, 128)
+    tpu_cache_a = torch.zeros(shape, dtype=torch.float32, device=self.device)
+    tpu_cache_b = torch.zeros(shape, dtype=torch.float32, device=self.device)
+
+    block_elements = 128 * 8 * 8 * 128
+    shard_size_bytes = (block_elements * 4) // self.num_devices
+    controller_port_a = find_free_port()
+    controller_port_b = find_free_port()
+
+    tag = f"miss_{uuid.uuid4().hex[:8]}"
+    rid_a = kv_cache_store.RaidenId(f"{tag}_job_a", "0", f"{tag}_cache_a", 0)
+    store_a = kv_cache_store.KVCacheStore(
+        capacity=4,
+        global_registry_address=f"localhost:{_registry_port}",
+        raiden_id=rid_a,
+        num_shards=self.num_devices,
+        shard_size_bytes=shard_size_bytes,
+        raiden_orchestrator_address=f"localhost:{_orchestrator_port}",
+        raiden_controller_address=f"localhost:{controller_port_a}",
+    )
+    manager_a = kv_cache_manager.KVCacheManager(
+        kv_caches=[[tpu_cache_a]],
+        local_control_port=0,
+        max_blocks=num_blocks,
+        num_slots=2,
+        unsafe_skip_buffer_lock=self.skip_lock,
+        raiden_worker_port=find_free_port(),
+        raiden_controller_address=f"localhost:{controller_port_a}",
+        worker_id=f"{tag}_worker_a",
+        host_blocks_to_allocate=4,
+    )
+
+    rid_b = kv_cache_store.RaidenId(f"{tag}_job_b", "0", f"{tag}_cache_b", 0)
+    store_b = kv_cache_store.KVCacheStore(
+        capacity=4,
+        global_registry_address=f"localhost:{_registry_port}",
+        raiden_id=rid_b,
+        num_shards=self.num_devices,
+        shard_size_bytes=shard_size_bytes,
+        raiden_orchestrator_address=f"localhost:{_orchestrator_port}",
+        raiden_controller_address=f"localhost:{controller_port_b}",
+    )
+    manager_b = kv_cache_manager.KVCacheManager(
+        kv_caches=[[tpu_cache_b]],
+        local_control_port=0,
+        max_blocks=num_blocks,
+        num_slots=2,
+        unsafe_skip_buffer_lock=self.skip_lock,
+        raiden_worker_port=find_free_port(),
+        raiden_controller_address=f"localhost:{controller_port_b}",
+        worker_id=f"{tag}_worker_b",
+        host_blocks_to_allocate=4,
+    )
+
+    try:
+      time.sleep(1)
+      ghost = [f"{tag}_ghost".encode()]
+      slices = [
+          kv_cache_store.RaidenBlockID(
+              rid_a,
+              host_block_id=0,
+              device_block_id=-1,
+              status=kv_cache_store.BlockStatus.REMOTE,
+          )
+      ]
+      self.assertTrue(store_b.insert_and_lock(ghost, slices, on_host=True))
+      self.assertTrue(store_b.read_remote(ghost))
+
+      failed = False
+      for _ in range(500):
+        _, read_failed, _ = store_b.poll_remote_read_status()
+        if read_failed:
+          self.assertEqual(set(read_failed), set(ghost))
+          failed = True
+          break
+        time.sleep(0.01)
+      self.assertTrue(
+          failed, "expected read_remote to fail (source is missing the block)"
+      )
+    finally:
+      del manager_a, manager_b, store_a, store_b
+
+  def test_remote_read_e2e_source_wrong_status_fails(self):
+    num_blocks = 4
+    shape = (num_blocks, 128, 8, 8, 128)
+    tpu_cache_a = torch.zeros(shape, dtype=torch.float32, device=self.device)
+    tpu_cache_b = torch.zeros(shape, dtype=torch.float32, device=self.device)
+
+    block_elements = 128 * 8 * 8 * 128
+    shard_size_bytes = (block_elements * 4) // self.num_devices
+    controller_port_a = find_free_port()
+    controller_port_b = find_free_port()
+
+    tag = f"ws_{uuid.uuid4().hex[:8]}"
+    rid_a = kv_cache_store.RaidenId(f"{tag}_job_a", "0", f"{tag}_cache_a", 0)
+    store_a = kv_cache_store.KVCacheStore(
+        capacity=4,
+        global_registry_address=f"localhost:{_registry_port}",
+        raiden_id=rid_a,
+        num_shards=self.num_devices,
+        shard_size_bytes=shard_size_bytes,
+        raiden_orchestrator_address=f"localhost:{_orchestrator_port}",
+        raiden_controller_address=f"localhost:{controller_port_a}",
+    )
+    manager_a = kv_cache_manager.KVCacheManager(
+        kv_caches=[[tpu_cache_a]],
+        local_control_port=0,
+        max_blocks=num_blocks,
+        num_slots=2,
+        unsafe_skip_buffer_lock=self.skip_lock,
+        raiden_worker_port=find_free_port(),
+        raiden_controller_address=f"localhost:{controller_port_a}",
+        worker_id=f"{tag}_worker_a",
+        host_blocks_to_allocate=4,
+    )
+
+    rid_b = kv_cache_store.RaidenId(f"{tag}_job_b", "0", f"{tag}_cache_b", 0)
+    store_b = kv_cache_store.KVCacheStore(
+        capacity=4,
+        global_registry_address=f"localhost:{_registry_port}",
+        raiden_id=rid_b,
+        num_shards=self.num_devices,
+        shard_size_bytes=shard_size_bytes,
+        raiden_orchestrator_address=f"localhost:{_orchestrator_port}",
+        raiden_controller_address=f"localhost:{controller_port_b}",
+    )
+    manager_b = kv_cache_manager.KVCacheManager(
+        kv_caches=[[tpu_cache_b]],
+        local_control_port=0,
+        max_blocks=num_blocks,
+        num_slots=2,
+        unsafe_skip_buffer_lock=self.skip_lock,
+        raiden_worker_port=find_free_port(),
+        raiden_controller_address=f"localhost:{controller_port_b}",
+        worker_id=f"{tag}_worker_b",
+        host_blocks_to_allocate=4,
+    )
+
+    try:
+      time.sleep(1)
+      hashes = [f"{tag}_h0".encode(), f"{tag}_h1".encode()]
+      slices_a = [
+          kv_cache_store.RaidenBlockID(
+              rid_a,
+              host_block_id=-1,
+              device_block_id=0,
+              status=kv_cache_store.BlockStatus.HBM,
+          ),
+          kv_cache_store.RaidenBlockID(
+              rid_a,
+              host_block_id=-1,
+              device_block_id=1,
+              status=kv_cache_store.BlockStatus.HBM,
+          ),
+      ]
+      self.assertTrue(store_a.insert(hashes, slices_a, on_host=False)[0])
+
+      time.sleep(0.5)
+      slices_b = [
+          kv_cache_store.RaidenBlockID(
+              rid_a,
+              host_block_id=0,
+              device_block_id=-1,
+              status=kv_cache_store.BlockStatus.REMOTE,
+          ),
+          kv_cache_store.RaidenBlockID(
+              rid_a,
+              host_block_id=0,
+              device_block_id=-1,
+              status=kv_cache_store.BlockStatus.REMOTE,
+          ),
+      ]
+      self.assertTrue(store_b.insert_and_lock(hashes, slices_b, on_host=True))
+      self.assertTrue(store_b.read_remote(hashes))
+
+      failed = False
+      for _ in range(500):
+        _, read_failed, _ = store_b.poll_remote_read_status()
+        if read_failed:
+          self.assertEqual(set(read_failed), set(hashes))
+          failed = True
+          break
+        time.sleep(0.01)
+      self.assertTrue(
+          failed,
+          "expected read_remote to fail (source only has block in HBM)",
+      )
+    finally:
+      del manager_a, manager_b, store_a, store_b
 
 
 if __name__ == "__main__":

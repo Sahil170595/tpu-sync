@@ -32,8 +32,6 @@
 #include <memory>
 #include <string>
 
-#include "absl/base/thread_annotations.h"
-#include "absl/synchronization/mutex.h"
 #include "grpcpp/server_context.h"
 #include "grpcpp/support/status.h"
 #include "tpu_raiden/core/controller/raiden_controller.h"
@@ -49,19 +47,13 @@ class KVCacheStoreServiceImpl : public proto::KVCacheStoreService::Service {
   KVCacheStoreServiceImpl(KVCacheStoreBackend* backend,
                           tpu_raiden::controller::RaidenController* controller);
 
-  void SetBackendAndController(
-      KVCacheStoreBackend* backend,
-      tpu_raiden::controller::RaidenController* controller);
-
   ::grpc::Status Fetch(::grpc::ServerContext* context,
                        const proto::FetchRequest* request,
                        proto::FetchResponse* response) override;
 
  private:
-  mutable absl::Mutex mutex_;
-  KVCacheStoreBackend* backend_ ABSL_GUARDED_BY(mutex_) = nullptr;
-  tpu_raiden::controller::RaidenController* controller_
-      ABSL_GUARDED_BY(mutex_) = nullptr;
+  KVCacheStoreBackend* const backend_ = nullptr;
+  tpu_raiden::controller::RaidenController* const controller_ = nullptr;
 };
 
 }  // namespace kv_cache

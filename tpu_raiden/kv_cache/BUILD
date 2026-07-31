@@ -320,6 +320,7 @@ cc_library(
         "//tpu_raiden/rpc:raiden_service_cc_proto",
         "@com_github_grpc_grpc//:grpc++",
         "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/base:nullability",
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/status",
@@ -477,6 +478,7 @@ cc_test(
     deps = [
         ":global_memory_pooling_backend",
         ":kv_cache_store_backend",
+        ":kv_cache_store_backend_factory",
         ":kv_cache_store_client",
         ":raiden_id",
         "//tpu_raiden/core:kv_manager_holder",

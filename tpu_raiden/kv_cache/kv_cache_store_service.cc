@@ -41,7 +41,6 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
-#include "absl/synchronization/mutex.h"
 #include "grpcpp/server_context.h"
 #include "grpcpp/support/status.h"
 #include "xla/tsl/concurrency/future.h"
@@ -60,26 +59,10 @@ KVCacheStoreServiceImpl::KVCacheStoreServiceImpl(
     tpu_raiden::controller::RaidenController* controller)
     : backend_(backend), controller_(controller) {}
 
-void KVCacheStoreServiceImpl::SetBackendAndController(
-    KVCacheStoreBackend* backend,
-    tpu_raiden::controller::RaidenController* controller) {
-  absl::MutexLock lock(mutex_);
-  backend_ = backend;
-  controller_ = controller;
-}
-
 ::grpc::Status KVCacheStoreServiceImpl::Fetch(
     ::grpc::ServerContext* context, const proto::FetchRequest* request,
     proto::FetchResponse* response) {
-  KVCacheStoreBackend* backend = nullptr;
-  tpu_raiden::controller::RaidenController* controller = nullptr;
-  {
-    absl::MutexLock lock(mutex_);
-    backend = backend_;
-    controller = controller_;
-  }
-
-  if (backend == nullptr || controller == nullptr) {
+  if (backend_ == nullptr || controller_ == nullptr) {
     return ::grpc::Status(::grpc::StatusCode::FAILED_PRECONDITION,
                           "Backend or RaidenController non-initialized");
   }
@@ -103,7 +86,7 @@ void KVCacheStoreServiceImpl::SetBackendAndController(
   // STEP 1: Validation
   // Validate block_hashes exist in local index and reside in host memory.
   // =========================================================================
-  auto lookup_or = backend->Lookup(block_hashes);
+  auto lookup_or = backend_->Lookup(block_hashes);
   if (!lookup_or.ok()) {
     return ::grpc::Status(
         ::grpc::StatusCode::NOT_FOUND,
@@ -133,7 +116,7 @@ void KVCacheStoreServiceImpl::SetBackendAndController(
   // STEP 2: Pinning
   // Protect source host blocks against LRU eviction during DMA transfer.
   // =========================================================================
-  if (!backend->Pin(block_hashes)) {
+  if (!backend_->Pin(block_hashes)) {
     return ::grpc::Status(::grpc::StatusCode::RESOURCE_EXHAUSTED,
                           "Failed to pin host blocks; blocks may be locked or "
                           "undergoing eviction.");
@@ -145,7 +128,7 @@ void KVCacheStoreServiceImpl::SetBackendAndController(
   // or RPC cancellation.
   // =========================================================================
   auto unpin_cleanup = absl::MakeCleanup(
-      [backend, &block_hashes]() { backend->Release(block_hashes); });
+      [this, &block_hashes]() { backend_->Release(block_hashes); });
 
   // =========================================================================
   // STEP 4: Transfer Execution
@@ -180,7 +163,7 @@ void KVCacheStoreServiceImpl::SetBackendAndController(
   }
 
   tsl::Future<> transfer_future =
-      controller->TransferBuffers(src_buffers, dst_buffers);
+      controller_->TransferBuffers(src_buffers, dst_buffers);
 
   absl::Status transfer_status = transfer_future.Await();
 

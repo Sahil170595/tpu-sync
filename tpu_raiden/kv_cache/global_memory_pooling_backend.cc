@@ -24,10 +24,12 @@
 #include <utility>
 #include <vector>
 
+#include "absl/base/nullability.h"
 #include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
+#include "absl/strings/string_view.h"
 #include "absl/synchronization/mutex.h"
 #include "grpcpp/create_channel.h"
 #include "grpcpp/security/credentials.h"
@@ -37,6 +39,7 @@
 #include "tpu_raiden/core/status_macros.h"
 #include "tpu_raiden/kv_cache/global_registry/global_registry_client.h"
 #include "tpu_raiden/kv_cache/kv_cache_metadata.h"
+#include "tpu_raiden/kv_cache/kv_cache_store_backend.h"
 #include "tpu_raiden/kv_cache/kv_cache_store_backend_factory.h"
 #include "tpu_raiden/kv_cache/kv_cache_store_client.h"
 #include "tpu_raiden/kv_cache/kv_cache_store_server.h"
@@ -49,9 +52,10 @@ namespace kv_cache {
 
 GlobalMemoryPoolingBackend::GlobalMemoryPoolingBackend(
     std::shared_ptr<global_registry::GlobalRegistryClient> registry_client,
-    RaidenId raiden_id)
+    RaidenId raiden_id, tpu_raiden::controller::RaidenController* controller)
     : registry_client_(std::move(registry_client)),
       raiden_id_(std::move(raiden_id)),
+      controller_(controller),
       server_(KVCacheStoreServer::Create()) {}
 
 GlobalMemoryPoolingBackend::~GlobalMemoryPoolingBackend() {
@@ -60,17 +64,32 @@ GlobalMemoryPoolingBackend::~GlobalMemoryPoolingBackend() {
   }
 }
 
-void GlobalMemoryPoolingBackend::SetRaidenController(
-    tpu_raiden::controller::RaidenController* controller) {
-  controller_ = controller;
-  if (server_ && server_->GetGrpcPort() == 0) {
-    auto status = server_->StartServer(this, controller_, "[::]:0");
-    if (!status.ok()) {
-      LOG(WARNING)
-          << "Failed to start KVCacheStoreServer in SetRaidenController: "
-          << status.message();
+absl::Status GlobalMemoryPoolingBackend::StartServer(
+    absl::string_view server_address) {
+  if (controller_ == nullptr) {
+    return absl::FailedPreconditionError(
+        "Cannot start KVCacheStoreServer without a RaidenController.");
+  }
+  if (!server_) {
+    server_ = KVCacheStoreServer::Create();
+  }
+
+  std::string target_host(server_address);
+  if (target_host.empty()) {
+    std::string ctrl_addr = controller_->controller_address();
+    if (!ctrl_addr.empty()) {
+      size_t last_colon = ctrl_addr.rfind(':');
+      size_t last_bracket = ctrl_addr.rfind(']');
+      if (last_colon != std::string::npos &&
+          (last_bracket == std::string::npos || last_colon > last_bracket)) {
+        target_host = ctrl_addr.substr(0, last_colon);
+      } else {
+        target_host = ctrl_addr;
+      }
     }
   }
+
+  return server_->StartServer(this, controller_, target_host);
 }
 
 std::string GlobalMemoryPoolingBackend::GetServerAddress() const {
@@ -328,25 +347,44 @@ tsl::Future<> GlobalMemoryPoolingBackend::Load(
   return load_future;
 }
 
+absl::StatusOr<std::shared_ptr<KVCacheStoreBackend>>
+GlobalMemoryPoolingBackend::Create(const BackendConfig& config) {
+  if (config.global_registry_address.empty()) {
+    return absl::InvalidArgumentError(
+        "global_memory_pooling backend requires non-empty "
+        "global_registry_address");
+  }
+  auto channel = grpc::CreateChannel(config.global_registry_address,
+                                     grpc::InsecureChannelCredentials());
+  auto client = std::make_shared<
+      ::tpu_raiden::kv_cache::global_registry::GlobalRegistryClient>(channel);
+  return std::shared_ptr<GlobalMemoryPoolingBackend>(
+      new GlobalMemoryPoolingBackend(client, config.raiden_id, nullptr));
+}
+
+absl::StatusOr<std::shared_ptr<KVCacheStoreBackend>>
+GlobalMemoryPoolingBackend::Create(
+    const BackendConfig& config,
+    tpu_raiden::controller::RaidenController* absl_nonnull controller) {
+  if (config.global_registry_address.empty()) {
+    return absl::InvalidArgumentError(
+        "global_memory_pooling backend requires non-empty "
+        "global_registry_address");
+  }
+  auto channel = grpc::CreateChannel(config.global_registry_address,
+                                     grpc::InsecureChannelCredentials());
+  auto client = std::make_shared<
+      ::tpu_raiden::kv_cache::global_registry::GlobalRegistryClient>(channel);
+  auto backend = std::shared_ptr<GlobalMemoryPoolingBackend>(
+      new GlobalMemoryPoolingBackend(client, config.raiden_id, controller));
+  RETURN_IF_ERROR(backend->StartServer(""));
+  return backend;
+}
+
 REGISTER_KV_CACHE_STORE_BACKEND(
     "GlobalMemoryPoolingBackend",
-    [](const ::tpu_raiden::kv_cache::BackendConfig& config)
-        -> absl::StatusOr<
-            std::shared_ptr<::tpu_raiden::kv_cache::KVCacheStoreBackend>> {
-      if (config.global_registry_address.empty()) {
-        return absl::InvalidArgumentError(
-            "global_memory_pooling backend requires non-empty "
-            "global_registry_address");
-      }
-      auto channel = grpc::CreateChannel(config.global_registry_address,
-                                         grpc::InsecureChannelCredentials());
-      auto client = std::make_shared<
-          ::tpu_raiden::kv_cache::global_registry::GlobalRegistryClient>(
-          channel);
-      return std::make_shared<
-          ::tpu_raiden::kv_cache::GlobalMemoryPoolingBackend>(client,
-                                                              config.raiden_id);
-    });
+    static_cast<absl::StatusOr<std::shared_ptr<KVCacheStoreBackend>> (*)(
+        const BackendConfig&)>(GlobalMemoryPoolingBackend::Create));
 
 }  // namespace kv_cache
 }  // namespace tpu_raiden

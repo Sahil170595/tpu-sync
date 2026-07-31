@@ -177,34 +177,6 @@ TEST_F(KVCacheStoreServerTest, StartServerWithRawPointerStore) {
   EXPECT_TRUE(server_->GetServerAddress().empty());
 }
 
-TEST_F(KVCacheStoreServerTest, SetBackendAndControllerUpdatesOnRunningServer) {
-  server_ = KVCacheStoreServer::Create();
-  ASSERT_OK(server_->StartServer(store_->backend().get(),
-                                 store_->raiden_controller(), "[::]:0"));
-
-  RaidenId dst_raiden_id2{"dst_job_2", "0", "dst_data_2", 0};
-  auto store2 = std::make_unique<KVCacheStore>(
-      /*capacity=*/100, orchestrator_address_, dst_raiden_id2,
-      /*num_shards=*/1,
-      /*shard_size_bytes=*/1024, orchestrator_address_,
-      /*raiden_controller_address=*/"");
-
-  // Dynamic update with raw pointer
-  server_->SetBackendAndController(store2->backend().get(),
-                                   store2->raiden_controller());
-
-  // Dynamic update with shared_ptr (passing raw pointer backend)
-  auto store3 = std::make_shared<KVCacheStore>(
-      /*capacity=*/100, orchestrator_address_, dst_raiden_id2,
-      /*num_shards=*/1,
-      /*shard_size_bytes=*/1024, orchestrator_address_,
-      /*raiden_controller_address=*/"");
-  server_->SetBackendAndController(store3->backend().get(),
-                                   store3->raiden_controller());
-
-  server_->Shutdown();
-}
-
 TEST_F(KVCacheStoreServerTest, RestartServerAfterShutdown) {
   server_ = KVCacheStoreServer::Create();
   ASSERT_OK(server_->StartServer(store_->backend().get(),
@@ -264,6 +236,14 @@ TEST_F(KVCacheStoreServerTest, StartServerWithInvalidAddressFails) {
                           "invalid_address:999999");
   EXPECT_FALSE(status.ok());
   EXPECT_EQ(server->GetGrpcPort(), 0);
+}
+
+TEST_F(KVCacheStoreServerTest, StartServerWithHostOnlySucceeds) {
+  auto server = KVCacheStoreServer::Create();
+  ASSERT_OK(server->StartServer(store_->backend().get(),
+                                store_->raiden_controller(), "127.0.0.1"));
+  EXPECT_GT(server->GetGrpcPort(), 0);
+  server->Shutdown();
 }
 
 }  // namespace

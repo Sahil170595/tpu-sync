@@ -38,6 +38,7 @@
 #include "tpu_raiden/kv_cache/global_registry/global_registry_client.h"
 #include "tpu_raiden/kv_cache/global_registry/global_registry_server.h"
 #include "tpu_raiden/kv_cache/kv_cache_store_backend.h"
+#include "tpu_raiden/kv_cache/kv_cache_store_backend_factory.h"
 #include "tpu_raiden/kv_cache/kv_cache_store_client.h"
 #include "tpu_raiden/kv_cache/raiden_id.h"
 
@@ -71,10 +72,27 @@ TEST(GlobalMemoryPoolingBackendTest, LookupReturnsRemoteDescriptors) {
   ASSERT_TRUE(registry_client->Register(regs).ok());
 
   RaidenId local_node_id{"local_job", "0", "data", 0};
-  GlobalMemoryPoolingBackend backend(registry_client, local_node_id);
-  EXPECT_EQ(backend.name(), "GlobalMemoryPoolingBackend");
+  rpc::RaidenIdProto unit_proto;
+  unit_proto.set_job_name(local_node_id.job_name);
+  unit_proto.set_job_replica_id(local_node_id.job_replica_id);
+  unit_proto.set_data_name(local_node_id.data_name);
+  unit_proto.set_data_replica_idx(local_node_id.data_replica_idx);
 
-  auto lookup_res = backend.Lookup({"r_hash1", "r_hash2"});
+  controller::RaidenController controller(unit_proto, /*num_blocks=*/100,
+                                          /*num_shards=*/1,
+                                          /*shard_size_bytes=*/1024);
+
+  BackendConfig config;
+  config.type = "GlobalMemoryPoolingBackend";
+  config.global_registry_address = server_address;
+  config.raiden_id = local_node_id;
+
+  auto backend_or = GlobalMemoryPoolingBackend::Create(config, &controller);
+  ASSERT_OK(backend_or.status());
+  auto backend = *backend_or;
+  EXPECT_EQ(backend->name(), "GlobalMemoryPoolingBackend");
+
+  auto lookup_res = backend->Lookup({"r_hash1", "r_hash2"});
   ASSERT_TRUE(lookup_res.ok());
   EXPECT_EQ(lookup_res->size(), 2);
   EXPECT_EQ((*lookup_res)[0].first, "r_hash1");
@@ -87,14 +105,15 @@ TEST(GlobalMemoryPoolingBackendTest, LookupReturnsRemoteDescriptors) {
   EXPECT_EQ((*lookup_res)[1].second.host_block_id, 43);
 
   // Lookup with miss stops at miss
-  auto partial_res = backend.Lookup({"r_hash1", "missing_hash"});
+  auto partial_res = backend->Lookup({"r_hash1", "missing_hash"});
   ASSERT_TRUE(partial_res.ok());
   EXPECT_EQ(partial_res->size(), 1);
 
   server->Shutdown();
 }
 
-TEST(GlobalMemoryPoolingBackendTest, ServerLifecycleAndSetRaidenController) {
+TEST(GlobalMemoryPoolingBackendTest,
+     ServerLifecycleAndControllerInitialization) {
   auto service = std::make_unique<global_registry::GlobalRegistryServiceImpl>();
   grpc::ServerBuilder builder;
   int port = 0;
@@ -104,17 +123,11 @@ TEST(GlobalMemoryPoolingBackendTest, ServerLifecycleAndSetRaidenController) {
   auto server = builder.BuildAndStart();
   std::string server_address = "localhost:" + std::to_string(port);
 
-  auto channel =
-      grpc::CreateChannel(server_address, grpc::InsecureChannelCredentials());
-  auto registry_client =
-      std::make_shared<global_registry::GlobalRegistryClient>(channel);
-
   RaidenId node_id{"node_job", "0", "data", 0};
-  GlobalMemoryPoolingBackend backend(registry_client, node_id);
-
-  EXPECT_EQ(backend.GetGrpcPort(), 0);
-  EXPECT_TRUE(backend.GetServerAddress().empty());
-  EXPECT_NE(backend.server(), nullptr);
+  BackendConfig config;
+  config.type = "GlobalMemoryPoolingBackend";
+  config.global_registry_address = server_address;
+  config.raiden_id = node_id;
 
   // Create RaidenController
   rpc::RaidenIdProto unit_proto;
@@ -127,12 +140,42 @@ TEST(GlobalMemoryPoolingBackendTest, ServerLifecycleAndSetRaidenController) {
                                           /*num_shards=*/1,
                                           /*shard_size_bytes=*/1024);
 
-  backend.SetRaidenController(&controller);
-
-  EXPECT_GT(backend.GetGrpcPort(), 0);
-  EXPECT_FALSE(backend.GetServerAddress().empty());
+  auto backend_or = GlobalMemoryPoolingBackend::Create(config, &controller);
+  ASSERT_OK(backend_or.status());
+  auto backend =
+      std::dynamic_pointer_cast<GlobalMemoryPoolingBackend>(*backend_or);
+  ASSERT_NE(backend, nullptr);
+  EXPECT_GT(backend->GetGrpcPort(), 0);
+  EXPECT_FALSE(backend->GetServerAddress().empty());
 
   server->Shutdown();
+}
+
+TEST(GlobalMemoryPoolingBackendTest, StartServerStripsControllerPort) {
+  RaidenId node_id{"node_job", "0", "data", 0};
+  rpc::RaidenIdProto unit_proto;
+  unit_proto.set_job_name(node_id.job_name);
+  unit_proto.set_job_replica_id(node_id.job_replica_id);
+  unit_proto.set_data_name(node_id.data_name);
+  unit_proto.set_data_replica_idx(node_id.data_replica_idx);
+
+  controller::RaidenController controller(
+      unit_proto, /*num_blocks=*/100, /*num_shards=*/1,
+      /*shard_size_bytes=*/1024, /*raiden_orchestrator_address=*/"",
+      /*raiden_controller_address=*/"127.0.0.1:12345");
+
+  BackendConfig config;
+  config.type = "GlobalMemoryPoolingBackend";
+  config.global_registry_address = "localhost:0";
+  config.raiden_id = node_id;
+
+  auto backend_or = GlobalMemoryPoolingBackend::Create(config, &controller);
+  ASSERT_OK(backend_or.status());
+  auto backend =
+      std::dynamic_pointer_cast<GlobalMemoryPoolingBackend>(*backend_or);
+  ASSERT_NE(backend, nullptr);
+  EXPECT_GT(backend->GetGrpcPort(), 0);
+  EXPECT_NE(backend->GetGrpcPort(), 12345);
 }
 
 TEST(GlobalMemoryPoolingBackendTest, EndToEndFetchRPC) {
@@ -209,8 +252,6 @@ TEST(GlobalMemoryPoolingBackendTest, EndToEndFetchRPC) {
   ASSERT_OK(registry_client->Register(registrations));
 
   // 6. Create destination GlobalMemoryPoolingBackend & RaidenController
-  GlobalMemoryPoolingBackend backend(registry_client, dst_raiden_id);
-
   rpc::RaidenIdProto dst_unit_proto;
   dst_unit_proto.set_job_name(dst_raiden_id.job_name);
   dst_unit_proto.set_job_replica_id(dst_raiden_id.job_replica_id);
@@ -222,17 +263,28 @@ TEST(GlobalMemoryPoolingBackendTest, EndToEndFetchRPC) {
       /*shard_size_bytes=*/1024, orchestrator_address,
       /*raiden_controller_address=*/"");
 
+  BackendConfig dst_config;
+  dst_config.type = "GlobalMemoryPoolingBackend";
+  dst_config.global_registry_address = reg_address;
+  dst_config.raiden_id = dst_raiden_id;
+
+  auto backend_or =
+      GlobalMemoryPoolingBackend::Create(dst_config, &dst_controller);
+  ASSERT_OK(backend_or.status());
+  auto backend =
+      std::dynamic_pointer_cast<GlobalMemoryPoolingBackend>(*backend_or);
+  ASSERT_NE(backend, nullptr);
+
   core::controller::RaidenControllerClient dst_controller_client(
       dst_controller.controller_address());
   ASSERT_OK(dst_controller_client.RegisterWorker(
       "dst_worker_0", test_worker_server->server_address,
       {{test_worker_server->server_address, {}}}));
 
-  backend.SetRaidenController(&dst_controller);
-  EXPECT_GT(backend.GetGrpcPort(), 0);
+  EXPECT_GT(backend->GetGrpcPort(), 0);
 
   // 7. Issue Fetch RPC using KVCacheStoreClient
-  auto client_channel = grpc::CreateChannel(backend.GetServerAddress(),
+  auto client_channel = grpc::CreateChannel(backend->GetServerAddress(),
                                             grpc::InsecureChannelCredentials());
   KVCacheStoreClient client(client_channel);
 
@@ -250,31 +302,6 @@ TEST(GlobalMemoryPoolingBackendTest, EndToEndFetchRPC) {
   reg_server->Shutdown();
 }
 
-TEST(GlobalMemoryPoolingBackendTest, LoadFailsWithoutController) {
-  auto service = std::make_unique<global_registry::GlobalRegistryServiceImpl>();
-  grpc::ServerBuilder builder;
-  int port = 0;
-  builder.AddListeningPort("localhost:0", grpc::InsecureServerCredentials(),
-                           &port);
-  builder.RegisterService(service.get());
-  auto server = builder.BuildAndStart();
-  std::string server_address = "localhost:" + std::to_string(port);
-
-  auto channel =
-      grpc::CreateChannel(server_address, grpc::InsecureChannelCredentials());
-  auto registry_client =
-      std::make_shared<global_registry::GlobalRegistryClient>(channel);
-
-  RaidenId node_id{"node_job", "0", "data", 0};
-  GlobalMemoryPoolingBackend backend(registry_client, node_id);
-
-  std::vector<std::string> hashes = {"hash1"};
-  auto load_future = backend.Load(node_id, hashes);
-  EXPECT_THAT(load_future.Await(),
-              absl_testing::StatusIs(absl::StatusCode::kFailedPrecondition));
-
-  server->Shutdown();
-}
 
 TEST(GlobalMemoryPoolingBackendTest, LoadMismatchedDeviceBlockCount) {
   auto service = std::make_unique<global_registry::GlobalRegistryServiceImpl>();
@@ -285,14 +312,7 @@ TEST(GlobalMemoryPoolingBackendTest, LoadMismatchedDeviceBlockCount) {
   builder.RegisterService(service.get());
   auto server = builder.BuildAndStart();
   std::string server_address = "localhost:" + std::to_string(port);
-
-  auto channel =
-      grpc::CreateChannel(server_address, grpc::InsecureChannelCredentials());
-  auto registry_client =
-      std::make_shared<global_registry::GlobalRegistryClient>(channel);
-
   RaidenId node_id{"node_job", "0", "data", 0};
-  GlobalMemoryPoolingBackend backend(registry_client, node_id);
 
   rpc::RaidenIdProto unit_proto;
   unit_proto.set_job_name(node_id.job_name);
@@ -303,11 +323,20 @@ TEST(GlobalMemoryPoolingBackendTest, LoadMismatchedDeviceBlockCount) {
   controller::RaidenController controller(unit_proto, /*num_blocks=*/100,
                                           /*num_shards=*/1,
                                           /*shard_size_bytes=*/1024);
-  backend.SetRaidenController(&controller);
+  BackendConfig config;
+  config.type = "GlobalMemoryPoolingBackend";
+  config.global_registry_address = server_address;
+  config.raiden_id = node_id;
+
+  auto backend_or = GlobalMemoryPoolingBackend::Create(config, &controller);
+  ASSERT_OK(backend_or.status());
+  auto backend =
+      std::dynamic_pointer_cast<GlobalMemoryPoolingBackend>(*backend_or);
+  ASSERT_NE(backend, nullptr);
 
   std::vector<std::string> hashes = {"hash1", "hash2"};
   std::vector<int32_t> dev_ids = {10};  // Mismatched count
-  auto load_future = backend.Load(node_id, hashes, dev_ids);
+  auto load_future = backend->Load(node_id, hashes, dev_ids);
   EXPECT_THAT(load_future.Await(),
               absl_testing::StatusIs(absl::StatusCode::kInvalidArgument));
 
@@ -352,18 +381,35 @@ TEST(GlobalMemoryPoolingBackendTest, LoadSuccess) {
                                           /*shard_size_bytes=*/1024);
 
   // Setup fake server for remote node to process Fetch
-  auto remote_backend = std::make_unique<GlobalMemoryPoolingBackend>(
-      registry_client, remote_node_id);
-  remote_backend->SetRaidenController(&controller);
+  BackendConfig remote_config;
+  remote_config.type = "GlobalMemoryPoolingBackend";
+  remote_config.global_registry_address = server_address;
+  remote_config.raiden_id = remote_node_id;
 
-  GlobalMemoryPoolingBackend backend(registry_client, local_node_id);
-  backend.SetRaidenController(&controller);
+  auto remote_backend_or =
+      GlobalMemoryPoolingBackend::Create(remote_config, &controller);
+  ASSERT_OK(remote_backend_or.status());
+  auto remote_backend =
+      std::dynamic_pointer_cast<GlobalMemoryPoolingBackend>(*remote_backend_or);
+  ASSERT_NE(remote_backend, nullptr);
+
+  BackendConfig local_config;
+  local_config.type = "GlobalMemoryPoolingBackend";
+  local_config.global_registry_address = server_address;
+  local_config.raiden_id = local_node_id;
+
+  auto local_backend_or =
+      GlobalMemoryPoolingBackend::Create(local_config, &controller);
+  ASSERT_OK(local_backend_or.status());
+  auto backend =
+      std::dynamic_pointer_cast<GlobalMemoryPoolingBackend>(*local_backend_or);
+  ASSERT_NE(backend, nullptr);
 
   // Inject client connected directly to remote server
   auto client_channel = grpc::CreateChannel(remote_backend->GetServerAddress(),
                                             grpc::InsecureChannelCredentials());
   auto store_client = std::make_shared<KVCacheStoreClient>(client_channel);
-  backend.SetStoreClient(remote_node_id, store_client);
+  backend->SetStoreClient(remote_node_id, store_client);
 
   // Register local worker in controller
   auto test_worker_server = controller::CreateTestWorkerServer();
@@ -381,7 +427,7 @@ TEST(GlobalMemoryPoolingBackendTest, LoadSuccess) {
   // Perform Load
   std::vector<std::string> hashes = {"load_hash_1"};
   std::vector<int32_t> dev_ids = {5};
-  auto load_future = backend.Load(remote_node_id, hashes, dev_ids);
+  auto load_future = backend->Load(remote_node_id, hashes, dev_ids);
   EXPECT_OK(load_future.Await());
 
   server->Shutdown();

@@ -64,12 +64,6 @@ class KVCacheStoreServer {
                            tpu_raiden::controller::RaidenController* controller,
                            absl::string_view server_address = "");
 
-  // Updates the backing KVCacheStoreBackend and RaidenController while running
-  // or before start.
-  void SetBackendAndController(
-      KVCacheStoreBackend* backend,
-      tpu_raiden::controller::RaidenController* controller);
-
   // Returns the port the gRPC server is listening on. Returns 0 if not running.
   int GetGrpcPort() const;
 

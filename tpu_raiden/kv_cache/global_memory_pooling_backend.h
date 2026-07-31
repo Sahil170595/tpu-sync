@@ -22,16 +22,19 @@
 #include <utility>
 #include <vector>
 
+#include "absl/base/nullability.h"
 #include "absl/base/thread_annotations.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/string_view.h"
 #include "absl/synchronization/mutex.h"
 #include "absl/types/span.h"
 #include "xla/tsl/concurrency/future.h"
 #include "tpu_raiden/core/controller/raiden_controller.h"
 #include "tpu_raiden/kv_cache/global_registry/global_registry_client.h"
 #include "tpu_raiden/kv_cache/kv_cache_store_backend.h"
+#include "tpu_raiden/kv_cache/kv_cache_store_backend_factory.h"
 #include "tpu_raiden/kv_cache/kv_cache_store_client.h"
 #include "tpu_raiden/kv_cache/kv_cache_store_server.h"
 #include "tpu_raiden/kv_cache/raiden_id.h"
@@ -42,16 +45,15 @@ namespace kv_cache {
 
 class GlobalMemoryPoolingBackend : public KVCacheStoreBackend {
  public:
-  explicit GlobalMemoryPoolingBackend(
-      std::shared_ptr<global_registry::GlobalRegistryClient> registry_client,
-      RaidenId raiden_id = {});
+  static absl::StatusOr<std::shared_ptr<KVCacheStoreBackend>> Create(
+      const BackendConfig& config);
+  static absl::StatusOr<std::shared_ptr<KVCacheStoreBackend>> Create(
+      const BackendConfig& config,
+      tpu_raiden::controller::RaidenController* absl_nonnull controller);
 
   ~GlobalMemoryPoolingBackend() override;
 
   std::string name() const override { return "GlobalMemoryPoolingBackend"; }
-
-  void SetRaidenController(
-      tpu_raiden::controller::RaidenController* controller) override;
 
   absl::StatusOr<BlockSliceList> Lookup(
       absl::Span<const std::string> block_hashes,
@@ -102,9 +104,16 @@ class GlobalMemoryPoolingBackend : public KVCacheStoreBackend {
                       std::shared_ptr<KVCacheStoreClient> client);
 
  private:
+  explicit GlobalMemoryPoolingBackend(
+      std::shared_ptr<global_registry::GlobalRegistryClient> registry_client,
+      RaidenId raiden_id = {},
+      tpu_raiden::controller::RaidenController* controller = nullptr);
+
+  absl::Status StartServer(absl::string_view server_address);
+
   std::shared_ptr<global_registry::GlobalRegistryClient> registry_client_;
   RaidenId raiden_id_;
-  tpu_raiden::controller::RaidenController* controller_ = nullptr;
+  tpu_raiden::controller::RaidenController* controller_;
   std::unique_ptr<KVCacheStoreServer> server_;
 
   mutable absl::Mutex mutex_;

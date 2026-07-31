@@ -79,6 +79,7 @@ cc_test(
     linkopts = ["-Wl,--allow-shlib-undefined"],
     deps = [
         ":weight_synchronizer_base",
+        "//tpu_raiden/core:raw_transfer_core",
         "//tpu_raiden/rpc:raiden_service_cc_proto",
         "@com_google_absl//absl/flags:flag",
         "@com_google_absl//absl/log",

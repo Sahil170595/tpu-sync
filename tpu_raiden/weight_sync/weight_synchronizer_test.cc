@@ -28,6 +28,7 @@
 #include "absl/status/status.h"
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/pjrt/plugin/xla_cpu/xla_cpu_pjrt_client.h"
+#include "tpu_raiden/core/raw_transfer_core.h"
 #include "tpu_raiden/rpc/raiden_service.pb.h"
 #include "tpu_raiden/weight_sync/weight_synchronizer_base.h"
 
@@ -493,10 +494,17 @@ TEST_F(WeightSynchronizerTest, PushWeightsReshardedSkipD2h) {
       << dest_buffer_status_or.status().message();
   auto dest_pjrt_buffer = std::move(dest_buffer_status_or.value());
 
-  std::vector<std::vector<xla::PjRtBuffer*>> src_buffers = {
-      {src_pjrt_buffer.get()}};
-  std::vector<std::vector<xla::PjRtBuffer*>> dest_buffers = {
-      {dest_pjrt_buffer.get()}};
+  auto src_handle_or =
+      raiden::RaidenBufferHandle::Acquire(src_pjrt_buffer.get());
+  ASSERT_TRUE(src_handle_or.ok()) << src_handle_or.status().message();
+  std::vector<std::vector<raiden::RaidenBufferHandle>> src_buffers = {
+      {src_handle_or.value()}};
+
+  auto dest_handle_or =
+      raiden::RaidenBufferHandle::Acquire(dest_pjrt_buffer.get());
+  ASSERT_TRUE(dest_handle_or.ok()) << dest_handle_or.status().message();
+  std::vector<std::vector<raiden::RaidenBufferHandle>> dest_buffers = {
+      {dest_handle_or.value()}};
 
   auto ws_source =
       std::make_unique<WeightSynchronizerBase>(src_buffers, /*local_port=*/0);

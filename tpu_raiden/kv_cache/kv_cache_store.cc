@@ -47,7 +47,6 @@
 #include "tpu_raiden/core/controller/raiden_controller.h"
 #include "tpu_raiden/core/numa_thread_pool.h"
 #include "tpu_raiden/core/status_macros.h"
-#include "tpu_raiden/kv_cache/global_memory_pooling_backend.h"
 #include "tpu_raiden/kv_cache/global_registry/global_registry_client.h"
 #include "tpu_raiden/kv_cache/host_offload_backend.h"
 #include "tpu_raiden/kv_cache/kv_cache_metadata.h"

@@ -105,19 +105,15 @@ TEST(KVCacheStoreBackendFactoryTest, BuiltInHostOffload) {
   EXPECT_EQ(err_or.status().code(), absl::StatusCode::kInvalidArgument);
 }
 
-TEST(KVCacheStoreBackendFactoryTest, BuiltInGlobalMemoryPooling) {
+TEST(KVCacheStoreBackendFactoryTest, HostOffloadWithGlobalRegistry) {
   BackendConfig config;
-  config.type = "GlobalMemoryPoolingBackend";
+  config.type = "HostOffloadBackend";
+  config.capacity = 50;
   config.global_registry_address = "localhost:50051";
 
   auto backend_or = KVCacheStoreBackendFactory::Create(config);
   ASSERT_TRUE(backend_or.ok()) << backend_or.status();
-  EXPECT_EQ((*backend_or)->name(), "GlobalMemoryPoolingBackend");
-
-  // Empty address error test
-  config.global_registry_address = "";
-  auto err_or = KVCacheStoreBackendFactory::Create(config);
-  EXPECT_EQ(err_or.status().code(), absl::StatusCode::kInvalidArgument);
+  EXPECT_EQ((*backend_or)->name(), "HostOffloadBackend");
 }
 
 TEST(KVCacheStoreBackendFactoryTest, AutoRegistrationMacro) {

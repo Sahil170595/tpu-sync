@@ -17,21 +17,30 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "absl/base/nullability.h"
 #include "absl/base/thread_annotations.h"
 #include "absl/container/flat_hash_map.h"
+#include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
 #include "absl/synchronization/mutex.h"
 #include "absl/types/span.h"
+#include "xla/tsl/concurrency/future.h"
+#include "tpu_raiden/kv_cache/global_registry/global_registry_client.h"
 #include "tpu_raiden/kv_cache/kv_cache_metadata.h"
 #include "tpu_raiden/kv_cache/kv_cache_store_backend.h"
+#include "tpu_raiden/kv_cache/kv_cache_store_backend_factory.h"
+#include "tpu_raiden/kv_cache/kv_cache_store_client.h"
+#include "tpu_raiden/kv_cache/kv_cache_store_server.h"
 #include "tpu_raiden/kv_cache/lru_cache.h"
 #include "tpu_raiden/kv_cache/raiden_id.h"
+#include "tpu_raiden/proto/kv_cache_store_service.pb.h"
 
 namespace tpu_raiden {
 
@@ -43,12 +52,20 @@ namespace kv_cache {
 
 class HostOffloadBackend : public KVCacheStoreBackend {
  public:
+  static absl::StatusOr<std::shared_ptr<KVCacheStoreBackend>> Create(
+      const BackendConfig& config);
+  static absl::StatusOr<std::shared_ptr<KVCacheStoreBackend>> Create(
+      const BackendConfig& config,
+      controller::RaidenController* absl_nonnull controller);
+
   explicit HostOffloadBackend(
       size_t capacity, std::optional<KVCacheMetadata> metadata = std::nullopt,
       RaidenId raiden_id = {},
-      controller::RaidenController* raiden_controller = nullptr);
+      controller::RaidenController* raiden_controller = nullptr,
+      std::shared_ptr<global_registry::GlobalRegistryClient> registry_client =
+          nullptr);
 
-  ~HostOffloadBackend() override = default;
+  ~HostOffloadBackend() override;
 
   std::string name() const override { return "HostOffloadBackend"; }
 
@@ -97,7 +114,17 @@ class HostOffloadBackend : public KVCacheStoreBackend {
     SetRaidenController(controller);
   }
 
+  // --- Global Memory Pooling & RPC Methods ---
+  absl::Status StartServer(absl::string_view server_address);
+
+  tsl::Future<> Load(const RaidenId& remote_id,
+                     absl::Span<const std::string> block_hashes,
+                     absl::Span<const int32_t> device_block_ids = {});
+
  private:
+  absl::StatusOr<std::shared_ptr<KVCacheStoreClient>> GetKVCacheStoreClient(
+      const RaidenId& remote_id);
+
   void SetMetadataEntry(absl::string_view hash, const RaidenBlockID& block)
       ABSL_EXCLUSIVE_LOCKS_REQUIRED(mutex_);
 
@@ -116,6 +143,13 @@ class HostOffloadBackend : public KVCacheStoreBackend {
       nullptr;
   absl::flat_hash_map<std::vector<std::string>, size_t> pending_eviction_counts_
       ABSL_GUARDED_BY(mutex_);
+
+  std::shared_ptr<global_registry::GlobalRegistryClient> registry_client_
+      ABSL_GUARDED_BY(mutex_);
+  std::unique_ptr<KVCacheStoreServer> server_ ABSL_GUARDED_BY(mutex_);
+  absl::flat_hash_map<RaidenId, std::shared_ptr<KVCacheStoreClient>,
+                      RaidenIdHash>
+      store_clients_ ABSL_GUARDED_BY(mutex_);
 };
 
 }  // namespace kv_cache

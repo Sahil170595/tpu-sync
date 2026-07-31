@@ -82,6 +82,10 @@ class RaidenManagerBase : public tpu_raiden::transport::BlockTransportDelegate {
                                 const uint8_t* data_ptr, size_t size_bytes,
                                 uint64_t uuid = 0, size_t layer_idx = 0);
 
+  absl::Status PushWeightsChunks(
+      const std::vector<transport::lib::BufferPushTask>& tasks, int parallelism,
+      uint64_t uuid);
+
   absl::Status RegisterExpectedChunks(uint64_t uuid, uint32_t expected_chunks);
 
   void ForgetPushProgress(uint64_t uuid);
@@ -135,7 +139,7 @@ class RaidenManagerBase : public tpu_raiden::transport::BlockTransportDelegate {
   std::optional<std::string> bind_ip_cfg_ = std::nullopt;
   std::vector<std::string> local_ips_;
 
-  void InitTransportServer();
+  tpu_raiden::transport::BlockTransport* InitTransportServer();
   virtual std::vector<HostNicAddress> GetHostNics() const;
 
   void DetectAndAssignNumaNode(

@@ -41,6 +41,7 @@
 #include "tpu_raiden/core/raiden_manager_base.h"
 #include "tpu_raiden/core/raw_transfer_core.h"
 #include "tpu_raiden/rpc/raiden_service.pb.h"
+#include "tpu_raiden/transport/lib/raw_buffer_transport.h"
 #include "tpu_raiden/weight_sync/tiling_utils.h"
 #include "tpu_raiden/weight_sync/weight_synchronizer_listener.h"
 
@@ -395,6 +396,7 @@ absl::Status WeightSynchronizerBase::PushWeightsResharded(
     VLOG(1) << "PushWeightsResharded: Skipping D2H copy.";
   }
 
+  std::vector<transport::lib::BufferPushTask> tasks;
   const auto& schedules = request.shard_push_schedules();
   for (size_t i = 0; i < num_shards_; ++i) {
     auto it = schedules.find(static_cast<int32_t>(i));
@@ -440,11 +442,20 @@ absl::Status WeightSynchronizerBase::PushWeightsResharded(
         }
 
         const uint8_t* data_ptr = base_host_ptr + curr_src_offset;
-        TF_RETURN_IF_ERROR(PushWeightsChunk(dst_peer, dst_shard_idx,
-                                            curr_dst_offset, data_ptr, size,
-                                            request.uuid(), layer_idx_to_use));
+        tasks.push_back({
+            .peer = dst_peer,
+            .buffer_id = static_cast<size_t>(layer_idx_to_use),
+            .dst_shard_idx = dst_shard_idx,
+            .dst_offset_bytes = curr_dst_offset,
+            .data_ptr = data_ptr,
+            .size_bytes = size,
+        });
       }
     }
+  }
+
+  if (!tasks.empty()) {
+    TF_RETURN_IF_ERROR(PushWeightsChunks(tasks, parallelism_, request.uuid()));
   }
   return absl::OkStatus();
 }
@@ -454,8 +465,7 @@ absl::Status WeightSynchronizerBase::OnDataReceived() {
     return absl::OkStatus();
   }
   TF_ASSIGN_OR_RETURN(raiden::PjRtCopyFuture h2d_future, H2d());
-  TF_RETURN_IF_ERROR(h2d_future.Await());
-  return absl::OkStatus();
+  return h2d_future.Await();
 }
 
 }  // namespace weight_sync

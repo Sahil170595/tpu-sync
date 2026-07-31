@@ -85,7 +85,7 @@ constexpr size_t kHeadPairBytes = 2 * kHeadDim * kItemSize;              // 512
 constexpr size_t kTokenStride = 2 * kNumKvHeads * kHeadDim * kItemSize;  // 1024
 constexpr int kPcpSize = 8;
 
-constexpr uint8_t kOpByteSlicePush = 5;
+constexpr uint8_t kOpBufferPush = 5;
 constexpr uint64_t kMagicUuid = 0x51E135;
 constexpr size_t kHeaderSize = 32;
 constexpr size_t kHelloSize = 32;  // 8 x uint32 LE
@@ -122,7 +122,7 @@ uint8_t FillPattern(int layer, int head) {
 void PackHeader(uint8_t* h, uint8_t variant, uint16_t layer, uint16_t block,
                 uint16_t iter, uint32_t payload) {
   std::memset(h, 0, kHeaderSize);
-  h[0] = kOpByteSlicePush;
+  h[0] = kOpBufferPush;
   h[1] = variant;
   std::memcpy(h + 2, &layer, 2);
   std::memcpy(h + 4, &block, 2);
@@ -409,7 +409,7 @@ int ReceiveStream(int fd, const Geometry& g, int iters, int warmup,
         if (st.ok()) {
           std::memcpy(&size, header + 12, 4);
           std::memcpy(&uuid, header + 20, 8);
-          if (header[0] != kOpByteSlicePush || header[1] != v ||
+          if (header[0] != kOpBufferPush || header[1] != v ||
               uuid != kMagicUuid || size != g.payload_per_block) {
             st = absl::InternalError("bad header");
           }

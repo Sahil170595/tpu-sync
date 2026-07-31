@@ -56,6 +56,7 @@ cc_library(
         "//tpu_raiden/core:status_macros",
         "//tpu_raiden/core:xla_raw_transfer_headers",
         "//tpu_raiden/rpc:raiden_service_cc_proto",
+        "//tpu_raiden/transport/lib:raw_buffer_transport",
         "@com_google_absl//absl/flags:flag",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/status",

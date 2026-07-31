@@ -92,6 +92,7 @@ cc_library(
         ":tpu_utils",
         ":xla_raw_transfer_headers",
         "//tpu_raiden/transport:block_transport",
+        "//tpu_raiden/transport/lib:raw_buffer_transport",
         "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/status",

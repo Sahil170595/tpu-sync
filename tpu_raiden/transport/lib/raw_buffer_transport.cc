@@ -23,6 +23,8 @@
 #include <sys/uio.h>
 #include <unistd.h>
 
+#include <algorithm>
+#include <atomic>
 #include <cerrno>
 #include <cstddef>
 #include <cstdint>
@@ -40,6 +42,10 @@
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "absl/synchronization/mutex.h"
+
+#ifndef IOV_MAX
+#define IOV_MAX 1024
+#endif
 #include "tpu_raiden/core/status_macros.h"
 #include "tpu_raiden/transport/lib/chunk.h"
 #include "tpu_raiden/transport/lib/socket/util.h"
@@ -48,7 +54,9 @@
 namespace tpu_raiden::transport::lib {
 
 using ::peregrine::ReadExact;
+using ::peregrine::ReadVExact;
 using ::peregrine::WriteExact;
+using ::peregrine::WriteVExact;
 
 namespace {
 absl::Status InternalError(absl::string_view msg, int _errno) {
@@ -262,7 +270,7 @@ absl::Status RawBufferTransport::ProcessPeerRequest(int client_fd) {
   ChunkHeader header = {};
   RETURN_IF_ERROR(ReadExact(client_fd, &header, sizeof(header)));
 
-  if (header.op == 5) {  // peer push request
+  if (header.op == kOpBufferPush) {  // peer push request
     const uint32_t dst_offset = header.remote_id;
     const uint32_t dst_shard_idx = header.local_id;
     const uint32_t size_bytes = header.count_or_size;
@@ -301,11 +309,11 @@ absl::Status RawBufferTransport::ProcessPeerRequest(int client_fd) {
       RETURN_IF_ERROR(raw_delegate_->OnDataReceived());
     }
 
-    uint8_t ack = 1;
+    const uint8_t ack = 1;
     RETURN_IF_ERROR(WriteExact(client_fd, &ack, 1));
     return absl::OkStatus();
 
-  } else if (header.op == 3) {  // peer pull request
+  } else if (header.op == kOpBufferPull) {  // peer pull request
     const uint32_t src_offset = header.remote_id;
     const uint32_t src_shard_idx = header.local_id;
     const uint32_t size_bytes = header.count_or_size;
@@ -319,6 +327,66 @@ absl::Status RawBufferTransport::ProcessPeerRequest(int client_fd) {
     }
     uint8_t* const src_ptr = base_host_ptr + src_offset;
     RETURN_IF_ERROR(WriteExact(client_fd, src_ptr, size_bytes));
+    return absl::OkStatus();
+
+  } else if (header.op == kOpBufferPushBatched) {  // peer batched push request
+    const uint32_t batch_size = header.count_or_size;
+    if (batch_size > IOV_MAX) {
+      return absl::InvalidArgumentError(absl::StrCat(
+          "Batch size ", batch_size, " exceeds IOV_MAX (", IOV_MAX, ")"));
+    }
+    std::vector<ChunkMetadata> metadata(batch_size);
+    RETURN_IF_ERROR(ReadExact(client_fd, metadata.data(),
+                              sizeof(ChunkMetadata) * batch_size));
+
+    std::vector<struct iovec> iovs;
+    iovs.reserve(batch_size);
+
+    for (uint32_t i = 0; i < batch_size; ++i) {
+      const auto& meta = metadata[i];
+      uint8_t* const base_host_ptr =
+          raw_delegate_->GetHostPointer(meta.layer_idx, meta.dst_shard_idx);
+      const size_t host_size =
+          raw_delegate_->GetHostSize(meta.layer_idx, meta.dst_shard_idx);
+      if (base_host_ptr == nullptr ||
+          meta.dst_offset_bytes + meta.size_bytes > host_size) {
+        return absl::InvalidArgumentError(
+            "Destination out of bounds in batched push");
+      }
+      struct iovec iov;
+      iov.iov_base = base_host_ptr + meta.dst_offset_bytes;
+      iov.iov_len = meta.size_bytes;
+      iovs.push_back(iov);
+    }
+
+    // Read all payloads directly using ReadVExact.
+    RETURN_IF_ERROR(ReadVExact(client_fd, iovs));
+
+    bool trigger_h2d = false;
+    if (header.uuid > 0) {
+      absl::MutexLock lock(raw_progress_mu_);
+      auto& prog = raw_progress_[header.uuid];
+      prog.completed_chunks += batch_size;
+      VLOG(1) << "Received batched chunks for uuid=" << header.uuid
+              << " batch_size=" << batch_size
+              << " progress=" << prog.completed_chunks << "/"
+              << (prog.expected_chunks.has_value()
+                      ? std::to_string(*prog.expected_chunks)
+                      : "unknown");
+      if (prog.expected_chunks.has_value() &&
+          prog.completed_chunks == *prog.expected_chunks) {
+        raw_progress_.erase(header.uuid);
+        trigger_h2d = true;
+        VLOG(1) << "Triggering H2D for uuid=" << header.uuid;
+      }
+    }
+
+    if (trigger_h2d) {
+      RETURN_IF_ERROR(raw_delegate_->OnDataReceived());
+    }
+
+    const uint8_t ack = 1;
+    RETURN_IF_ERROR(WriteExact(client_fd, &ack, 1));
     return absl::OkStatus();
 
   } else {
@@ -418,7 +486,7 @@ absl::Status RawBufferTransport::PullBuffer(
       absl::MakeCleanup([&] { ReturnConnection(ok_to_pool, fd, peer); });
 
   const ChunkHeader header = {
-      .op = 3,
+      .op = kOpBufferPull,
       .buffer_id = static_cast<uint16_t>(buffer_id),
       .remote_id = static_cast<uint32_t>(src_offset_bytes),
       .local_id = static_cast<uint32_t>(src_shard_idx),
@@ -479,7 +547,7 @@ absl::Status RawBufferTransport::PushBuffer(absl::string_view peer,
       absl::MakeCleanup([&] { ReturnConnection(ok_to_pool, fd, peer); });
 
   const ChunkHeader header = {
-      .op = 5,
+      .op = kOpBufferPush,
       .buffer_id = static_cast<uint16_t>(buffer_id),
       .remote_id = static_cast<uint32_t>(dst_offset_bytes),
       .local_id = static_cast<uint32_t>(dst_shard_idx),
@@ -498,6 +566,139 @@ absl::Status RawBufferTransport::PushBuffer(absl::string_view peer,
   RETURN_IF_ERROR(ReadExact(fd, &ack, 1));
   if (ack != 1) {
     return absl::InternalError("PushBuffer verification failed");
+  }
+
+  ok_to_pool = true;
+  return absl::OkStatus();
+}
+
+absl::Status RawBufferTransport::PushBuffers(
+    const std::vector<BufferPushTask>& tasks, int parallelism, uint64_t uuid) {
+  std::vector<BufferPushTask> sorted_tasks = tasks;
+  std::stable_sort(sorted_tasks.begin(), sorted_tasks.end(),
+                   [](const BufferPushTask& a, const BufferPushTask& b) {
+                     return a.peer < b.peer;
+                   });
+
+  struct BatchInfo {
+    std::string peer;
+    size_t start_idx;
+    size_t count;
+  };
+
+  std::vector<BatchInfo> batches;
+  for (size_t i = 0; i < sorted_tasks.size();) {
+    std::string peer = sorted_tasks[i].peer;
+    size_t start = i;
+    size_t count = 0;
+    while (i < sorted_tasks.size() && sorted_tasks[i].peer == peer &&
+           count < IOV_MAX) {
+      count++;
+      i++;
+    }
+    batches.push_back({peer, start, count});
+  }
+
+  if (batches.empty()) {
+    return absl::OkStatus();
+  }
+
+  if (parallelism <= 1 || batches.size() == 1) {
+    for (const auto& batch : batches) {
+      RETURN_IF_ERROR(PushBatch(batch.peer, sorted_tasks, batch.start_idx,
+                                batch.count, uuid));
+    }
+    return absl::OkStatus();
+  }
+
+  // Parallel execution using standard threads.
+  std::vector<std::thread> threads;
+  std::atomic<size_t> next_batch_idx(0);
+  std::vector<absl::Status> statuses(batches.size(), absl::OkStatus());
+
+  int num_threads = std::min(static_cast<size_t>(parallelism), batches.size());
+  threads.reserve(num_threads);
+  for (int t = 0; t < num_threads; ++t) {
+    threads.push_back(std::thread([&]() {
+      while (true) {
+        size_t idx = next_batch_idx.fetch_add(1);
+        if (idx >= batches.size()) break;
+        const auto& batch = batches[idx];
+        statuses[idx] = PushBatch(batch.peer, sorted_tasks, batch.start_idx,
+                                  batch.count, uuid);
+      }
+    }));
+  }
+
+  for (auto& thread : threads) {
+    if (thread.joinable()) {
+      thread.join();
+    }
+  }
+
+  for (const auto& s : statuses) {
+    if (!s.ok()) return s;
+  }
+  return absl::OkStatus();
+}
+
+absl::Status RawBufferTransport::PushBatch(
+    absl::string_view peer, const std::vector<BufferPushTask>& tasks,
+    size_t start_idx, size_t batch_size, uint64_t uuid) {
+  if (peer.empty()) {
+    return absl::InvalidArgumentError(
+        "Destination peer address cannot be empty");
+  }
+
+  ASSIGN_OR_RETURN(const int fd, BorrowConnection(peer));
+  bool ok_to_pool = false;
+  auto fd_cleaner =
+      absl::MakeCleanup([&] { ReturnConnection(ok_to_pool, fd, peer); });
+
+  const ChunkHeader header = {
+      .op = kOpBufferPushBatched,
+      .buffer_id = 0,
+      .remote_id = 0,
+      .local_id = 0,
+      .count_or_size = static_cast<uint32_t>(batch_size),
+      .uuid = uuid,
+  };
+
+  VLOG(1) << "Pushing batch to peer=" << peer << " uuid=" << uuid
+          << " batch_size=" << batch_size;
+
+  RETURN_IF_ERROR(WriteExact(fd, &header, sizeof(header)));
+
+  std::vector<ChunkMetadata> metadata;
+  metadata.reserve(batch_size);
+  for (size_t i = 0; i < batch_size; ++i) {
+    const auto& task = tasks[start_idx + i];
+    metadata.push_back({
+        .layer_idx = static_cast<uint32_t>(task.buffer_id),
+        .dst_shard_idx = static_cast<uint32_t>(task.dst_shard_idx),
+        .dst_offset_bytes = static_cast<uint32_t>(task.dst_offset_bytes),
+        .size_bytes = static_cast<uint32_t>(task.size_bytes),
+    });
+  }
+  RETURN_IF_ERROR(
+      WriteExact(fd, metadata.data(), sizeof(ChunkMetadata) * batch_size));
+
+  std::vector<struct iovec> iovs;
+  iovs.reserve(batch_size);
+  for (size_t i = 0; i < batch_size; ++i) {
+    const auto& task = tasks[start_idx + i];
+    struct iovec iov;
+    iov.iov_base = const_cast<uint8_t*>(task.data_ptr);
+    iov.iov_len = task.size_bytes;
+    iovs.push_back(iov);
+  }
+
+  RETURN_IF_ERROR(WriteVExact(fd, iovs));
+
+  uint8_t ack = 0;
+  RETURN_IF_ERROR(ReadExact(fd, &ack, 1));
+  if (ack != 1) {
+    return absl::InternalError("PushBatch verification failed");
   }
 
   ok_to_pool = true;

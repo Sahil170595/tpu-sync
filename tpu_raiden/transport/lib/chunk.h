@@ -19,11 +19,15 @@
 
 namespace tpu_raiden::transport::lib {
 
+inline constexpr uint8_t kOpBufferPull = 3;
+inline constexpr uint8_t kOpBufferPush = 5;
+inline constexpr uint8_t kOpBufferPushBatched = 7;
+
 // Compact 32-byte binary chunk header layout.
 // TODO(swasthi): serialization using flatbuffer.
 // TODO(swasthi): add version field to prevent breaking changes.
 struct alignas(8) ChunkHeader {
-  uint8_t op;     // 3=BytePull, 5=ByteSlicePush, 1,2,4,6=HigherLevelBlockOps
+  uint8_t op;     // OP code. See kOp* constants.
   uint8_t flags;  // Holds major_order or protocol flags
   uint16_t buffer_id;      // Multidimensional Buffer / Layer ID coordinate
   uint16_t reserved;       // Holds parallelism/expected chunks count
@@ -32,6 +36,13 @@ struct alignas(8) ChunkHeader {
   uint32_t local_id;       // Local block ID or target shard index
   uint32_t count_or_size;  // Number of blocks or continuous payload bytes
   uint64_t uuid;           // Globally unique transaction routing ID
+};
+
+struct ChunkMetadata {
+  uint32_t layer_idx;
+  uint32_t dst_shard_idx;
+  uint32_t dst_offset_bytes;
+  uint32_t size_bytes;
 };
 
 }  // namespace tpu_raiden::transport::lib

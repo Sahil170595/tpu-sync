@@ -42,6 +42,15 @@ struct RawProgress {
   std::optional<uint32_t> expected_chunks;
 };
 
+struct BufferPushTask {
+  std::string peer;
+  size_t buffer_id;
+  size_t dst_shard_idx;
+  size_t dst_offset_bytes;
+  const uint8_t* data_ptr;
+  size_t size_bytes;
+};
+
 // Foundational delegate interface for RawBufferTransport to query base host
 // memory.
 class RawBufferTransportDelegate {
@@ -81,6 +90,10 @@ class RawBufferTransport {
                           const uint8_t* data_ptr, size_t size_bytes,
                           uint64_t uuid = 0);
 
+  // Pushes a vector of buffers using the batched push protocol.
+  absl::Status PushBuffers(const std::vector<BufferPushTask>& tasks,
+                           int parallelism, uint64_t uuid);
+
   absl::Status RegisterExpectedChunks(uint64_t uuid, uint32_t expected_chunks);
 
   virtual void ForgetPushProgress(uint64_t uuid);
@@ -90,6 +103,10 @@ class RawBufferTransport {
 
  private:
   absl::Status ProcessPeerRequest(int client_fd);
+
+  absl::Status PushBatch(absl::string_view peer,
+                         const std::vector<BufferPushTask>& tasks,
+                         size_t start_idx, size_t batch_size, uint64_t uuid);
 
   virtual absl::Status HandleCustomRequest(int client_fd,
                                            const ChunkHeader& header) {

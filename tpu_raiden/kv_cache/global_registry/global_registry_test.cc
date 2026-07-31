@@ -21,6 +21,7 @@
 #include <vector>
 
 #include <gtest/gtest.h>
+#include "absl/status/status.h"
 #include "absl/time/clock.h"
 #include "absl/time/time.h"
 #include "grpcpp/channel.h"
@@ -433,6 +434,127 @@ TEST_F(GlobalRegistryTest, PullOwnedRemainingTtlZeroForInfiniteTtl) {
   EXPECT_EQ(entries[0].remaining_ttl_seconds(), 0);
 
   server->Shutdown();
+}
+
+// ---------------------------------------------------------------------------
+// Store registrations: RaidenId -> where to reach that store's
+// KVCacheStoreService. Independent of the block registry above.
+// ---------------------------------------------------------------------------
+
+TEST_F(GlobalRegistryTest, RegisterStoreAndResolveRoundTrip) {
+  RaidenId id = {"jobS", "r0", "dataS", 3};
+
+  ASSERT_TRUE(client_
+                  ->RegisterStore(id, "10.0.0.7:41337",
+                                  /*controller_address=*/"10.0.0.7:9000")
+                  .ok());
+
+  auto resolved = client_->ResolveStore(id);
+  ASSERT_TRUE(resolved.ok()) << resolved.status().ToString();
+  EXPECT_EQ(resolved->store_server_address(), "10.0.0.7:41337");
+  EXPECT_EQ(resolved->controller_address(), "10.0.0.7:9000");
+  EXPECT_EQ(resolved->raiden_id().job_name(), id.job_name);
+  EXPECT_EQ(resolved->raiden_id().job_replica_id(), id.job_replica_id);
+  EXPECT_EQ(resolved->raiden_id().data_name(), id.data_name);
+  EXPECT_EQ(resolved->raiden_id().data_replica_idx(), id.data_replica_idx);
+}
+
+// A restarted store comes back on a different ephemeral port; re-registering
+// must replace the dead coordinates rather than accumulate a second entry.
+TEST_F(GlobalRegistryTest, RegisterStoreReplacesPreviousAddress) {
+  RaidenId id = {"jobS", "r0", "dataS", 0};
+
+  ASSERT_TRUE(client_->RegisterStore(id, "10.0.0.7:1111").ok());
+  ASSERT_TRUE(client_->RegisterStore(id, "10.0.0.7:2222").ok());
+
+  auto resolved = client_->ResolveStore(id);
+  ASSERT_TRUE(resolved.ok()) << resolved.status().ToString();
+  EXPECT_EQ(resolved->store_server_address(), "10.0.0.7:2222");
+}
+
+TEST_F(GlobalRegistryTest, ResolveStoreMissIsNotFound) {
+  auto resolved = client_->ResolveStore({"nobody", "r0", "d0", 0});
+  EXPECT_TRUE(absl::IsNotFound(resolved.status())) << resolved.status();
+}
+
+TEST_F(GlobalRegistryTest, RegisterStoreRejectsEmptyAddress) {
+  RaidenId id = {"jobS", "r0", "dataS", 0};
+  EXPECT_FALSE(client_->RegisterStore(id, "").ok());
+  EXPECT_TRUE(absl::IsNotFound(client_->ResolveStore(id).status()));
+}
+
+TEST_F(GlobalRegistryTest, RegisterStoreRejectsEmptyRaidenId) {
+  EXPECT_FALSE(client_->RegisterStore({"", "", "", 0}, "10.0.0.7:1").ok());
+}
+
+TEST_F(GlobalRegistryTest, ResolveStoreRejectsEmptyRaidenId) {
+  EXPECT_FALSE(client_->ResolveStore({"", "", "", 0}).ok());
+}
+
+TEST_F(GlobalRegistryTest, UnregisterStoreRemovesRegistration) {
+  RaidenId id = {"jobS", "r0", "dataS", 0};
+  ASSERT_TRUE(client_->RegisterStore(id, "10.0.0.7:1111").ok());
+  ASSERT_TRUE(client_->ResolveStore(id).ok());
+
+  ASSERT_TRUE(client_->UnregisterStore(id).ok());
+  EXPECT_TRUE(absl::IsNotFound(client_->ResolveStore(id).status()));
+}
+
+// Teardown must not fail because the entry was already gone -- a store that
+// never registered still calls this from its destructor.
+TEST_F(GlobalRegistryTest, UnregisterStoreIsIdempotent) {
+  RaidenId id = {"jobS", "r0", "dataS", 0};
+  EXPECT_TRUE(client_->UnregisterStore(id).ok());
+  ASSERT_TRUE(client_->RegisterStore(id, "10.0.0.7:1111").ok());
+  EXPECT_TRUE(client_->UnregisterStore(id).ok());
+  EXPECT_TRUE(client_->UnregisterStore(id).ok());
+}
+
+// Deliberate divergence from block entries: a store registration with no
+// explicit TTL never expires, so a long-lived store does not silently become
+// unresolvable. The fixture's default_ttl is 2s, which a block entry would
+// have hit by now.
+TEST_F(GlobalRegistryTest, StoreRegistrationDefaultsToNoExpiry) {
+  RaidenId id = {"jobS", "r0", "dataS", 0};
+  ASSERT_TRUE(client_->RegisterStore(id, "10.0.0.7:1111").ok());
+
+  absl::SleepFor(absl::Milliseconds(2500));
+  service_->CleanupExpiredEntries();
+
+  auto resolved = client_->ResolveStore(id);
+  ASSERT_TRUE(resolved.ok()) << resolved.status().ToString();
+  EXPECT_EQ(resolved->store_server_address(), "10.0.0.7:1111");
+}
+
+// An explicit TTL is honoured, and an expired record reads as a miss before
+// the cleanup thread gets to it (the lazy filter in ResolveStore).
+TEST_F(GlobalRegistryTest, StoreRegistrationExpiresWithExplicitTtl) {
+  RaidenId id = {"jobS", "r0", "dataS", 0};
+  ASSERT_TRUE(client_
+                  ->RegisterStore(id, "10.0.0.7:1111",
+                                  /*controller_address=*/"",
+                                  /*ttl=*/absl::Seconds(1))
+                  .ok());
+  ASSERT_TRUE(client_->ResolveStore(id).ok());
+
+  absl::SleepFor(absl::Milliseconds(1500));
+
+  EXPECT_TRUE(absl::IsNotFound(client_->ResolveStore(id).status()));
+}
+
+// The two tables are independent: blocks can be registered by a store that
+// never published an address (lookup hits, resolve misses), which is exactly
+// the state store registration exists to make impossible for stores that do
+// publish one.
+TEST_F(GlobalRegistryTest, BlockRegistrationDoesNotImplyStoreRegistration) {
+  RaidenId id = {"jobS", "r0", "dataS", 0};
+  ASSERT_TRUE(client_->Register({{"hashX", id, 7}}).ok());
+
+  auto lookup = client_->Lookup({"hashX"});
+  ASSERT_TRUE(lookup.ok());
+  EXPECT_EQ(lookup->size(), 1);
+
+  EXPECT_TRUE(absl::IsNotFound(client_->ResolveStore(id).status()));
 }
 
 }  // namespace

@@ -44,7 +44,8 @@ class KVCacheStoreWrapper {
                                RaidenId raiden_id = {}, int num_shards = 0,
                                int64_t shard_size_bytes = 0,
                                std::string raiden_orchestrator_address = "",
-                               std::string raiden_controller_address = "");
+                               std::string store_server_ip = "",
+                               int raiden_controller_port = 0);
 
   KVCacheStore* operator->() { return controller_.get(); }
   KVCacheStore& operator*() { return *controller_; }

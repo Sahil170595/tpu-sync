@@ -78,6 +78,24 @@ class GlobalRegistryClient {
   // PullOwned RPC documentation for the consistency contract.
   absl::StatusOr<std::vector<PulledEntry>> PullOwned(const RaidenId& raiden_id);
 
+  // Publishes where peers should reach this store. Re-registering the same
+  // `raiden_id` replaces the previous coordinates.
+  // `ttl` of zero (the default) means the registration never expires; see
+  // StoreInfo.ttl_seconds for why stores differ from block entries here.
+  absl::Status RegisterStore(const RaidenId& raiden_id,
+                             absl::string_view store_server_address,
+                             absl::string_view controller_address = "",
+                             absl::Duration ttl = absl::ZeroDuration());
+
+  // Resolves a peer's store coordinates.
+  // Returns NotFound when no live registration exists -- that is an ordinary
+  // outcome, not an RPC failure.
+  absl::StatusOr<StoreInfo> ResolveStore(const RaidenId& raiden_id);
+
+  // Removes this store's registration. Returns OK when nothing was registered:
+  // teardown should not fail because the entry was already gone.
+  absl::Status UnregisterStore(const RaidenId& raiden_id);
+
  private:
   std::unique_ptr<GlobalRegistryService::Stub> stub_;
 };

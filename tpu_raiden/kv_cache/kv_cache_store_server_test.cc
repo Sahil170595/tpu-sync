@@ -111,7 +111,7 @@ class KVCacheStoreServerTest : public ::testing::Test {
         /*capacity=*/100, orchestrator_address_, dst_raiden_id,
         /*num_shards=*/1,
         /*shard_size_bytes=*/1024, orchestrator_address_,
-        /*raiden_controller_address=*/"");
+        /*store_server_ip=*/"");
 
     ::tpu_raiden::core::controller::RaidenControllerClient
         dst_controller_client(store_->raiden_controller_address());

@@ -37,10 +37,21 @@ class KVCacheStore:
       capacity: int,
       global_registry_address: str = '',
       raiden_id: RaidenId = ...,
+      num_shards: int = 0,
+      shard_size_bytes: int = 0,
+      raiden_orchestrator_address: str = '',
+      store_server_ip: str = '',
+      raiden_controller_port: int = 0,
   ) -> None: ...
 
   @property
   def raiden_id(self) -> RaidenId: ...
+
+  @property
+  def raiden_controller_address(self) -> str: ...
+
+  @property
+  def store_server_address(self) -> str: ...
 
   def lookup(
       self,

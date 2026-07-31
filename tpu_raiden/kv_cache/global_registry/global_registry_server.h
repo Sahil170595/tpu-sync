@@ -44,6 +44,15 @@ struct RegistryEntry {
   absl::Time expire_time;
 };
 
+// Network coordinates of one KVCacheStore, keyed by its RaidenId. Unlike
+// RegistryEntry, a store registration defaults to `absl::InfiniteFuture()`:
+// see StoreInfo.ttl_seconds in the proto for why.
+struct StoreRecord {
+  std::string store_server_address;
+  std::string controller_address;
+  absl::Time expire_time;
+};
+
 class GlobalRegistryServiceImpl final : public GlobalRegistryService::Service {
  public:
   // Default maximum number of entries per streamed PullOwned response.
@@ -76,6 +85,18 @@ class GlobalRegistryServiceImpl final : public GlobalRegistryService::Service {
   grpc::Status PullOwned(
       grpc::ServerContext* context, const PullOwnedRequest* request,
       grpc::ServerWriter<PullOwnedResponse>* writer) override;
+
+  grpc::Status RegisterStore(grpc::ServerContext* context,
+                             const RegisterStoreRequest* request,
+                             RegisterStoreResponse* response) override;
+
+  grpc::Status ResolveStore(grpc::ServerContext* context,
+                            const ResolveStoreRequest* request,
+                            ResolveStoreResponse* response) override;
+
+  grpc::Status UnregisterStore(grpc::ServerContext* context,
+                               const UnregisterStoreRequest* request,
+                               UnregisterStoreResponse* response) override;
 
   // Force a cleanup of expired entries.
   void CleanupExpiredEntries();
@@ -116,6 +137,12 @@ class GlobalRegistryServiceImpl final : public GlobalRegistryService::Service {
   // CleanupExpiredEntries.
   absl::flat_hash_map<RaidenId, absl::flat_hash_set<std::string>, RaidenIdHash>
       owner_index_ ABSL_GUARDED_BY(mutex_);
+
+  // Key: store identity. Value: where to reach it. Independent of `registry_`:
+  // a store may be registered with no blocks, and blocks may outlive their
+  // store's registration (a lookup then hits, and ResolveStore misses).
+  absl::flat_hash_map<RaidenId, StoreRecord, RaidenIdHash> store_registry_
+      ABSL_GUARDED_BY(mutex_);
 
   std::atomic<bool> shutdown_{false};
   std::thread cleanup_thread_;

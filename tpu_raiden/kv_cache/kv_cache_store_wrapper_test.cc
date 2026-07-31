@@ -64,7 +64,7 @@ class KVCacheStoreWrapperTest : public ::testing::Test {
     return std::make_unique<KVCacheStoreWrapper>(
         capacity, /*global_registry_address=*/"", rid, num_shards,
         /*shard_size_bytes=*/512, /*raiden_orchestrator_address=*/"",
-        /*raiden_controller_address=*/"");
+        /*store_server_ip=*/"");
   }
 
   bool MetadataSegmentExists(const std::string& suffix) {

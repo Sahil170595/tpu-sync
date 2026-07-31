@@ -161,8 +161,21 @@ class KVCacheStore:
       num_shards: int = 0,
       shard_size_bytes: int = 0,
       raiden_orchestrator_address: str = "",
-      raiden_controller_address: str = "",
+      store_server_ip: str = "",
+      raiden_controller_port: int = 0,
   ):
+    """Creates a KVCacheStore.
+
+    Args:
+      store_server_ip: IP that peers use to reach this store. Bind-and-
+        advertise: this store's KVCacheStoreService and RaidenController both
+        bind it, and it is the host published to the global registry, so it
+        must be an IP this process can bind. Ports are chosen by gRPC. Leave
+        empty to bind the wildcard interface and publish nothing, in which
+        case peers cannot discover this store.
+      raiden_controller_port: Port for this store's RaidenController; 0 lets
+        gRPC choose.
+    """
     raw_raiden_id = _impl.RaidenId()
     if raiden_id is not None:
       raw_raiden_id = raiden_id._impl  # pylint: disable=protected-access
@@ -173,7 +186,8 @@ class KVCacheStore:
         num_shards=num_shards,
         shard_size_bytes=shard_size_bytes,
         raiden_orchestrator_address=raiden_orchestrator_address,
-        raiden_controller_address=raiden_controller_address,
+        store_server_ip=store_server_ip,
+        raiden_controller_port=raiden_controller_port,
     )
 
   @property

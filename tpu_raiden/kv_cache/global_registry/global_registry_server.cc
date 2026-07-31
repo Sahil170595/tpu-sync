@@ -311,6 +311,84 @@ grpc::Status GlobalRegistryServiceImpl::PullOwned(
   return grpc::Status::OK;
 }
 
+grpc::Status GlobalRegistryServiceImpl::RegisterStore(
+    grpc::ServerContext* context, const RegisterStoreRequest* request,
+    RegisterStoreResponse* response) {
+  if (!request->has_store() || !request->store().has_raiden_id() ||
+      request->store().raiden_id().job_name().empty()) {
+    response->set_success(false);
+    response->set_error_message("store.raiden_id.job_name cannot be empty");
+    return grpc::Status::OK;
+  }
+  if (request->store().store_server_address().empty()) {
+    response->set_success(false);
+    response->set_error_message("store.store_server_address cannot be empty");
+    return grpc::Status::OK;
+  }
+
+  const StoreInfo& store = request->store();
+  // Non-positive ttl means "never expires" for stores -- see StoreInfo.
+  const absl::Time expire_time =
+      store.ttl_seconds() > 0 ? absl::Now() + absl::Seconds(store.ttl_seconds())
+                              : absl::InfiniteFuture();
+
+  absl::MutexLock lock(mutex_);
+  // Assignment, not insertion: re-registering the same RaidenId replaces the
+  // previous coordinates, which is how a restarted store heals its own entry.
+  store_registry_[FromProto(store.raiden_id())] = StoreRecord{
+      .store_server_address = store.store_server_address(),
+      .controller_address = store.controller_address(),
+      .expire_time = expire_time,
+  };
+
+  response->set_success(true);
+  return grpc::Status::OK;
+}
+
+grpc::Status GlobalRegistryServiceImpl::ResolveStore(
+    grpc::ServerContext* context, const ResolveStoreRequest* request,
+    ResolveStoreResponse* response) {
+  if (!request->has_raiden_id() || request->raiden_id().job_name().empty()) {
+    return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                        "raiden_id cannot be empty");
+  }
+
+  const RaidenId raiden_id = FromProto(request->raiden_id());
+
+  absl::MutexLock lock(mutex_);
+  auto it = store_registry_.find(raiden_id);
+  // An expired record is a miss, and is left for the cleanup thread to reap.
+  if (it == store_registry_.end() || it->second.expire_time <= absl::Now()) {
+    response->set_found(false);
+    return grpc::Status::OK;
+  }
+
+  response->set_found(true);
+  StoreInfo* out = response->mutable_store();
+  ToProto(raiden_id, out->mutable_raiden_id());
+  out->set_store_server_address(it->second.store_server_address);
+  out->set_controller_address(it->second.controller_address);
+  return grpc::Status::OK;
+}
+
+grpc::Status GlobalRegistryServiceImpl::UnregisterStore(
+    grpc::ServerContext* context, const UnregisterStoreRequest* request,
+    UnregisterStoreResponse* response) {
+  if (!request->has_raiden_id() || request->raiden_id().job_name().empty()) {
+    response->set_success(false);
+    response->set_error_message("raiden_id cannot be empty");
+    return grpc::Status::OK;
+  }
+
+  absl::MutexLock lock(mutex_);
+  const size_t erased = store_registry_.erase(FromProto(request->raiden_id()));
+  response->set_success(erased > 0);
+  if (erased == 0) {
+    response->set_error_message("no store registered for that raiden_id");
+  }
+  return grpc::Status::OK;
+}
+
 size_t GlobalRegistryServiceImpl::GetOwnerIndexSizeForTest(
     const RaidenId& raiden_id) const {
   absl::MutexLock lock(mutex_);
@@ -356,6 +434,18 @@ void GlobalRegistryServiceImpl::CleanupExpiredEntries() {
   for (const auto& key : keys_to_remove) {
     registry_.erase(key);
     round_robin_indices_.erase(key);
+  }
+
+  // Store registrations expire independently of block entries. Records with an
+  // infinite expiry (the default -- see StoreInfo.ttl_seconds) never match.
+  std::vector<RaidenId> stores_to_remove;
+  for (const auto& [raiden_id, record] : store_registry_) {
+    if (record.expire_time <= now) {
+      stores_to_remove.push_back(raiden_id);
+    }
+  }
+  for (const auto& raiden_id : stores_to_remove) {
+    store_registry_.erase(raiden_id);
   }
 }
 

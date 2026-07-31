@@ -97,6 +97,7 @@ cc_test(
         ":global_registry_server_lib",
         "//tpu_raiden/kv_cache:raiden_id",
         "@com_github_grpc_grpc//:grpc++",
+        "@com_google_absl//absl/status",
         "@com_google_absl//absl/time",
         "@com_google_googletest//:gtest_main",
     ],

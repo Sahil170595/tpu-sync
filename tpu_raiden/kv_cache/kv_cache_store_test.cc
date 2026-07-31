@@ -15,11 +15,14 @@
 #include "tpu_raiden/kv_cache/kv_cache_store.h"
 
 #include <atomic>
+#include <chrono>  // NOLINT(build/c++11)
 #include <csignal>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
+#include <thread>  // NOLINT(build/c++11)
 #include <utility>
 #include <vector>
 
@@ -28,10 +31,11 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
-#include "absl/synchronization/mutex.h"
+#include "absl/synchronization/notification.h"
 #include "absl/time/clock.h"
 #include "absl/time/time.h"
 #include "absl/types/span.h"
+#include "grpcpp/channel.h"
 #include "grpcpp/create_channel.h"
 #include "grpcpp/security/credentials.h"
 #include "grpcpp/security/server_credentials.h"
@@ -48,6 +52,8 @@
 #include "tpu_raiden/kv_cache/global_registry/global_registry_server.h"
 #include "tpu_raiden/kv_cache/host_offload_backend.h"
 #include "tpu_raiden/kv_cache/kv_cache_metadata.h"
+#include "tpu_raiden/kv_cache/kv_cache_store_backend.h"
+#include "tpu_raiden/kv_cache/kv_cache_store_client.h"
 #include "tpu_raiden/kv_cache/lru_cache.h"
 #include "tpu_raiden/kv_cache/raiden_id.h"
 
@@ -2904,6 +2910,278 @@ TEST(KVCacheStoreTest, MultiBackendPinAndRelease) {
   EXPECT_EQ(store.GetPinCount("h2"), 0);
   EXPECT_EQ(b1->GetPinCount("h1"), 0);
   EXPECT_EQ(b2->GetPinCount("h2"), 0);
+}
+
+using ::testing::EndsWith;
+using ::testing::Not;
+using ::testing::StartsWith;
+
+// ---------------------------------------------------------------------------
+// Store-server discovery: a store publishes where peers reach it, keyed by
+// its RaidenId, so a global-registry Lookup result becomes dialable.
+// ---------------------------------------------------------------------------
+
+// Owns a registry server on an ephemeral port for the tests below.
+class StoreDiscoveryTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    service_ = std::make_unique<global_registry::GlobalRegistryServiceImpl>();
+    grpc::ServerBuilder builder;
+    int port = 0;
+    builder.AddListeningPort("localhost:0", grpc::InsecureServerCredentials(),
+                             &port);
+    builder.RegisterService(service_.get());
+    server_ = builder.BuildAndStart();
+    registry_address_ = "localhost:" + std::to_string(port);
+    channel_ = grpc::CreateChannel(registry_address_,
+                                   grpc::InsecureChannelCredentials());
+    client_ = std::make_unique<global_registry::GlobalRegistryClient>(channel_);
+  }
+
+  void TearDown() override {
+    if (server_) server_->Shutdown();
+  }
+
+  std::string registry_address_;
+  std::unique_ptr<global_registry::GlobalRegistryServiceImpl> service_;
+  std::unique_ptr<grpc::Server> server_;
+  std::shared_ptr<grpc::Channel> channel_;
+  std::unique_ptr<global_registry::GlobalRegistryClient> client_;
+};
+
+TEST_F(StoreDiscoveryTest, PublishesStoreAddressToTheRegistry) {
+  RaidenId rid{"disco_job", "0", "kv_cache", 0};
+  KVCacheStore store(/*capacity=*/16, registry_address_, rid, /*num_shards=*/1,
+                     /*shard_size_bytes=*/512,
+                     /*raiden_orchestrator_address=*/"",
+                     /*store_server_ip=*/"127.0.0.1",
+                     /*raiden_controller_port=*/0);
+
+  // Advertised host is exactly what was supplied; the port is gRPC's choice.
+  ASSERT_FALSE(store.store_server_address().empty());
+  EXPECT_THAT(store.store_server_address(), StartsWith("127.0.0.1:"));
+  ASSERT_NE(store.store_server(), nullptr);
+  EXPECT_EQ(store.store_server_address(),
+            absl::StrCat("127.0.0.1:", store.store_server()->GetGrpcPort()));
+
+  auto resolved = client_->ResolveStore(rid);
+  ASSERT_TRUE(resolved.ok()) << resolved.status().ToString();
+  EXPECT_EQ(resolved->store_server_address(), store.store_server_address());
+  // The controller address rides along so peer controller resolution can
+  // move off the orchestrator later.
+  EXPECT_EQ(resolved->controller_address(), store.raiden_controller_address());
+}
+
+// store_server_ip is bind-and-advertise, so the published address is
+// actually connectable -- the property the old "localhost:<port>" lacked.
+TEST_F(StoreDiscoveryTest, PublishedAddressIsConnectable) {
+  RaidenId rid{"disco_job", "0", "kv_cache", 0};
+  KVCacheStore store(/*capacity=*/16, registry_address_, rid, /*num_shards=*/1,
+                     /*shard_size_bytes=*/512,
+                     /*raiden_orchestrator_address=*/"",
+                     /*store_server_ip=*/"127.0.0.1");
+
+  auto resolved = client_->ResolveStore(rid);
+  ASSERT_TRUE(resolved.ok()) << resolved.status().ToString();
+
+  auto peer_channel = grpc::CreateChannel(resolved->store_server_address(),
+                                          grpc::InsecureChannelCredentials());
+  ASSERT_TRUE(peer_channel->WaitForConnected(std::chrono::system_clock::now() +
+                                             std::chrono::seconds(10)));
+}
+
+// The escape hatch: no ip means bind the wildcard interface and publish
+// nothing. Every pre-existing caller takes this path.
+TEST_F(StoreDiscoveryTest, NoStoreServerIpPublishesNothing) {
+  RaidenId rid{"disco_job_quiet", "0", "kv_cache", 0};
+  KVCacheStore store(/*capacity=*/16, registry_address_, rid, /*num_shards=*/1,
+                     /*shard_size_bytes=*/512,
+                     /*raiden_orchestrator_address=*/"",
+                     /*store_server_ip=*/"");
+
+  EXPECT_TRUE(store.store_server_address().empty());
+  EXPECT_TRUE(absl::IsNotFound(client_->ResolveStore(rid).status()));
+}
+
+// Teardown must retract the registration, or peers keep dialling a dead port.
+TEST_F(StoreDiscoveryTest, DestructorUnpublishes) {
+  RaidenId rid{"disco_job_gone", "0", "kv_cache", 0};
+  {
+    KVCacheStore store(/*capacity=*/16, registry_address_, rid,
+                       /*num_shards=*/1, /*shard_size_bytes=*/512,
+                       /*raiden_orchestrator_address=*/"",
+                       /*store_server_ip=*/"127.0.0.1");
+    ASSERT_TRUE(client_->ResolveStore(rid).ok());
+  }
+  EXPECT_TRUE(absl::IsNotFound(client_->ResolveStore(rid).status()));
+}
+
+// A restarted store comes back on a different ephemeral port. Because the
+// registration is keyed by RaidenId, the new address replaces the old one
+// rather than accumulating beside it.
+TEST_F(StoreDiscoveryTest, RestartReplacesPublishedAddress) {
+  RaidenId rid{"disco_job_restart", "0", "kv_cache", 0};
+
+  std::string first_address;
+  {
+    KVCacheStore store(/*capacity=*/16, registry_address_, rid,
+                       /*num_shards=*/1, /*shard_size_bytes=*/512,
+                       /*raiden_orchestrator_address=*/"",
+                       /*store_server_ip=*/"127.0.0.1");
+    first_address = store.store_server_address();
+  }
+
+  KVCacheStore restarted(/*capacity=*/16, registry_address_, rid,
+                         /*num_shards=*/1, /*shard_size_bytes=*/512,
+                         /*raiden_orchestrator_address=*/"",
+                         /*store_server_ip=*/"127.0.0.1");
+  auto resolved = client_->ResolveStore(rid);
+  ASSERT_TRUE(resolved.ok()) << resolved.status().ToString();
+  EXPECT_EQ(resolved->store_server_address(), restarted.store_server_address());
+  EXPECT_NE(resolved->store_server_address(), first_address);
+}
+
+// When a backend already hosts a store server, the store must adopt and
+// publish THAT server rather than stand up a second one, so a node serves peers
+// from exactly one port. The store must also get there before anything else
+// starts that server, because StartServer never rebinds a running one -- the
+// factory path GlobalMemoryPoolingBackend::Create(config, controller) does
+// start it, and the single-argument Create this test goes through does not.
+TEST_F(StoreDiscoveryTest, AdoptsAndPublishesTheBackendsServer) {
+  RaidenId rid{"disco_job_tiered", "0", "kv_cache", 0};
+
+  BackendConfig host_config;
+  host_config.type = "HostOffloadBackend";
+  host_config.capacity = 16;
+  host_config.raiden_id = rid;
+
+  BackendConfig pooling_config;
+  pooling_config.type = "HostOffloadBackend";
+  pooling_config.capacity = 16;
+  pooling_config.global_registry_address = registry_address_;
+  pooling_config.raiden_id = rid;
+
+  const BackendConfig configs[] = {host_config, pooling_config};
+  auto store_or = KVCacheStore::Create(
+      absl::MakeConstSpan(configs), /*capacity=*/16, registry_address_, rid,
+      /*num_shards=*/1, /*shard_size_bytes=*/512,
+      /*raiden_orchestrator_address=*/"", /*store_server_ip=*/"127.0.0.1");
+  ASSERT_TRUE(store_or.ok()) << store_or.status().ToString();
+  auto& store = **store_or;
+
+  auto* pooling =
+      dynamic_cast<HostOffloadBackend*>(store.backends()[1].get());
+  ASSERT_NE(pooling, nullptr);
+
+  // Exactly one server, created and published by the store.
+  ASSERT_NE(store.store_server(), nullptr);
+
+  // Published under the supplied ip, not the backend's hardcoded wildcard.
+  EXPECT_THAT(store.store_server_address(), StartsWith("127.0.0.1:"));
+  auto resolved = client_->ResolveStore(rid);
+  ASSERT_TRUE(resolved.ok()) << resolved.status().ToString();
+  EXPECT_EQ(resolved->store_server_address(), store.store_server_address());
+}
+
+// The controller is addressed from the same ip, with its port either chosen by
+// gRPC (0) or taken verbatim.
+TEST_F(StoreDiscoveryTest, ControllerAddressComposedFromIpAndPort) {
+  RaidenId rid{"disco_job_ctrl", "0", "kv_cache", 0};
+  KVCacheStore store(/*capacity=*/16, registry_address_, rid, /*num_shards=*/1,
+                     /*shard_size_bytes=*/512,
+                     /*raiden_orchestrator_address=*/"",
+                     /*store_server_ip=*/"127.0.0.1",
+                     /*raiden_controller_port=*/0);
+
+  EXPECT_THAT(store.raiden_controller_address(), StartsWith("127.0.0.1:"));
+  // Port 0 means "gRPC picks"; the advertised address carries the real port.
+  EXPECT_THAT(store.raiden_controller_address(), Not(EndsWith(":0")));
+}
+
+
+// A tier-0 backend whose Lookup parks, so a peer's Fetch can be held inside the
+// store's own service while the store is being destroyed.
+class ParkingBackend : public HostOffloadBackend {
+ public:
+  using HostOffloadBackend::HostOffloadBackend;
+
+  absl::StatusOr<BlockSliceList> Lookup(
+      absl::Span<const std::string> block_hashes,
+      const LookupOptions& options = {}) override {
+    if (!entered.HasBeenNotified()) entered.Notify();
+    release.WaitForNotification();
+    handler_finished.store(true);
+    return HostOffloadBackend::Lookup(block_hashes, options);
+  }
+
+  absl::Notification entered;
+  absl::Notification release;
+  std::atomic<bool> handler_finished{false};
+};
+
+// Destroying a store must not return while a peer's RPC is still executing
+// inside its service.
+//
+// Scope, stated because it is easy to over-read: this covers a store-OWNED
+// server, where the drain is guaranteed twice over -- by the destructor's
+// explicit Shutdown, and by owned_store_server_ being declared after
+// raiden_controller_ and so destroyed before it. Removing the explicit
+// Shutdown does NOT fail this test for that reason.
+//
+// The case the explicit Shutdown alone covers is a server ADOPTED from a
+// backend: backends_ is declared before raiden_controller_, so member
+// destruction frees the controller first and leaves a backend-hosted server
+// answering RPCs that dereference it. That path has no regression test -- see
+// the teardown notes in the store-server discovery doc.
+TEST_F(StoreDiscoveryTest, TeardownDrainsAnInFlightPeerRpc) {
+  RaidenId rid{"disco_job_teardown", "0", "kv_cache", 0};
+  auto parking = std::make_shared<ParkingBackend>(
+      /*capacity=*/16, std::nullopt, rid, /*raiden_controller=*/nullptr);
+
+  auto store = std::make_unique<KVCacheStore>(
+      parking, rid, /*num_shards=*/1, /*shard_size_bytes=*/512,
+      /*raiden_orchestrator_address=*/"", /*store_server_ip=*/"127.0.0.1",
+      /*raiden_controller_port=*/0, registry_address_);
+  ASSERT_FALSE(store->store_server_address().empty());
+
+  auto peer_channel = grpc::CreateChannel(store->store_server_address(),
+                                          grpc::InsecureChannelCredentials());
+  KVCacheStoreClient peer(peer_channel);
+  auto fetch_future = peer.Fetch({"h1"}, /*device_block_ids=*/{},
+                                 /*host_block_ids=*/{7});
+
+  // The peer's Fetch is now parked inside our service, holding the handler.
+  parking->entered.WaitForNotification();
+
+  std::thread destroyer([&store] { store.reset(); });
+  // The destructor should be blocked draining that handler, not racing past it.
+  absl::SleepFor(absl::Milliseconds(200));
+  EXPECT_FALSE(parking->handler_finished.load());
+
+  parking->release.Notify();
+  destroyer.join();
+
+  // Teardown outlived the handler rather than pulling the controller out from
+  // under it.
+  EXPECT_TRUE(parking->handler_finished.load());
+  (void)fetch_future.Await();  // whatever it reports, it must not crash
+}
+
+
+// A store with no backend must decline to serve rather than index an empty
+// backends_ vector: backend() does not bounds-check, and capacity() guards for
+// exactly this case, so the empty vector is reachable.
+TEST_F(StoreDiscoveryTest, NoBackendDoesNotServeOrCrash) {
+  RaidenId rid{"disco_job_nobackend", "0", "kv_cache", 0};
+  KVCacheStore store(std::vector<std::shared_ptr<KVCacheStoreBackend>>{}, rid,
+                     /*num_shards=*/1, /*shard_size_bytes=*/512,
+                     /*raiden_orchestrator_address=*/"",
+                     /*store_server_ip=*/"127.0.0.1",
+                     /*raiden_controller_port=*/0, registry_address_);
+
+  EXPECT_EQ(store.store_server(), nullptr);
+  EXPECT_TRUE(store.store_server_address().empty());
+  EXPECT_TRUE(absl::IsNotFound(client_->ResolveStore(rid).status()));
 }
 
 }  // namespace

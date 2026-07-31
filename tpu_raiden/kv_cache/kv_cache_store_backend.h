@@ -34,6 +34,10 @@ class RaidenController;
 
 namespace kv_cache {
 
+// Forward-declared rather than included: kv_cache_store_server.h includes this
+// header, so including it back would be circular.
+class KVCacheStoreServer;
+
 enum class BlockStatus {
   INIT,
   REMOTE,
@@ -169,6 +173,12 @@ class KVCacheStoreBackend {
   // Retrieves eviction candidate keys from the backend (for
   // testing/diagnostics).
   virtual std::vector<std::string> GetEvictCandidateKeys() const { return {}; }
+
+  // The peer-facing KVCacheStoreService server this backend hosts, if any.
+  // Returning non-null tells the owning KVCacheStore to publish THIS server
+  // rather than start a second one, so a node always serves peers from exactly
+  // one port.
+  virtual KVCacheStoreServer* store_server() const { return nullptr; }
 };
 
 }  // namespace kv_cache

@@ -113,7 +113,7 @@ class KVCacheStoreServiceTest : public ::testing::Test {
     store_ = std::make_unique<KVCacheStore>(
         /*capacity=*/100, orchestrator_address, dst_raiden_id, /*num_shards=*/1,
         /*shard_size_bytes=*/1024, orchestrator_address,
-        src_controller_server_->server_address);
+        /*store_server_ip=*/"");
 
     ::tpu_raiden::core::controller::RaidenControllerClient
         dst_controller_client(store_->raiden_controller_address());

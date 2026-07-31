@@ -56,8 +56,8 @@ std::string MetadataShmKey() {
 KVCacheStoreWrapper::KVCacheStoreWrapper(
     size_t lru_capacity, std::string global_registry_address,
     RaidenId raiden_id, int num_shards, int64_t shard_size_bytes,
-    std::string raiden_orchestrator_address,
-    std::string raiden_controller_address) {
+    std::string raiden_orchestrator_address, std::string store_server_ip,
+    int raiden_controller_port) {
   std::optional<KVCacheMetadata> metadata;
   if (num_shards > 0) {
     std::string shm_key = MetadataShmKey();
@@ -79,8 +79,8 @@ KVCacheStoreWrapper::KVCacheStoreWrapper(
 
   controller_ = std::make_unique<KVCacheStore>(
       lru_capacity, global_registry_address, std::move(raiden_id), num_shards,
-      shard_size_bytes, raiden_orchestrator_address, raiden_controller_address,
-      std::move(metadata));
+      shard_size_bytes, raiden_orchestrator_address, store_server_ip,
+      raiden_controller_port, std::move(metadata));
 
   if (metadata_region_ != nullptr && metadata_region_->warm()) {
     auto recovered_or = controller_->RecoverFromLocalManifest();

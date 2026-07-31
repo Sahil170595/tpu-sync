@@ -39,6 +39,7 @@
 #include "tpu_raiden/kv_cache/kv_cache_metadata.h"
 #include "tpu_raiden/kv_cache/kv_cache_store_backend.h"
 #include "tpu_raiden/kv_cache/kv_cache_store_backend_factory.h"
+#include "tpu_raiden/kv_cache/kv_cache_store_server.h"
 #include "tpu_raiden/kv_cache/lru_cache.h"
 #include "tpu_raiden/kv_cache/raiden_id.h"
 
@@ -60,13 +61,27 @@ class KVCacheStore {
  public:
   friend class KVCacheStoreTest;
 
+  // NETWORK ADDRESSING (`store_server_ip`, `raiden_controller_port`)
+  //
+  // `store_server_ip` is the IP peers use to reach this node. It is
+  // BIND-AND-ADVERTISE: both this store's KVCacheStoreService and its
+  // RaidenController bind that interface, and it is the host published to the
+  // global registry. It must therefore be an IP this process can bind -- not a
+  // hostname, and not a NAT/service address. Ports are chosen by gRPC (the
+  // store server always; the controller when `raiden_controller_port` is 0),
+  // and the bound port is spliced into the advertised address.
+  //
+  // Leaving `store_server_ip` empty preserves the previous behaviour: bind the
+  // wildcard interface and publish nothing, so the store is not discoverable by
+  // peers.
+
   // Safe factory method to create KVCacheStore from a single BackendConfig.
   static absl::StatusOr<std::unique_ptr<KVCacheStore>> Create(
       const BackendConfig& config, size_t capacity = 0,
       absl::string_view global_registry_address = "", RaidenId raiden_id = {},
       int num_shards = 0, int64_t shard_size_bytes = 0,
       absl::string_view raiden_orchestrator_address = "",
-      absl::string_view raiden_controller_address = "",
+      absl::string_view store_server_ip = "", int raiden_controller_port = 0,
       std::optional<KVCacheMetadata> metadata = std::nullopt);
 
   // Safe factory method to create KVCacheStore from a list of BackendConfigs.
@@ -75,7 +90,7 @@ class KVCacheStore {
       absl::string_view global_registry_address = "", RaidenId raiden_id = {},
       int num_shards = 0, int64_t shard_size_bytes = 0,
       absl::string_view raiden_orchestrator_address = "",
-      absl::string_view raiden_controller_address = "",
+      absl::string_view store_server_ip = "", int raiden_controller_port = 0,
       std::optional<KVCacheMetadata> metadata = std::nullopt);
 
   // Flexible constructor accepting a custom root backend
@@ -83,14 +98,20 @@ class KVCacheStore {
                         RaidenId raiden_id = {}, int num_shards = 0,
                         int64_t shard_size_bytes = 0,
                         absl::string_view raiden_orchestrator_address = "",
-                        absl::string_view raiden_controller_address = "");
+                        absl::string_view store_server_ip = "",
+                        int raiden_controller_port = 0,
+                        absl::string_view global_registry_address = "");
 
   // Constructor accepting an ordered list of backends.
+  // `global_registry_address` is what this store publishes itself to. The
+  // backends may each hold their own registry client; this one belongs to the
+  // store, and without it the store cannot make itself discoverable.
   explicit KVCacheStore(
       std::vector<std::shared_ptr<KVCacheStoreBackend>> backends,
       RaidenId raiden_id = {}, int num_shards = 0, int64_t shard_size_bytes = 0,
       absl::string_view raiden_orchestrator_address = "",
-      absl::string_view raiden_controller_address = "");
+      absl::string_view store_server_ip = "", int raiden_controller_port = 0,
+      absl::string_view global_registry_address = "");
 
   // Links RaidenController to all backends in backends_.
   void SetRaidenController(
@@ -104,7 +125,8 @@ class KVCacheStore {
                         RaidenId raiden_id = {}, int num_shards = 0,
                         int64_t shard_size_bytes = 0,
                         absl::string_view raiden_orchestrator_address = "",
-                        absl::string_view raiden_controller_address = "",
+                        absl::string_view store_server_ip = "",
+                        int raiden_controller_port = 0,
                         std::optional<KVCacheMetadata> metadata = std::nullopt);
 
   // Test-only constructor for injecting mock controller
@@ -113,7 +135,8 @@ class KVCacheStore {
       std::unique_ptr<tpu_raiden::controller::RaidenController>
           raiden_controller,
       absl::string_view global_registry_address = "", RaidenId raiden_id = {},
-      std::optional<KVCacheMetadata> metadata = std::nullopt);
+      std::optional<KVCacheMetadata> metadata = std::nullopt,
+      absl::string_view store_server_ip = "");
 
   ~KVCacheStore();
 
@@ -219,6 +242,15 @@ class KVCacheStore {
 
   size_t capacity() const;
   std::string raiden_controller_address() const;
+
+  // "host:port" of this store's KVCacheStoreService, as published to the
+  // global registry. Empty when no `store_server_ip` was supplied, which is
+  // also exactly when this store is not discoverable by peers.
+  std::string store_server_address() const { return store_server_address_; }
+
+  // The store server this node serves peers from, or nullptr if it has none.
+  // Owned either by this store or by whichever backend hosts it.
+  KVCacheStoreServer* store_server() const { return store_server_; }
 
   const std::vector<std::shared_ptr<KVCacheStoreBackend>>& backends() const {
     return backends_;
@@ -359,11 +391,30 @@ class KVCacheStore {
     }
   };
 
+  // Starts (if needed) the peer-facing store server, computes
+  // store_server_address_, and publishes it to the global registry. Idempotent:
+  // SetRaidenController may be called more than once, and Create calls it again
+  // after construction.
+  void EnsureStoreServerAndRegister(
+      tpu_raiden::controller::RaidenController* controller);
+
   mutable absl::Mutex mutex_;
   std::vector<std::shared_ptr<KVCacheStoreBackend>> backends_;
   std::shared_ptr<global_registry::GlobalRegistryClient> registry_client_;
   RaidenId raiden_id_;
   std::unique_ptr<tpu_raiden::controller::RaidenController> raiden_controller_;
+
+  // The IP peers reach this node on; empty means "not discoverable".
+  std::string store_server_ip_;
+  // Advertised "host:port" of store_server_, empty until it is started.
+  std::string store_server_address_;
+  // Non-owning. Points either into owned_store_server_ or at a server owned by
+  // one of backends_.
+  KVCacheStoreServer* store_server_ = nullptr;
+  // Set only when no backend hosts a store server and this store made its own.
+  std::unique_ptr<KVCacheStoreServer> owned_store_server_;
+  // True once this store published itself, so teardown knows to unpublish.
+  bool registered_in_global_registry_ = false;
 
   std::vector<SaveState> active_saves_ ABSL_GUARDED_BY(mutex_);
   std::vector<LoadState> active_loads_ ABSL_GUARDED_BY(mutex_);

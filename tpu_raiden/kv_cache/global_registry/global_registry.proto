@@ -52,6 +52,18 @@ service GlobalRegistryService {
   // unspecified. Batching is a server-side configuration; clients should
   // simply iterate the stream.
   rpc PullOwned(PullOwnedRequest) returns (stream PullOwnedResponse) {  }
+
+  // Registers (or replaces) the network coordinates of a KVCacheStore, keyed by
+  // its RaidenId. This is what makes a Lookup result actionable: Lookup returns
+  // the RaidenId that owns a block, and ResolveStore turns that RaidenId into an
+  // address a peer can dial.
+  rpc RegisterStore(RegisterStoreRequest) returns (RegisterStoreResponse) {  }
+
+  // Resolves a RaidenId to the coordinates registered by RegisterStore.
+  rpc ResolveStore(ResolveStoreRequest) returns (ResolveStoreResponse) {  }
+
+  // Removes a store registration. Called by a store on clean shutdown.
+  rpc UnregisterStore(UnregisterStoreRequest) returns (UnregisterStoreResponse) {  }
 }
 
 message KVBlockMetadata {
@@ -149,4 +161,62 @@ message PullOwnedEntry {
 message PullOwnedResponse {
   // One batch of entries. Batch boundaries carry no meaning.
   repeated PullOwnedEntry entries = 1;
+}
+
+// Network coordinates of one KVCacheStore.
+message StoreInfo {
+  // Identity of the store. Required; acts as the registration key, so a second
+  // RegisterStore with the same RaidenId REPLACES the first (which is how a
+  // restarted store on a new port heals its own entry).
+  tpu_raiden.rpc.RaidenIdProto raiden_id = 1;
+
+  // "host:port" of this store's KVCacheStoreService, as peers should dial it.
+  // Required.
+  string store_server_address = 2;
+
+  // "host:port" of this store's RaidenController service, if it has one.
+  // Optional today: peer controller resolution still goes through the Raiden
+  // orchestrator. Carried here so that role can move to this registry later
+  // without another proto revision.
+  string controller_address = 3;
+
+  // Time-to-live in seconds.
+  //
+  // NOTE: unlike RegisterEntry.ttl_seconds, 0 or negative means **never
+  // expires**, not "use the server default". A store registration is liveness
+  // information with no refresh loop yet, so an entry that silently expired
+  // would make a running store unresolvable to its peers. The cost of this
+  // choice is that a crashed store leaves a stale entry until it restarts and
+  // overwrites it. Set a positive TTL once callers refresh their registration.
+  int64 ttl_seconds = 4;
+}
+
+message RegisterStoreRequest {
+  StoreInfo store = 1;
+}
+
+message RegisterStoreResponse {
+  bool success = 1;
+  string error_message = 2;
+}
+
+message ResolveStoreRequest {
+  tpu_raiden.rpc.RaidenIdProto raiden_id = 1;
+}
+
+message ResolveStoreResponse {
+  // False when no live registration exists for the requested RaidenId. The RPC
+  // itself still returns OK: "not registered" is an answer, not an error.
+  bool found = 1;
+  StoreInfo store = 2;
+}
+
+message UnregisterStoreRequest {
+  tpu_raiden.rpc.RaidenIdProto raiden_id = 1;
+}
+
+message UnregisterStoreResponse {
+  // False if there was nothing registered for that RaidenId.
+  bool success = 1;
+  string error_message = 2;
 }

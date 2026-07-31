@@ -104,7 +104,8 @@ def _build_stack(tpu_cache):
       raiden_id=rid,
       num_shards=1,
       shard_size_bytes=block_elements * 4,
-      raiden_controller_address=f"localhost:{controller_port}",
+      store_server_ip="localhost",
+      raiden_controller_port=controller_port,
   )
   manager = kv_cache_manager.KVCacheManager(
       kv_caches=[tpu_cache],

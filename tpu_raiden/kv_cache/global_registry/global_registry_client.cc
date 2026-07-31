@@ -24,6 +24,7 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/escaping.h"
+#include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "absl/time/time.h"
 #include "grpcpp/channel.h"
@@ -146,6 +147,68 @@ absl::Status GlobalRegistryClient::Unregister(
   if (!response.success()) {
     return absl::FailedPreconditionError(response.error_message());
   }
+  return absl::OkStatus();
+}
+
+absl::Status GlobalRegistryClient::RegisterStore(
+    const RaidenId& raiden_id, absl::string_view store_server_address,
+    absl::string_view controller_address, absl::Duration ttl) {
+  RegisterStoreRequest request;
+  StoreInfo* store = request.mutable_store();
+  ToProto(raiden_id, store->mutable_raiden_id());
+  store->set_store_server_address(std::string(store_server_address));
+  store->set_controller_address(std::string(controller_address));
+  if (ttl > absl::ZeroDuration()) {
+    store->set_ttl_seconds(absl::ToInt64Seconds(ttl));
+  }
+
+  RegisterStoreResponse response;
+  grpc::ClientContext context;
+  grpc::Status status = stub_->RegisterStore(&context, request, &response);
+
+  if (!status.ok()) {
+    return absl::InternalError(status.error_message());
+  }
+  if (!response.success()) {
+    return absl::FailedPreconditionError(response.error_message());
+  }
+  return absl::OkStatus();
+}
+
+absl::StatusOr<StoreInfo> GlobalRegistryClient::ResolveStore(
+    const RaidenId& raiden_id) {
+  ResolveStoreRequest request;
+  ToProto(raiden_id, request.mutable_raiden_id());
+
+  ResolveStoreResponse response;
+  grpc::ClientContext context;
+  grpc::Status status = stub_->ResolveStore(&context, request, &response);
+
+  if (!status.ok()) {
+    return absl::InternalError(status.error_message());
+  }
+  if (!response.found()) {
+    return absl::NotFoundError(
+        absl::StrCat("no store registered for raiden_id ", raiden_id.job_name,
+                     "/", raiden_id.job_replica_id, "/", raiden_id.data_name,
+                     "/", raiden_id.data_replica_idx));
+  }
+  return response.store();
+}
+
+absl::Status GlobalRegistryClient::UnregisterStore(const RaidenId& raiden_id) {
+  UnregisterStoreRequest request;
+  ToProto(raiden_id, request.mutable_raiden_id());
+
+  UnregisterStoreResponse response;
+  grpc::ClientContext context;
+  grpc::Status status = stub_->UnregisterStore(&context, request, &response);
+
+  if (!status.ok()) {
+    return absl::InternalError(status.error_message());
+  }
+  // Deliberately not an error when nothing was registered: teardown must be
+  // idempotent, and a store that never registered still calls this.
   return absl::OkStatus();
 }
 

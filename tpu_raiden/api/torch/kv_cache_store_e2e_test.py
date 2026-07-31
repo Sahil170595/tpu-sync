@@ -239,7 +239,8 @@ class KVCacheStoreE2ETest(parameterized.TestCase):
         raiden_id=rid,
         num_shards=self.num_devices,
         shard_size_bytes=shard_size_bytes,
-        raiden_controller_address=f"localhost:{controller_port}",
+        store_server_ip="localhost",
+        raiden_controller_port=controller_port,
     )
 
     # 4. Create KVCacheManager (Worker)
@@ -390,7 +391,8 @@ class KVCacheStoreE2ETest(parameterized.TestCase):
         num_shards=self.num_devices,
         shard_size_bytes=shard_size_bytes,
         raiden_orchestrator_address=f"localhost:{_orchestrator_port}",
-        raiden_controller_address=f"localhost:{controller_port_a}",
+        store_server_ip="localhost",
+        raiden_controller_port=controller_port_a,
     )
     manager_a = kv_cache_manager.KVCacheManager(
         kv_caches=[[tpu_cache_a]],
@@ -415,7 +417,8 @@ class KVCacheStoreE2ETest(parameterized.TestCase):
         num_shards=self.num_devices,
         shard_size_bytes=shard_size_bytes,
         raiden_orchestrator_address=f"localhost:{_orchestrator_port}",
-        raiden_controller_address=f"localhost:{controller_port_b}",
+        store_server_ip="localhost",
+        raiden_controller_port=controller_port_b,
     )
     manager_b = kv_cache_manager.KVCacheManager(
         kv_caches=[[tpu_cache_b]],
@@ -600,7 +603,8 @@ class KVCacheStoreE2ETest(parameterized.TestCase):
         num_shards=self.num_devices,
         shard_size_bytes=shard_size_bytes,
         raiden_orchestrator_address=f"localhost:{_orchestrator_port}",
-        raiden_controller_address=f"localhost:{controller_port_a}",
+        store_server_ip="localhost",
+        raiden_controller_port=controller_port_a,
     )
     manager_a = kv_cache_manager.KVCacheManager(
         kv_caches=[[tpu_cache_a]],
@@ -622,7 +626,8 @@ class KVCacheStoreE2ETest(parameterized.TestCase):
         num_shards=self.num_devices,
         shard_size_bytes=shard_size_bytes,
         raiden_orchestrator_address=f"localhost:{_orchestrator_port}",
-        raiden_controller_address=f"localhost:{controller_port_b}",
+        store_server_ip="localhost",
+        raiden_controller_port=controller_port_b,
     )
     manager_b = kv_cache_manager.KVCacheManager(
         kv_caches=[[tpu_cache_b]],
@@ -684,7 +689,8 @@ class KVCacheStoreE2ETest(parameterized.TestCase):
         num_shards=self.num_devices,
         shard_size_bytes=shard_size_bytes,
         raiden_orchestrator_address=f"localhost:{_orchestrator_port}",
-        raiden_controller_address=f"localhost:{controller_port_a}",
+        store_server_ip="localhost",
+        raiden_controller_port=controller_port_a,
     )
     manager_a = kv_cache_manager.KVCacheManager(
         kv_caches=[[tpu_cache_a]],
@@ -706,7 +712,8 @@ class KVCacheStoreE2ETest(parameterized.TestCase):
         num_shards=self.num_devices,
         shard_size_bytes=shard_size_bytes,
         raiden_orchestrator_address=f"localhost:{_orchestrator_port}",
-        raiden_controller_address=f"localhost:{controller_port_b}",
+        store_server_ip="localhost",
+        raiden_controller_port=controller_port_b,
     )
     manager_b = kv_cache_manager.KVCacheManager(
         kv_caches=[[tpu_cache_b]],

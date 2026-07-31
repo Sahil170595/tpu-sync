@@ -5,6 +5,7 @@ build:oss --override_module=torch_tpu=%workspace%/third_party/torch_tpu_stub
 build:oss --action_env=CC=clang-18
 build:oss --action_env=CXX=clang++-18
 build:oss --repo_env=CC=clang-18
+build:oss --incompatible_disallow_empty_glob=false
 
 build:ci --google_default_credentials=true
 build:ci --remote_cache=grpcs://remotebuildexecution.googleapis.com

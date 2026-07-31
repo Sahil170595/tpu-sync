@@ -74,10 +74,15 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         ":mock_nanobind",
+        "//tpu_raiden/core:raw_transfer_core",
         "@jax//jaxlib:py_client",
         "@nanobind",
         "@rules_python//python/cc:current_py_cc_headers",
+        "@xla//xla:shape_util",
         "@xla//xla/pjrt:pjrt_client",
+        "@xla//xla/pjrt:pjrt_layout",
+        "@xla//xla/python:nb_numpy",
+        "@xla//xla/python:types",
         "@xla//xla/python/ifrt",
         "@xla//xla/python/pjrt_ifrt",
     ],
@@ -451,7 +456,6 @@ cc_library(
         "@xla//xla/pjrt/c:pjrt_c_api_raw_buffer_external",  # buildcleaner: keep
         "@xla//xla/python/ifrt",
         "@xla//xla/python/pjrt_ifrt",
-        "@xla//xla/tsl/concurrency:ref_count",
     ],
 )
 
@@ -495,6 +499,7 @@ cc_test(
     deps = [
         ":raw_transfer_jax_mock",
         "//tpu_raiden/core:raw_transfer_core",
+        "@xla//xla/pjrt:common_pjrt_client",
         "@xla//xla/pjrt:pjrt_client",
         "@xla//xla/pjrt/plugin/xla_cpu:xla_cpu_pjrt_client",
         "@xla//xla/stream_executor/host:host_platform",
@@ -520,7 +525,6 @@ py_test(
         "@com_google_absl_py//absl/testing:absltest",
         "@com_google_absl_py//absl/testing:parameterized",
         "@jax//jax",
-        "@jax//jax/_src/lib",
         "@pypi//numpy",
     ],
 )

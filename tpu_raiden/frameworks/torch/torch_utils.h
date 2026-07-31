@@ -22,6 +22,7 @@
 #include "ATen/core/TensorBody.h"
 #include "torch_tpu/eager/tensor_to_buffer.h"
 #include "xla/pjrt/pjrt_client.h"
+#include "tpu_raiden/core/raw_transfer_core.h"
 
 namespace tpu_raiden {
 namespace torch {
@@ -36,7 +37,7 @@ namespace torch {
 // that retain `buffer` past this call MUST keep `ref` alive for as long as they
 // use it (e.g. store it in a member / attach it to the transfer future).
 struct UnpackedTensors {
-  std::vector<std::vector<xla::PjRtBuffer*>> buffers;
+  std::vector<std::vector<raiden::RaidenBufferHandle>> buffers;
   std::vector<torch_tpu::DeviceBufferRef> refs;
   std::vector<int64_t> logical_dimensions;
   size_t logical_slice_byte_size = 0;
@@ -48,7 +49,8 @@ struct UnpackedTensors {
 // UnpackTorchTensor). Throws if validation or materialization fails.
 
 UnpackedTensors UnpackTorchTensors(
-    const std::vector<std::vector<at::Tensor>>& device_tensors);
+    const std::vector<std::vector<at::Tensor>>& device_tensors,
+    bool unsafe_skip_buffer_lock = false);
 
 }  // namespace torch
 }  // namespace tpu_raiden

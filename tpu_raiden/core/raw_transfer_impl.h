@@ -46,7 +46,7 @@ using ::xla::Shape;
 
 // Pure C++ implementation of D2H transfer core
 inline absl::StatusOr<PjRtCopyFuture> transfer_d2h_core(
-    const std::vector<PjRtBuffer*>& src_buffers,
+    const std::vector<RaidenBufferHandle>& src_buffers,
     const std::vector<uint8_t*>& dst_ptrs, const std::vector<size_t>& dst_sizes,
     absl::Span<const int64_t> src_offsets_major_dim,
     absl::Span<const int64_t> dst_offsets_major_dim,
@@ -64,8 +64,8 @@ inline absl::StatusOr<PjRtCopyFuture> transfer_d2h_core(
         "Lengths of offset and size lists must match");
   }
 
-  PjRtBuffer* first_buffer = src_buffers[0];
-  const xla::Shape& shape = first_buffer->on_device_shape();
+  const RaidenBufferHandle& first_buffer = src_buffers[0];
+  const xla::Shape& shape = first_buffer.shape;
 
   bool is_partial = false;
   int64_t full_major_dim_size = shape.dimensions(0);
@@ -89,21 +89,9 @@ inline absl::StatusOr<PjRtCopyFuture> transfer_d2h_core(
         "Number of shards in source and destination must match");
   }
 
-  ASSIGN_OR_RETURN(int64_t physical_size,
-                        first_buffer->GetOnDeviceSizeInBytes());
+  int64_t physical_size = first_buffer.GetOnDeviceSizeInBytes();
 
-  const PJRT_Api* c_api = nullptr;
-  const PJRT_RawBuffer_Extension* extension =
-      GetRawBufferExtension(first_buffer, &c_api);
-  PjRtCApiBuffer* first_capi_buffer =
-      dynamic_cast<PjRtCApiBuffer*>(first_buffer);
-
-  if (first_capi_buffer && !extension) {
-    return absl::InternalError(
-        "RawBuffer extension not found in PjRtCApiClient");
-  }
-
-  int64_t slice_byte_size = GetMajorSliceByteSize(first_buffer);
+  int64_t slice_byte_size = GetMajorSliceByteSize(shape);
 
   if (is_partial && slice_byte_size % 4096 != 0) {
     return absl::InvalidArgumentError(
@@ -120,12 +108,7 @@ inline absl::StatusOr<PjRtCopyFuture> transfer_d2h_core(
     uint8_t* dst_data = dst_ptrs[i];
     size_t dst_size = dst_sizes[i];
 
-    PjRtBuffer* src_buffer = src_buffers[i];
-
-    BufferHoldAndAlias hold;
-    ASSIGN_OR_RETURN(
-        hold, BufferHoldAndAlias::Acquire(src_buffer, c_api, extension,
-                                          unsafe_skip_buffer_lock));
+    const RaidenBufferHandle& hold = src_buffers[i];
 
     if (!is_partial) {
       // Full copy.
@@ -170,7 +153,7 @@ inline absl::StatusOr<PjRtCopyFuture> transfer_d2h_core(
 
 // Pure H2D transfer core
 inline absl::StatusOr<PjRtCopyFuture> transfer_h2d_core(
-    const std::vector<PjRtBuffer*>& dst_buffers,
+    const std::vector<RaidenBufferHandle>& dst_buffers,
     const std::vector<const uint8_t*>& src_ptrs,
     const std::vector<size_t>& src_sizes,
     absl::Span<const int64_t> src_offsets_major_dim,
@@ -189,8 +172,8 @@ inline absl::StatusOr<PjRtCopyFuture> transfer_h2d_core(
         "Lengths of offset and size lists must match");
   }
 
-  PjRtBuffer* first_buffer = dst_buffers[0];
-  const xla::Shape& shape = first_buffer->on_device_shape();
+  const RaidenBufferHandle& first_buffer = dst_buffers[0];
+  const xla::Shape& shape = first_buffer.shape;
 
   bool is_partial = false;
   int64_t full_major_dim_size = shape.dimensions(0);
@@ -214,24 +197,9 @@ inline absl::StatusOr<PjRtCopyFuture> transfer_h2d_core(
         "Number of shards in source and destination must match");
   }
 
-  auto status_or_dst_size = first_buffer->GetOnDeviceSizeInBytes();
-  if (!status_or_dst_size.ok()) {
-    return absl::InternalError("Failed to get destination buffer size");
-  }
-  int64_t physical_size = status_or_dst_size.value();
+  int64_t physical_size = first_buffer.GetOnDeviceSizeInBytes();
 
-  const PJRT_Api* c_api = nullptr;
-  const PJRT_RawBuffer_Extension* extension =
-      GetRawBufferExtension(first_buffer, &c_api);
-  PjRtCApiBuffer* first_capi_buffer =
-      dynamic_cast<PjRtCApiBuffer*>(first_buffer);
-
-  if (first_capi_buffer && !extension) {
-    return absl::InternalError(
-        "RawBuffer extension not found in PjRtCApiClient");
-  }
-
-  int64_t slice_byte_size = GetMajorSliceByteSize(first_buffer);
+  int64_t slice_byte_size = GetMajorSliceByteSize(shape);
 
   if (is_partial && slice_byte_size % 4096 != 0) {
     return absl::InvalidArgumentError(
@@ -248,12 +216,7 @@ inline absl::StatusOr<PjRtCopyFuture> transfer_h2d_core(
     const uint8_t* src_data = src_ptrs[i];
     size_t src_size = src_sizes[i];
 
-    PjRtBuffer* dst_buffer = dst_buffers[i];
-
-    BufferHoldAndAlias hold;
-    ASSIGN_OR_RETURN(
-        hold, BufferHoldAndAlias::Acquire(dst_buffer, c_api, extension,
-                                          unsafe_skip_buffer_lock));
+    const RaidenBufferHandle& hold = dst_buffers[i];
 
     if (!is_partial) {
       // Full copy.

@@ -48,7 +48,7 @@ namespace kv_cache {
 namespace jax {
 
 struct UnpackedCache {
-  std::vector<std::vector<xla::PjRtBuffer*>> layer_buffers;
+  std::vector<std::vector<raiden::RaidenBufferHandle>> layer_buffers;
 #ifndef WITHOUT_PYTHON
   nanobind::list device_arrays;
 #endif
@@ -216,7 +216,7 @@ class NumaAwareKVCacheManager {
 #endif
 
   void InitSubManagers(
-      const std::vector<std::vector<xla::PjRtBuffer*>>& layer_buffers,
+      const std::vector<std::vector<raiden::RaidenBufferHandle>>& layer_buffers,
       std::optional<int> local_port, std::optional<int> host_blocks_to_allocate,
       bool unsafe_skip_buffer_lock, int parallelism, int64_t node_id,
       int64_t local_control_port, int64_t max_blocks, int64_t num_slots,

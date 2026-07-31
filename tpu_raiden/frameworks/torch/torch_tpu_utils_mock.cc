@@ -46,19 +46,30 @@ void RegisterMockTensor(const at::Tensor& tensor, xla::PjRtBuffer* buffer) {
   GetMockMap()[tensor.unsafeGetTensorImpl()] = buffer;
 }
 
-UnpackedTensor UnpackTorchTensor(const at::Tensor& tensor) {
+UnpackedTensor UnpackTorchTensor(const at::Tensor& tensor,
+                                 bool unsafe_skip_buffer_lock) {
   auto it = GetMockMap().find(tensor.unsafeGetTensorImpl());
   if (it == GetMockMap().end()) {
     throw std::runtime_error(
         "Mock tensor not registered. Call RegisterMockTensor first.");
   }
+
+  auto handle_or = raiden::RaidenBufferHandle::Acquire(
+      it->second, /*c_api=*/nullptr, /*extension=*/nullptr,
+      unsafe_skip_buffer_lock);
+  if (!handle_or.ok()) {
+    throw std::runtime_error(
+        "Failed to acquire RaidenBufferHandle for mock buffer");
+  }
+
   // Mock has no real materialization, hence no DeviceBufferRef to hand back.
   if (tensor.dim() == 0 || tensor.size(0) <= 0) {
-    return UnpackedTensor{.buffer = it->second, .ref = std::nullopt};
+    return UnpackedTensor{.buffer = std::move(handle_or.value()),
+                          .ref = std::nullopt};
   }
   const size_t logical_physical_size = static_cast<size_t>(tensor.nbytes());
   return UnpackedTensor{
-      .buffer = it->second,
+      .buffer = std::move(handle_or.value()),
       .ref = std::nullopt,
       .logical_dimensions = TensorDimensions(tensor),
       .logical_slice_byte_size =

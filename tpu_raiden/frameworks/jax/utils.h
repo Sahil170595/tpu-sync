@@ -25,26 +25,26 @@
 
 #include <nanobind/nanobind.h>
 #include "xla/pjrt/pjrt_client.h"
-#include "xla/python/ifrt/array.h"
 #include "tpu_raiden/frameworks/jax/jax_utils.h"
 
 namespace tpu_raiden {
 namespace jax {
 
-inline std::vector<std::vector<xla::PjRtBuffer*>> UnpackJaxArrays(
-    const nanobind::list& jax_arrays) {
+inline std::vector<std::vector<raiden::RaidenBufferHandle>> UnpackJaxArrays(
+    const nanobind::list& jax_arrays, bool unsafe_skip_buffer_lock = false) {
   size_t num_layers = nanobind::len(jax_arrays);
   if (num_layers == 0) return {};
 
   size_t num_shards = nanobind::len(
       nanobind::cast<nanobind::list>(jax_arrays[0].attr("addressable_shards")));
-  std::vector<std::vector<xla::PjRtBuffer*>> layer_buffers;
+  std::vector<std::vector<raiden::RaidenBufferHandle>> layer_buffers;
+
   layer_buffers.reserve(num_layers);
 
   for (size_t l = 0; l < num_layers; ++l) {
     nanobind::object dst = nanobind::cast<nanobind::object>(jax_arrays[l]);
-    std::vector<xla::PjRtBuffer*> shard_buffers =
-        ::jax::ExtractPjRtBuffersFromPyArray(dst);
+    std::vector<raiden::RaidenBufferHandle> shard_buffers =
+        ::jax::ExtractPjRtBuffersFromPyArray(dst, unsafe_skip_buffer_lock);
 
     if (shard_buffers.size() != num_shards) {
       throw std::runtime_error(

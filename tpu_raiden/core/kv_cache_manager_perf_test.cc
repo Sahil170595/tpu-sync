@@ -218,18 +218,22 @@ void RunBenchmarkScenarioA(TpuPjrtManager* manager,
 
   // 2. Allocate TPU Device Buffers and populate them
   std::vector<std::unique_ptr<xla::PjRtBuffer>> device_buffers;
-  std::vector<std::vector<xla::PjRtBuffer*>> layer_buffers(kNumLayers);
+  std::vector<std::vector<raiden::RaidenBufferHandle>> layer_buffers(
+      kNumLayers);
   for (int i = 0; i < kNumLayers; ++i) {
     xla::PjRtDevice* device = devices[i % devices.size()];
     auto buf_or = manager->BufferFromHost(host_init_ptrs[i], primitive_type,
                                           layer_shape, device);
     ASSERT_OK(buf_or.status());
     device_buffers.push_back(std::move(buf_or).value());
-    layer_buffers[i].push_back(device_buffers.back().get());
+    auto handle_or =
+        raiden::RaidenBufferHandle::Acquire(device_buffers.back().get());
+    ASSERT_OK(handle_or.status());
+    layer_buffers[i].push_back(std::move(handle_or).value());
   }
 
   for (auto& bufs : layer_buffers) {
-    ASSERT_OK(bufs[0]->GetReadyFuture().Await());
+    ASSERT_OK(bufs[0].buffer->GetReadyFuture().Await());
   }
 
   // Free initial host buffers early to reduce peak memory
@@ -399,17 +403,21 @@ void RunBenchmarkScenarioB(TpuPjrtManager* manager,
 
   // 2. Allocate TPU Device Buffers (1 layer, multi-device)
   std::vector<std::unique_ptr<xla::PjRtBuffer>> device_buffers;
-  std::vector<std::vector<xla::PjRtBuffer*>> layer_buffers(1);  // 1 layer
+  std::vector<std::vector<raiden::RaidenBufferHandle>> layer_buffers(
+      1);  // 1 layer
   for (int i = 0; i < num_devices; ++i) {
     auto buf_or = manager->BufferFromHost(host_init.ptr, primitive_type,
                                           baked_shape, devices[i]);
     ASSERT_OK(buf_or.status());
     device_buffers.push_back(std::move(buf_or).value());
-    layer_buffers[0].push_back(device_buffers.back().get());
+    auto handle_or =
+        raiden::RaidenBufferHandle::Acquire(device_buffers.back().get());
+    ASSERT_OK(handle_or.status());
+    layer_buffers[0].push_back(std::move(handle_or).value());
   }
 
-  for (auto* buf : layer_buffers[0]) {
-    ASSERT_OK(buf->GetReadyFuture().Await());
+  for (auto& handle : layer_buffers[0]) {
+    ASSERT_OK(handle.buffer->GetReadyFuture().Await());
   }
 
   // Free initial host buffer early to reduce peak memory

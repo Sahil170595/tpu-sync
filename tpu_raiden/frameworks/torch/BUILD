@@ -57,12 +57,8 @@ cc_library(
     deps = [
         ":torch_tpu_tensor_to_buffer_headers",
         ":torch_utils",
-        "//tpu_raiden/core:xla_raw_transfer_headers",
         "//tpu_raiden/weight_sync:weight_synchronizer_base",
-        "@com_google_absl//absl/status",
         "@torch_tpu//shims/torch:aten_headers",
-        "@torch_tpu//shims/torch/c10/core:base_headers",
-        "@torch_tpu//shims/torch/torch/headeronly:torch_headeronly",
     ],
 )
 
@@ -84,6 +80,7 @@ cc_library(
         ":torch_tpu_device_buffer_headers",
         ":torch_tpu_materialize_headers",
         ":torch_tpu_tensor_to_buffer_headers",
+        "//tpu_raiden/core:raw_transfer_core",
         "//tpu_raiden/core:xla_raw_transfer_headers",
         "@com_google_absl//absl/strings",
         "@torch_tpu//shims/torch:aten_headers",
@@ -107,6 +104,7 @@ cc_library(
     deps = [
         ":torch_tpu_tensor_to_buffer_headers",
         ":torch_tpu_utils",
+        "//tpu_raiden/core:raw_transfer_core",
         "//tpu_raiden/core:xla_raw_transfer_headers",
         "@torch_tpu//shims/torch:aten_headers",
         "@torch_tpu//shims/torch:torch_headers",
@@ -338,6 +336,7 @@ cc_library(
     features = ["-use_header_modules"],
     deps = [
         ":torch_tpu_device_buffer_headers",
+        "//tpu_raiden/core:raw_transfer_core",
         "@torch_tpu//shims/torch:aten_headers",
         "@torch_tpu//shims/torch:torch_headers",
         "@xla//xla/pjrt:pjrt_client",
@@ -357,6 +356,7 @@ cc_library(
     deps = [
         ":torch_tpu_tensor_to_buffer_headers",
         ":torch_tpu_utils_mock",
+        "//tpu_raiden/core:raw_transfer_core",
         "//tpu_raiden/core:xla_raw_transfer_headers",
         "@torch_tpu//shims/torch:aten_headers",
     ],
@@ -409,13 +409,9 @@ cc_library(
     deps = [
         ":torch_tpu_tensor_to_buffer_headers",
         ":torch_utils_mock",
-        "//tpu_raiden/core:xla_raw_transfer_headers",
         "//tpu_raiden/weight_sync:weight_synchronizer_base",
-        "@com_google_absl//absl/status",
         "@torch_tpu//shims/torch:aten_headers",
         "@torch_tpu//shims/torch:torch_headers",
-        "@torch_tpu//shims/torch/c10/core:base_headers",
-        "@torch_tpu//shims/torch/torch/headeronly:torch_headeronly",
     ],
 )
 

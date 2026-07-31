@@ -54,7 +54,7 @@ absl::StatusOr<PjRtCopyFuture> transfer_d2h_async_internal(
     absl::Span<const int64_t> src_offsets,
     absl::Span<const int64_t> dst_offsets, absl::Span<const int64_t> copy_sizes,
     bool unsafe_skip_buffer_lock) {
-  std::vector<PjRtBuffer*> src_buffers =
+  std::vector<RaidenBufferHandle> src_buffers =
       jax::ExtractPjRtBuffersFromPyArray(src_arr);
 
   nb::object dst_addressable_shards = dst_arr.attr("addressable_shards");
@@ -94,7 +94,7 @@ absl::StatusOr<PjRtCopyFuture> transfer_h2d_async_internal(
     absl::Span<const int64_t> src_offsets,
     absl::Span<const int64_t> dst_offsets, absl::Span<const int64_t> copy_sizes,
     bool unsafe_skip_buffer_lock) {
-  std::vector<PjRtBuffer*> dst_buffers =
+  std::vector<RaidenBufferHandle> dst_buffers =
       jax::ExtractPjRtBuffersFromPyArray(dst_arr);
 
   nb::object src_addressable_shards = src_arr.attr("addressable_shards");

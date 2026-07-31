@@ -18,6 +18,12 @@
 #ifndef THIRD_PARTY_TPU_RAIDEN_TPU_RAIDEN_FRAMEWORKS_JAX_JAX_UTILS_H_
 #define THIRD_PARTY_TPU_RAIDEN_TPU_RAIDEN_FRAMEWORKS_JAX_JAX_UTILS_H_
 
+#include <cstddef>
+#include <cstdint>
+#include <stdexcept>
+#include <utility>
+#include <vector>
+
 #ifndef WITHOUT_PYTHON
 #include <Python.h>
 
@@ -30,6 +36,7 @@
 #include "tpu_raiden/frameworks/jax/mock_nanobind.h"
 #endif
 #include "xla/pjrt/pjrt_client.h"
+#include "tpu_raiden/core/raw_transfer_core.h"
 
 namespace nb = nanobind;
 
@@ -96,9 +103,9 @@ inline std::vector<int64_t> UnpackListToVector(const nb::list& py_list) {
 }
 
 // FFI helper to extract the underlying C++ PjRtBuffers of a JAX Array
-inline std::vector<xla::PjRtBuffer*> ExtractPjRtBuffersFromPyArray(
-    const nb::object& jax_array) {
-  std::vector<xla::PjRtBuffer*> result;
+inline std::vector<raiden::RaidenBufferHandle> ExtractPjRtBuffersFromPyArray(
+    const nb::object& jax_array, bool unsafe_skip_buffer_lock = false) {
+  std::vector<raiden::RaidenBufferHandle> result;
   nb::object addressable_shards = jax_array.attr("addressable_shards");
   size_t num_shards = nb::len(addressable_shards);
   result.reserve(num_shards);
@@ -106,7 +113,15 @@ inline std::vector<xla::PjRtBuffer*> ExtractPjRtBuffersFromPyArray(
   for (size_t i = 0; i < num_shards; ++i) {
     nb::object shard = addressable_shards[i];
     nb::object shard_data = shard.attr("data");
-    result.push_back(GetPjrtBufferFromPyObject(shard_data.ptr()));
+    xla::PjRtBuffer* buf = GetPjrtBufferFromPyObject(shard_data.ptr());
+    auto handle = raiden::RaidenBufferHandle::Acquire(buf, nullptr, nullptr,
+                                                      unsafe_skip_buffer_lock);
+    if (!handle.ok()) {
+      throw std::runtime_error(
+          std::string("Failed to acquire buffer handle: ") +
+          std::string(handle.status().message()));
+    }
+    result.push_back(std::move(handle.value()));
   }
   return result;
 }
@@ -121,9 +136,9 @@ inline std::vector<int64_t> UnpackListToVector(const nb::list& py_list) {
   return result;
 }
 
-inline std::vector<xla::PjRtBuffer*> ExtractPjRtBuffersFromPyArray(
-    const nb::object& jax_array) {
-  std::vector<xla::PjRtBuffer*> result;
+inline std::vector<raiden::RaidenBufferHandle> ExtractPjRtBuffersFromPyArray(
+    const nb::object& jax_array, bool unsafe_skip_buffer_lock = false) {
+  std::vector<raiden::RaidenBufferHandle> result;
   nb::object addressable_shards = jax_array.attr("addressable_shards");
   size_t num_shards = nb::len(addressable_shards);
   result.reserve(num_shards);
@@ -131,7 +146,15 @@ inline std::vector<xla::PjRtBuffer*> ExtractPjRtBuffersFromPyArray(
   for (size_t i = 0; i < num_shards; ++i) {
     nb::object shard = addressable_shards[i];
     nb::object shard_data = shard.attr("data");
-    result.push_back(reinterpret_cast<xla::PjRtBuffer*>(shard_data.ptr()));
+    xla::PjRtBuffer* buf = reinterpret_cast<xla::PjRtBuffer*>(shard_data.ptr());
+    auto handle = raiden::RaidenBufferHandle::Acquire(buf, nullptr, nullptr,
+                                                      unsafe_skip_buffer_lock);
+    if (!handle.ok()) {
+      throw std::runtime_error(
+          std::string("Failed to acquire buffer handle: ") +
+          std::string(handle.status().message()));
+    }
+    result.push_back(std::move(handle.value()));
   }
   return result;
 }

@@ -89,6 +89,7 @@ cc_library(
     features = ["-use_header_modules"],
     visibility = ["//visibility:public"],
     deps = [
+        ":raw_transfer_core",
         ":tpu_utils",
         ":xla_raw_transfer_headers",
         "//tpu_raiden/transport:block_transport",
@@ -229,6 +230,7 @@ cc_library(
     features = ["-use_header_modules"],
     deps = [
         ":xla_raw_transfer_headers",
+        "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/types:span",
@@ -584,8 +586,10 @@ cc_test(
     ],
     deps = [
         ":kv_cache_manager_with_transfer",
+        ":raw_transfer_core",
         ":tpu_pjrt_manager",
         "//tpu_raiden/kv_cache:kv_cache_manager_base",
+        "@com_google_absl//absl/strings",
         "@com_google_absl//absl/types:span",
         "@com_google_googletest//:gtest_main",
         "@xla//xla:future",

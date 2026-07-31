@@ -152,7 +152,7 @@ class KVCacheManagerWithTransfer : public kv_cache::KVCacheManagerBase {
   };
 
   KVCacheManagerWithTransfer(
-      const std::vector<std::vector<xla::PjRtBuffer*>>& layer_buffers,
+      const std::vector<std::vector<raiden::RaidenBufferHandle>>& layer_buffers,
       std::optional<int> local_port, std::optional<int> host_blocks_to_allocate,
       bool unsafe_skip_buffer_lock, int parallelism,
       HostBufferAllocator host_allocator, int64_t node_id = 0,
@@ -161,7 +161,7 @@ class KVCacheManagerWithTransfer : public kv_cache::KVCacheManagerBase {
       std::shared_ptr<MetricsCollector> metrics_collector = nullptr);
 
   KVCacheManagerWithTransfer(
-      const std::vector<std::vector<xla::PjRtBuffer*>>& layer_buffers,
+      const std::vector<std::vector<raiden::RaidenBufferHandle>>& layer_buffers,
       size_t slice_byte_size, const std::vector<int64_t>& dimensions,
       size_t physical_size, std::optional<int> local_port,
       std::optional<int> host_blocks_to_allocate, bool unsafe_skip_buffer_lock,

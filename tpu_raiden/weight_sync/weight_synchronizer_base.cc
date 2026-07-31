@@ -53,7 +53,7 @@ namespace tpu_raiden {
 namespace weight_sync {
 
 WeightSynchronizerBase::WeightSynchronizerBase(
-    const std::vector<std::vector<xla::PjRtBuffer*>>& layer_buffers,
+    const std::vector<std::vector<raiden::RaidenBufferHandle>>& layer_buffers,
     std::optional<int> local_port,
     std::optional<std::vector<const uint8_t*>> external_host_ptrs,
     bool unsafe_skip_buffer_lock, int parallelism,
@@ -62,9 +62,8 @@ WeightSynchronizerBase::WeightSynchronizerBase(
     : tpu_raiden::RaidenManagerBase(
           layer_buffers.size(),
           layer_buffers.empty() ? 0 : layer_buffers[0].size(),
-          layer_buffers.empty()
-              ? 0
-              : layer_buffers[0][0]->GetOnDeviceSizeInBytes().value(),
+          layer_buffers.empty() ? 0
+                                : layer_buffers[0][0].GetOnDeviceSizeInBytes(),
           local_port, parallelism, bind_ip),
       auto_h2d_(auto_h2d) {
   if (layer_names.empty()) {
@@ -81,9 +80,13 @@ WeightSynchronizerBase::WeightSynchronizerBase(
     return;
   }
 
-  xla::PjRtBuffer* first_buffer = layer_buffers[0][0];
-  physical_size_ = first_buffer->GetOnDeviceSizeInBytes().value();
-  extension_ = raiden::GetRawBufferExtension(first_buffer, &c_api_);
+  const auto& first_handle = layer_buffers[0][0];
+  physical_size_ = first_handle.GetOnDeviceSizeInBytes();
+
+  if (!first_handle.is_common_buffer && first_handle.c_hold) {
+    c_api_ = first_handle.c_hold->c_api;
+    extension_ = first_handle.c_hold->extension;
+  }
 
   shard_factor_ = 1;
   major_dim_size_ = 1;
@@ -105,10 +108,10 @@ WeightSynchronizerBase::WeightSynchronizerBase(
     hold_info.reserve(num_shards_);
 
     for (size_t i = 0; i < num_shards_; ++i) {
-      xla::PjRtBuffer* dst_buffer = dst_buffers[i];
+      const auto& dst_buffer = dst_buffers[i];
       ShardBufferInfoBase shard_info;
 
-      shard_info.device_size = dst_buffer->GetOnDeviceSizeInBytes().value();
+      shard_info.device_size = dst_buffer.GetOnDeviceSizeInBytes();
 
       size_t alloc_size =
           shard_info.device_size +
@@ -136,14 +139,7 @@ WeightSynchronizerBase::WeightSynchronizerBase(
         shard_info.host_size = alloc_size;
       }
 
-      auto status_or_hold = raiden::BufferHoldAndAlias::Acquire(
-          dst_buffer, c_api_, extension_, unsafe_skip_buffer_lock);
-      if (!status_or_hold.ok()) {
-        throw std::runtime_error(
-            std::string("Failed to acquire weights PJRT hold: ") +
-            std::string(status_or_hold.status().message()));
-      }
-      hold_info.push_back(std::move(status_or_hold.value()));
+      hold_info.push_back(dst_buffer);
       layer_info.shards.push_back(std::move(shard_info));
     }
     layers_.push_back(std::move(layer_info));
@@ -262,10 +258,9 @@ absl::StatusOr<raiden::PjRtCopyFuture> WeightSynchronizerBase::H2d() {
       const auto& shard_info = layer_info.shards[i];
       const auto& shard_hold = layer_holds[i];
 
-      auto pjrt_layout = shard_hold.buffer->layout();
       const xla::Layout* xla_layout = nullptr;
-      if (pjrt_layout) {
-        xla_layout = &pjrt_layout->xla_layout();
+      if (shard_hold.shape.has_layout()) {
+        xla_layout = &shard_hold.shape.layout();
       }
       bool is_tiled = xla_layout && !xla_layout->tiles().empty();
 
@@ -273,8 +268,8 @@ absl::StatusOr<raiden::PjRtCopyFuture> WeightSynchronizerBase::H2d() {
       if (is_tiled) {
         auto temp_buffer = std::make_shared<std::vector<uint8_t>>(layer_size);
         auto status = tpu_raiden::weight_sync::TileBuffer(
-            shard_info.host_ptr, temp_buffer->data(),
-            shard_hold.buffer->on_device_shape(), *xla_layout);
+            shard_info.host_ptr, temp_buffer->data(), shard_hold.shape,
+            *xla_layout);
         if (!status.ok()) {
           return status;
         }
@@ -310,10 +305,9 @@ absl::StatusOr<raiden::PjRtCopyFuture> WeightSynchronizerBase::D2h() {
       const auto& shard_hold = layer_holds[i];
       uint8_t* dst_host_ptr = const_cast<uint8_t*>(shard_info.host_ptr);
 
-      auto pjrt_layout = shard_hold.buffer->layout();
       const xla::Layout* xla_layout = nullptr;
-      if (pjrt_layout) {
-        xla_layout = &pjrt_layout->xla_layout();
+      if (shard_hold.shape.has_layout()) {
+        xla_layout = &shard_hold.shape.layout();
       }
       bool is_tiled = xla_layout && !xla_layout->tiles().empty();
 
@@ -325,10 +319,9 @@ absl::StatusOr<raiden::PjRtCopyFuture> WeightSynchronizerBase::D2h() {
         xla::Future<> copy_future =
             shard_hold.CopyRawDeviceToHost(temp_buffer_ptr, 0, layer_size);
 
-        xla::Future<> detile_future =
-            copy_future.Map([temp_buffer, dst_host_ptr,
-                             shape = shard_hold.buffer->on_device_shape(),
-                             layout = *xla_layout]() -> absl::Status {
+        xla::Future<> detile_future = copy_future.Map(
+            [temp_buffer, dst_host_ptr, shape = shard_hold.shape,
+             layout = *xla_layout]() -> absl::Status {
               return tpu_raiden::weight_sync::DetileBuffer(
                   temp_buffer->data(), dst_host_ptr, shape, layout);
             });

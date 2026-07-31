@@ -40,9 +40,10 @@ namespace jax {
 
 #ifndef WITHOUT_PYTHON
 struct UnpackedWeights {
-  std::vector<std::vector<xla::PjRtBuffer*>> layer_buffers;
+  std::vector<std::vector<raiden::RaidenBufferHandle>> layer_buffers;
   nanobind::list jax_arrays;
 };
+
 #endif
 
 class WeightSynchronizer {

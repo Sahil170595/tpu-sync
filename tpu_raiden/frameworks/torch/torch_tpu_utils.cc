@@ -41,7 +41,8 @@ std::vector<int64_t> TensorDimensions(const at::Tensor& tensor) {
 
 }  // namespace
 
-UnpackedTensor UnpackTorchTensor(const at::Tensor& tensor) {
+UnpackedTensor UnpackTorchTensor(const at::Tensor& tensor,
+                                 bool unsafe_skip_buffer_lock) {
   if (tensor.device().type() != at::DeviceType::PrivateUse1) {
     throw std::invalid_argument(
         "Tensor must reside on TPU device private use space");
@@ -120,11 +121,21 @@ UnpackedTensor UnpackTorchTensor(const at::Tensor& tensor) {
     throw std::runtime_error(absl::StrCat(
         "Failed to fetch PjRtBuffer from TPU reference: ", status_or_buf.status().message()));
   }
+
+  auto handle_or = raiden::RaidenBufferHandle::Acquire(
+      status_or_buf.value(), /*c_api=*/nullptr, /*extension=*/nullptr,
+      unsafe_skip_buffer_lock);
+  if (!handle_or.ok()) {
+    throw std::runtime_error(
+        absl::StrCat("Failed to acquire RaidenBufferHandle: ",
+                     handle_or.status().message()));
+  }
+
   // Return the buffer AND the owning base ref. The ref pins the storage buffer
   // backing the tensor for as long as the caller keeps it (manager lifetime /
   // transfer future), so the raw PjRtBuffer* stays valid.
   return UnpackedTensor{
-      .buffer = status_or_buf.value(),
+      .buffer = std::move(handle_or.value()),
       .ref = std::move(base_ref),
       .logical_dimensions = TensorDimensions(tensor),
       .logical_slice_byte_size = logical_slice_byte_size,

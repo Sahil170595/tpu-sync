@@ -29,6 +29,7 @@
 #include "absl/strings/string_view.h"
 #include "absl/synchronization/mutex.h"
 #include "xla/pjrt/pjrt_client.h"
+#include "tpu_raiden/core/raw_transfer_core.h"
 #include "tpu_raiden/core/tpu_utils.h"
 #include "tpu_raiden/transport/block_transport.h"
 
@@ -143,7 +144,8 @@ class RaidenManagerBase : public tpu_raiden::transport::BlockTransportDelegate {
   virtual std::vector<HostNicAddress> GetHostNics() const;
 
   void DetectAndAssignNumaNode(
-      const std::vector<std::vector<xla::PjRtBuffer*>>& layer_buffers);
+      const std::vector<std::vector<raiden::RaidenBufferHandle>>&
+          layer_buffers);
 
   mutable absl::Mutex server_init_mu_;
   std::unique_ptr<tpu_raiden::transport::BlockTransport> server_

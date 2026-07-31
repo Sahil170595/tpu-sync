@@ -25,11 +25,13 @@
 #include <vector>
 
 #include <gmock/gmock.h>
+#include "absl/strings/str_cat.h"
 #include "absl/types/span.h"
 #include "xla/future.h"
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/tsl/platform/statusor.h"
 #include "xla/tsl/platform/test.h"
+#include "tpu_raiden/core/raw_transfer_core.h"
 #include "tpu_raiden/core/tpu_pjrt_manager.h"
 
 namespace tpu_raiden {
@@ -81,7 +83,9 @@ TEST(KVCacheManagerWithTransferTest, LocalOrchestratedTransfer) {
   ASSERT_THAT(buffer->GetReadyFuture().Await(), IsOk());
 
   // Create KVCacheManagerWithTransfer
-  std::vector<std::vector<xla::PjRtBuffer*>> layer_buffers = {{buffer.get()}};
+  auto handle_or = raiden::RaidenBufferHandle::Acquire(buffer.get());
+  std::vector<std::vector<raiden::RaidenBufferHandle>> layer_buffers = {
+      {handle_or.value()}};
   auto engine = std::make_unique<KVCacheManagerWithTransfer>(
       layer_buffers,
       /*local_port=*/std::nullopt,
@@ -157,7 +161,9 @@ TEST(KVCacheManagerWithTransferTest, StartReadAcceptsParallelism) {
       pjrt_manager->BufferFromHost(host_data.data(), xla::F32, shape_dims));
   ASSERT_THAT(buffer->GetReadyFuture().Await(), IsOk());
 
-  std::vector<std::vector<xla::PjRtBuffer*>> layer_buffers = {{buffer.get()}};
+  auto handle_or = raiden::RaidenBufferHandle::Acquire(buffer.get());
+  std::vector<std::vector<raiden::RaidenBufferHandle>> layer_buffers = {
+      {handle_or.value()}};
   auto engine = std::make_unique<KVCacheManagerWithTransfer>(
       layer_buffers,
       /*local_port=*/std::nullopt,
@@ -203,7 +209,9 @@ TEST(KVCacheManagerWithTransferTest,
   ASSERT_THAT(buffer->GetReadyFuture().Await(), IsOk());
 
   // Create KVCacheManagerWithTransfer
-  std::vector<std::vector<xla::PjRtBuffer*>> layer_buffers = {{buffer.get()}};
+  auto handle_or = raiden::RaidenBufferHandle::Acquire(buffer.get());
+  std::vector<std::vector<raiden::RaidenBufferHandle>> layer_buffers = {
+      {handle_or.value()}};
   auto engine = std::make_unique<KVCacheManagerWithTransfer>(
       layer_buffers,
       /*local_port=*/std::nullopt,
@@ -328,8 +336,10 @@ TEST(KVCacheManagerWithTransferTest, TreeBroadcastCorrectness8Nodes) {
   std::vector<std::string> endpoints(8);
 
   for (int i = 0; i < 8; ++i) {
-    std::vector<std::vector<xla::PjRtBuffer*>> layer_buffers = {
-        {buffers[i].get()}};
+    auto handle_or = raiden::RaidenBufferHandle::Acquire(buffers[i].get());
+    ASSERT_OK(handle_or.status());
+    std::vector<std::vector<raiden::RaidenBufferHandle>> layer_buffers = {
+        {handle_or.value()}};
     engines[i] = std::make_unique<KVCacheManagerWithTransfer>(
         layer_buffers,
         /*local_port=*/std::nullopt,
@@ -464,7 +474,9 @@ TEST(KVCacheManagerWithTransferTest, MultiIpOrchestratedTransfer) {
 
   ASSERT_THAT(buffer->GetReadyFuture().Await(), IsOk());
 
-  std::vector<std::vector<xla::PjRtBuffer*>> layer_buffers = {{buffer.get()}};
+  auto handle_or = raiden::RaidenBufferHandle::Acquire(buffer.get());
+  std::vector<std::vector<raiden::RaidenBufferHandle>> layer_buffers = {
+      {handle_or.value()}};
 
   auto engine = std::make_unique<TestKVCacheManagerWithTransfer>(
       layer_buffers,

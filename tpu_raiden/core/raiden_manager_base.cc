@@ -33,6 +33,7 @@
 #include "absl/synchronization/mutex.h"
 #include "xla/future.h"
 #include "xla/pjrt/pjrt_client.h"
+#include "tpu_raiden/core/raw_transfer_core.h"
 #include "tpu_raiden/core/tpu_utils.h"
 #include "tpu_raiden/transport/block_transport.h"
 #include "tpu_raiden/transport/lib/raw_buffer_transport.h"
@@ -44,12 +45,12 @@ xla::Future<> ReturnFuture(const absl::Status& status) {
 }
 
 void RaidenManagerBase::DetectAndAssignNumaNode(
-    const std::vector<std::vector<xla::PjRtBuffer*>>& layer_buffers) {
+    const std::vector<std::vector<raiden::RaidenBufferHandle>>& layer_buffers) {
   std::vector<int> unique_numa_nodes;
   for (const auto& layer : layer_buffers) {
-    for (xla::PjRtBuffer* buf : layer) {
-      if (buf && buf->device()) {
-        int node = GetPjRtDeviceNumaNode(buf->device());
+    for (const auto& buf : layer) {
+      if (buf.device) {
+        int node = GetPjRtDeviceNumaNode(buf.device);
         if (node >= 0) {
           bool found = false;
           for (int n : unique_numa_nodes) {

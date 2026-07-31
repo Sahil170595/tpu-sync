@@ -83,7 +83,7 @@ class KVCacheManagerBase : public tpu_raiden::RaidenManagerBase {
   // Core C++ Constructor wrapping raw PJRT buffers directly (used by JAX and
   // PyTorch E2E)
   KVCacheManagerBase(
-      const std::vector<std::vector<xla::PjRtBuffer*>>& layer_buffers,
+      const std::vector<std::vector<raiden::RaidenBufferHandle>>& layer_buffers,
       std::optional<int> local_port = std::nullopt,
       std::optional<int> host_blocks_to_allocate = std::nullopt,
       bool unsafe_skip_buffer_lock = false, int parallelism = 1,

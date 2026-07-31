@@ -164,55 +164,71 @@ void AwaitReady(xla::PjRtBuffer* buffer, absl::string_view role) {
 
 // Raw transfer addresses the device buffer as a flat array of equal-size
 // major-dimension slices ("blocks"): block i lives at byte offset
-// i * GetMajorSliceByteSize(buffer). That mapping is only correct when logical
+// i * GetMajorSliceByteSize(shape). That mapping is only correct when logical
 // dimension 0 is the most-major physical dimension and the buffer's physical
 // size is an exact multiple of the slice size (the blocks tile it with no
 // remainder). Assert both so a buffer with an unexpected on-device layout fails
 // loudly here instead of silently transferring the wrong bytes.
-void ValidateMajorDimLayout(xla::PjRtBuffer* buffer, absl::string_view role) {
-  const xla::Shape& shape = buffer->on_device_shape();
+void ValidateMajorDimLayout(const RaidenBufferHandle& buffer,
+                            absl::string_view role) {
+  const xla::Shape& shape = buffer.shape;
   const int rank = shape.dimensions().size();
   if (rank < 1) {
     throw std::invalid_argument(
         absl::StrCat(role, " buffer must have rank >= 1 for block transfer"));
   }
   // In xla::Layout, minor_to_major(rank - 1) is the most-major physical dim.
-  if (auto pjrt_layout = buffer->layout();
-      pjrt_layout && pjrt_layout->xla_layout().minor_to_major(rank - 1) != 0) {
+  if (buffer.buffer && buffer.buffer->layout() &&
+      buffer.buffer->layout()->xla_layout().minor_to_major(rank - 1) != 0) {
     throw std::invalid_argument(
-        absl::StrCat(role, " buffer layout must place logical dimension 0 as the most-major "
-                     "physical dimension; block offsetting assumes blocks are the "
+        absl::StrCat(role,
+                     " buffer layout must place logical dimension 0 as the "
+                     "most-major "
+                     "physical dimension; block offsetting assumes blocks are "
+                     "the "
                      "outermost, physically contiguous dimension."));
   }
-  const int64_t slice = GetMajorSliceByteSize(buffer);
+  const int64_t slice = GetMajorSliceByteSize(shape);
+  // Fallback to buffer->GetOnDeviceSizeInBytes() if available, but for now we
+  // might not have it easily without deprecated buffer pointer if it's not
+  // cached in handle.
+  // Assuming shape gives enough info or buffer pointer is available as fallback
+  // in handle for now.
   const int64_t physical_size =
-      ValueOrThrow(absl::StrCat(role, " physical buffer size for layout check"),
-                   buffer->GetOnDeviceSizeInBytes());
+      buffer.buffer
+          ? ValueOrThrow(
+                absl::StrCat(role, " physical buffer size for layout check"),
+                buffer.buffer->GetOnDeviceSizeInBytes())
+          : xla::ShapeUtil::ByteSizeOf(shape);  // Fallback
+
   if (slice <= 0 || physical_size % slice != 0) {
     throw std::invalid_argument(
-        absl::StrCat(role, " buffer physical size is not an exact multiple of its major-dimension "
+        absl::StrCat(role,
+                     " buffer physical size is not an exact multiple of its "
+                     "major-dimension "
                      "slice size; the block-layout assumption does not hold."));
   }
 }
 
-PjRtCopyFuture IssueD2HCopy(xla::PjRtBuffer* src_buffer, uint8_t* dst_data,
-                            size_t dst_size,
+PjRtCopyFuture IssueD2HCopy(const RaidenBufferHandle& src_buffer,
+                            uint8_t* dst_data, size_t dst_size,
                             const std::vector<int64_t>& src_offsets_major_dim,
                             const std::vector<int64_t>& dst_offsets_major_dim,
                             const std::vector<int64_t>& copy_sizes_major_dim,
                             std::shared_ptr<void> user_hold = nullptr) {
   ValidateMajorDimLayout(src_buffer, "Source");
-  const bool is_partial = tpu_raiden::IsPartialCopy(
-      src_buffer->on_device_shape(), src_offsets_major_dim,
-      dst_offsets_major_dim, copy_sizes_major_dim);
+  const bool is_partial =
+      tpu_raiden::IsPartialCopy(src_buffer.shape, src_offsets_major_dim,
+                                dst_offsets_major_dim, copy_sizes_major_dim);
   const int64_t physical_size =
-      ValueOrThrow("Failed to get source physical buffer size",
-                   src_buffer->GetOnDeviceSizeInBytes());
-  const int64_t slice_byte_size = GetMajorSliceByteSize(src_buffer);
+      src_buffer.buffer
+          ? ValueOrThrow("Failed to get source physical buffer size",
+                         src_buffer.buffer->GetOnDeviceSizeInBytes())
+          : xla::ShapeUtil::ByteSizeOf(src_buffer.shape);
+  const int64_t slice_byte_size = GetMajorSliceByteSize(src_buffer.shape);
 
   if (is_partial) {
-    tpu_raiden::ValidatePartialAlignment(src_buffer->on_device_shape(),
-                                         slice_byte_size);
+    tpu_raiden::ValidatePartialAlignment(src_buffer.shape, slice_byte_size);
   }
 
   std::vector<tpu_raiden::RawCopyChunk> chunks =
@@ -221,39 +237,37 @@ PjRtCopyFuture IssueD2HCopy(xla::PjRtBuffer* src_buffer, uint8_t* dst_data,
           src_offsets_major_dim, dst_offsets_major_dim, copy_sizes_major_dim,
           /*is_d2h=*/true);
 
-  BufferHoldAndAlias hold =
-      ValueOrThrow("Failed to acquire source raw buffer",
-                   BufferHoldAndAlias::Acquire(src_buffer));
   std::vector<xla::Future<>> futures;
   futures.reserve(chunks.size());
   for (const auto& chunk : chunks) {
-    futures.push_back(hold.CopyRawDeviceToHost(
+    futures.push_back(src_buffer.CopyRawDeviceToHost(
         dst_data + chunk.dst_offset, chunk.src_offset, chunk.size_bytes));
   }
   return PjRtCopyFuture(
       xla::JoinFutures(absl::MakeSpan(futures)),
-      {BufferHolder{hold.c_hold, hold.common_hold, /*ext_hold=*/nullptr,
-                    std::move(user_hold)}});
+      {BufferHolder{src_buffer.c_hold, src_buffer.common_hold,
+                    /*ext_hold=*/nullptr, std::move(user_hold)}});
 }
 
 PjRtCopyFuture IssueH2DCopy(const uint8_t* src_data, size_t src_size,
-                            xla::PjRtBuffer* dst_buffer,
+                            const RaidenBufferHandle& dst_buffer,
                             const std::vector<int64_t>& src_offsets_major_dim,
                             const std::vector<int64_t>& dst_offsets_major_dim,
                             const std::vector<int64_t>& copy_sizes_major_dim,
                             std::shared_ptr<void> user_hold = nullptr) {
   ValidateMajorDimLayout(dst_buffer, "Destination");
-  const bool is_partial = tpu_raiden::IsPartialCopy(
-      dst_buffer->on_device_shape(), src_offsets_major_dim,
-      dst_offsets_major_dim, copy_sizes_major_dim);
+  const bool is_partial =
+      tpu_raiden::IsPartialCopy(dst_buffer.shape, src_offsets_major_dim,
+                                dst_offsets_major_dim, copy_sizes_major_dim);
   const int64_t physical_size =
-      ValueOrThrow("Failed to get destination physical buffer size",
-                   dst_buffer->GetOnDeviceSizeInBytes());
-  const int64_t slice_byte_size = GetMajorSliceByteSize(dst_buffer);
+      dst_buffer.buffer
+          ? ValueOrThrow("Failed to get destination physical buffer size",
+                         dst_buffer.buffer->GetOnDeviceSizeInBytes())
+          : xla::ShapeUtil::ByteSizeOf(dst_buffer.shape);
+  const int64_t slice_byte_size = GetMajorSliceByteSize(dst_buffer.shape);
 
   if (is_partial) {
-    tpu_raiden::ValidatePartialAlignment(dst_buffer->on_device_shape(),
-                                         slice_byte_size);
+    tpu_raiden::ValidatePartialAlignment(dst_buffer.shape, slice_byte_size);
   }
 
   std::vector<tpu_raiden::RawCopyChunk> chunks =
@@ -262,19 +276,16 @@ PjRtCopyFuture IssueH2DCopy(const uint8_t* src_data, size_t src_size,
           src_offsets_major_dim, dst_offsets_major_dim, copy_sizes_major_dim,
           /*is_d2h=*/false);
 
-  BufferHoldAndAlias hold =
-      ValueOrThrow("Failed to acquire destination raw buffer",
-                   BufferHoldAndAlias::Acquire(dst_buffer));
   std::vector<xla::Future<>> futures;
   futures.reserve(chunks.size());
   for (const auto& chunk : chunks) {
-    futures.push_back(hold.CopyRawHostToDevice(
+    futures.push_back(dst_buffer.CopyRawHostToDevice(
         src_data + chunk.src_offset, chunk.dst_offset, chunk.size_bytes));
   }
   return PjRtCopyFuture(
       xla::JoinFutures(absl::MakeSpan(futures)),
-      {BufferHolder{hold.c_hold, hold.common_hold, /*ext_hold=*/nullptr,
-                    std::move(user_hold)}});
+      {BufferHolder{dst_buffer.c_hold, dst_buffer.common_hold,
+                    /*ext_hold=*/nullptr, std::move(user_hold)}});
 }
 }  // namespace
 
@@ -293,8 +304,7 @@ PjRtCopyFuture TransferD2HBatchAsync(
   for (size_t i = 0; i < src_arrs.size(); ++i) {
     ValidateCpuTensor(dst_arrs[i], "Destination");
     auto unpacked = UnpackTorchTensor(src_arrs[i]);
-    xla::PjRtBuffer* src_buffer = unpacked.buffer;
-    AwaitReady(src_buffer, "Source");
+    const RaidenBufferHandle& src_buffer = unpacked.buffer;
 
     auto torch_holds = std::make_shared<std::vector<at::Tensor>>();
     torch_holds->push_back(src_arrs[i]);
@@ -330,8 +340,7 @@ PjRtCopyFuture TransferH2DBatchAsync(
   for (size_t i = 0; i < src_arrs.size(); ++i) {
     ValidateCpuTensor(src_arrs[i], "Source");
     auto unpacked = UnpackTorchTensor(dst_arrs[i]);
-    xla::PjRtBuffer* dst_buffer = unpacked.buffer;
-    AwaitReady(dst_buffer, "Destination");
+    const RaidenBufferHandle& dst_buffer = unpacked.buffer;
 
     auto torch_holds = std::make_shared<std::vector<at::Tensor>>();
     torch_holds->push_back(src_arrs[i]);
@@ -377,23 +386,18 @@ PreparedTorchRawTransfer::PreparedTorchRawTransfer(
   if (!host_buffer_) {
     throw std::invalid_argument("host_buffer must not be None");
   }
-  auto unpacked = UnpackTorchTensor(tpu_tensor);
-  pjrt_buffer_ = unpacked.buffer;
+  auto unpacked = UnpackTorchTensor(tpu_tensor, unsafe_skip_buffer_lock);
+  buffer_ = std::move(unpacked.buffer);
   buffer_ref_ = std::move(unpacked.ref);  // keep the materialized buffer alive
-  host_buffer_->EnsureBoundToDevice(pjrt_buffer_->device());
-  physical_size_ =
-      static_cast<size_t>(ValueOrThrow("Failed to get TPU physical buffer size",
-                                       pjrt_buffer_->GetOnDeviceSizeInBytes()));
+  host_buffer_->EnsureBoundToDevice(buffer_.device);
+  physical_size_ = static_cast<size_t>(
+      ValueOrThrow("Failed to get TPU physical buffer size",
+                   buffer_.buffer ? buffer_.buffer->GetOnDeviceSizeInBytes()
+                                  : xla::ShapeUtil::ByteSizeOf(buffer_.shape)));
   if (host_buffer_->SizeBytes() < physical_size_) {
     throw std::invalid_argument(
         "RawHostBuffer is smaller than TPU physical size");
   }
-  auto hold_or = BufferHoldAndAlias::Acquire(pjrt_buffer_, nullptr, nullptr,
-                                             unsafe_skip_buffer_lock);
-  if (!hold_or.ok()) {
-    ThrowStatus("Failed to acquire cached raw buffer", hold_or.status());
-  }
-  hold_ = std::move(hold_or.value());
 }
 
 size_t PreparedTorchRawTransfer::PhysicalSizeBytes() const {
@@ -405,20 +409,20 @@ std::shared_ptr<RawHostBuffer> PreparedTorchRawTransfer::HostBuffer() const {
 }
 
 PjRtCopyFuture PreparedTorchRawTransfer::D2HAsync() {
-  xla::Future<> copy_future =
-      hold_.CopyRawDeviceToHost(host_buffer_->MutableData(), 0, physical_size_);
+  xla::Future<> copy_future = buffer_.CopyRawDeviceToHost(
+      host_buffer_->MutableData(), 0, physical_size_);
   return PjRtCopyFuture(
       std::move(copy_future),
-      {BufferHolder{hold_.c_hold, hold_.common_hold, /*ext_hold=*/nullptr,
+      {BufferHolder{buffer_.c_hold, buffer_.common_hold, /*ext_hold=*/nullptr,
                     shared_from_this()}});
 }
 
 PjRtCopyFuture PreparedTorchRawTransfer::H2DAsync() {
   xla::Future<> copy_future =
-      hold_.CopyRawHostToDevice(host_buffer_->Data(), 0, physical_size_);
+      buffer_.CopyRawHostToDevice(host_buffer_->Data(), 0, physical_size_);
   return PjRtCopyFuture(
       std::move(copy_future),
-      {BufferHolder{hold_.c_hold, hold_.common_hold, /*ext_hold=*/nullptr,
+      {BufferHolder{buffer_.c_hold, buffer_.common_hold, /*ext_hold=*/nullptr,
                     shared_from_this()}});
 }
 

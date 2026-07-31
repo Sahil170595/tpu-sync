@@ -101,6 +101,10 @@ class object {
     return const_cast<object*>(this);
   }
 
+  bool is_none() const {
+    return std::holds_alternative<std::monostate>(value_);
+  }
+
   // Cast support
   template <typename T>
   T cast() const;

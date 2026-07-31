@@ -28,8 +28,10 @@ namespace jax {
 #include "tpu_raiden/frameworks/jax/utils.h"
 
 namespace {
-UnpackedWeights UnpackAndMove(nanobind::list jax_arrays) {
-  auto layer_buffers = tpu_raiden::jax::UnpackJaxArrays(jax_arrays);
+UnpackedWeights UnpackAndMove(nanobind::list jax_arrays,
+                              bool unsafe_skip_buffer_lock) {
+  auto layer_buffers =
+      tpu_raiden::jax::UnpackJaxArrays(jax_arrays, unsafe_skip_buffer_lock);
   return {std::move(layer_buffers), std::move(jax_arrays)};
 }
 }  // namespace
@@ -40,9 +42,10 @@ WeightSynchronizer::WeightSynchronizer(nanobind::list jax_arrays,
                                        bool unsafe_skip_buffer_lock,
                                        std::optional<int> listener_port,
                                        std::optional<std::string> bind_ip)
-    : WeightSynchronizer(UnpackAndMove(std::move(jax_arrays)), local_port,
-                         parallelism, unsafe_skip_buffer_lock, listener_port,
-                         bind_ip) {}
+    : WeightSynchronizer(
+          UnpackAndMove(std::move(jax_arrays), unsafe_skip_buffer_lock),
+          local_port, parallelism, unsafe_skip_buffer_lock, listener_port,
+          bind_ip) {}
 
 WeightSynchronizer::WeightSynchronizer(UnpackedWeights&& weights,
                                        std::optional<int> local_port,

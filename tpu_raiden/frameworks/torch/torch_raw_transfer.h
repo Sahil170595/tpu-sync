@@ -62,12 +62,11 @@ class PreparedTorchRawTransfer
 
  private:
   std::shared_ptr<RawHostBuffer> host_buffer_;
-  xla::PjRtBuffer* pjrt_buffer_ = nullptr;
   // Owns the materialized buffer behind pjrt_buffer_ for this object's lifetime
   // (required when tpu_tensor is a view -> separate materialized buffer).
   std::optional<torch_tpu::DeviceBufferRef> buffer_ref_;
   size_t physical_size_ = 0;
-  BufferHoldAndAlias hold_;
+  RaidenBufferHandle buffer_;
 };
 
 PjRtCopyFuture TransferD2HBatchAsync(

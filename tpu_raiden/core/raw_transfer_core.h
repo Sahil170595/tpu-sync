@@ -15,6 +15,7 @@
 #ifndef THIRD_PARTY_TPU_RAIDEN_RAIDEN_LIB_RAW_TRANSFER_RAW_TRANSFER_CORE_H_
 #define THIRD_PARTY_TPU_RAIDEN_RAIDEN_LIB_RAW_TRANSFER_RAW_TRANSFER_CORE_H_
 
+#include <cstddef>
 #include <cstdint>
 #include <iterator>
 #include <memory>
@@ -25,6 +26,7 @@
 #include <utility>
 #include <vector>
 
+#include "absl/log/check.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
@@ -35,6 +37,7 @@
 #include "xla/pjrt/c/pjrt_c_api_raw_buffer_extension.h"
 #include "xla/pjrt/c/pjrt_c_api_raw_buffer_external.h"
 #include "xla/pjrt/c_api_client/pjrt_c_api_client.h"
+#include "xla/pjrt/common_pjrt_client.h"
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/pjrt/raw_buffer.h"
 #include "xla/shape.h"
@@ -92,8 +95,7 @@ inline const PJRT_RawBuffer_Extension* GetRawBufferExtension(
       PJRT_Extension_Type::PJRT_Extension_Type_RawBuffer);
 }
 
-inline int64_t GetMajorSliceByteSize(const xla::PjRtBuffer* buffer) {
-  const xla::Shape& shape = buffer->on_device_shape();
+inline int64_t GetMajorSliceByteSize(const xla::Shape& shape) {
   if (shape.dimensions_size() == 0) return 0;
 
   int64_t itemsize =
@@ -103,10 +105,9 @@ inline int64_t GetMajorSliceByteSize(const xla::PjRtBuffer* buffer) {
     stride *= shape.dimensions(i);
   }
 
-  auto pjrt_layout = buffer->layout();
   const xla::Layout* xla_layout = nullptr;
-  if (pjrt_layout) {
-    xla_layout = &pjrt_layout->xla_layout();
+  if (shape.has_layout()) {
+    xla_layout = &shape.layout();
   }
 
   if (xla_layout && !xla_layout->tiles().empty() &&
@@ -144,24 +145,33 @@ inline int64_t GetMajorSliceByteSize(const xla::PjRtBuffer* buffer) {
   return stride * itemsize;
 }
 
-struct BufferHoldAndAlias {
-  xla::PjRtBuffer* buffer = nullptr;
+struct RaidenBufferHandle {
+  xla::PjRtBuffer* buffer =
+      nullptr;  // ABSL_DEPRECATED("Use shape/device or raw handles instead")
+  xla::PjRtDevice* device = nullptr;
+
+  xla::Shape shape;
   bool is_common_buffer = false;
 
   // For CommonPjRtBuffer:
-  xla::PjRtRawBufferRef common_raw_buffer;
+  tsl::RCReference<xla::PjRtRawBufferInterface> common_raw_buffer;
   std::shared_ptr<xla::CommonPjRtBuffer::ScopedHold> common_hold;
 
   // For PjRtCApiBuffer:
   PJRT_RawBuffer* c_raw_buffer = nullptr;
   std::shared_ptr<RawBufferHolder> c_hold;
 
-  static absl::StatusOr<BufferHoldAndAlias> Acquire(
+  static absl::StatusOr<RaidenBufferHandle> Acquire(
       xla::PjRtBuffer* buf, const PJRT_Api* c_api = nullptr,
       const PJRT_RawBuffer_Extension* extension = nullptr,
       bool unsafe_skip_buffer_lock = false) {
-    BufferHoldAndAlias result;
+    RaidenBufferHandle result;
     result.buffer = buf;
+    if (buf) {
+      result.shape = buf->on_device_shape();
+      result.device = buf->device();
+    }
+
     auto* common_buf = dynamic_cast<xla::CommonPjRtBuffer*>(buf);
     auto* capi_buf = dynamic_cast<xla::PjRtCApiBuffer*>(buf);
 
@@ -172,7 +182,10 @@ struct BufferHoldAndAlias {
       if (!hold.ok()) {
         return hold.status();
       }
-      result.common_raw_buffer = hold.buffer()->raw_buffer();
+      // Workaround for OSS type discrepancies.
+      result.common_raw_buffer = tsl::FormRef<xla::PjRtRawBufferInterface>(
+          reinterpret_cast<xla::PjRtRawBufferInterface*>(
+              hold.buffer()->raw_buffer().get()));
       if (!unsafe_skip_buffer_lock) {
         result.common_hold =
             std::make_shared<xla::CommonPjRtBuffer::ScopedHold>(
@@ -203,6 +216,40 @@ struct BufferHoldAndAlias {
     return absl::InvalidArgumentError("Unsupported PjRtBuffer type");
   }
 
+  static absl::StatusOr<RaidenBufferHandle> AcquireFromRaw(
+      xla::PjRtRawBufferInterface* raw_buf, const xla::Shape& shape,
+      bool unsafe_skip_buffer_lock = false) {
+    RaidenBufferHandle result;
+    result.shape = shape;
+    if (raw_buf && raw_buf->memory_space() &&
+        !raw_buf->memory_space()->devices().empty()) {
+      result.device = raw_buf->memory_space()->devices()[0];
+    }
+
+    result.is_common_buffer = true;
+    result.common_raw_buffer = tsl::FormRef(raw_buf);
+    return result;
+  }
+
+  size_t GetOnDeviceSizeInBytes() const {
+    if (is_common_buffer) {
+      return common_raw_buffer->GetOnDeviceSizeInBytes();
+    }
+    return pjrt::PjRtCApiRawBuffer_GetOnDeviceSizeInBytes(
+        c_hold->c_api, c_hold->extension, c_raw_buffer);
+  }
+
+  void* GetHostPointer() const {
+    if (is_common_buffer) {
+      return common_raw_buffer->GetHostPointer();
+    }
+    if (common_raw_buffer) {
+      return common_raw_buffer->GetHostPointer();
+    }
+    throw std::runtime_error(
+        "GetHostPointer not implemented for legacy C-API buffer handle");
+  }
+
   xla::Future<> CopyRawHostToDevice(const void* src, int64_t device_offset,
                                     int64_t size) const {
     if (is_common_buffer) {
@@ -216,7 +263,8 @@ struct BufferHoldAndAlias {
   xla::Future<> CopyRawDeviceToHost(void* host_ptr, int64_t device_offset,
                                     int64_t size) const {
     if (is_common_buffer) {
-      return buffer->CopyRawToHost(host_ptr, device_offset, size);
+      return common_raw_buffer->CopyRawDeviceToHost(host_ptr, device_offset,
+                                                    size);
     }
     return pjrt::PjRtCApiRawBuffer_CopyRawDeviceToHost(
         c_hold->c_api, c_hold->extension, c_raw_buffer, host_ptr, device_offset,
@@ -265,6 +313,8 @@ struct BufferHoldAndAlias {
     return args.event;
   }
 };
+
+using BufferHoldAndAlias = RaidenBufferHandle;
 
 struct BufferHolder {
   std::shared_ptr<RawBufferHolder> c_api_hold;
@@ -576,9 +626,10 @@ inline absl::StatusOr<PjRtCopyFuture> IssueD2hShard(
     const BufferHoldAndAlias& hold, const std::vector<D2hCopy>& copies) {
   BufferHolders holds{
       BufferHolder{hold.c_hold, hold.common_hold, nullptr, nullptr}};
-  if (hold.buffer == nullptr && hold.c_hold == nullptr) {
+  if (!hold.is_common_buffer && hold.c_hold == nullptr) {
     return PjRtCopyFuture(std::move(holds));
   }
+
   if (hold.supports_event()) {
     std::vector<PJRT_Event*> evs;
     evs.reserve(copies.size());
@@ -603,9 +654,10 @@ inline absl::StatusOr<PjRtCopyFuture> IssueH2dShard(
     const BufferHoldAndAlias& hold, const std::vector<H2dCopy>& copies) {
   BufferHolders holds{
       BufferHolder{hold.c_hold, hold.common_hold, nullptr, nullptr}};
-  if (hold.buffer == nullptr && hold.c_hold == nullptr) {
+  if (!hold.is_common_buffer && hold.c_hold == nullptr) {
     return PjRtCopyFuture(std::move(holds));
   }
+
   if (hold.supports_event()) {
     std::vector<PJRT_Event*> evs;
     evs.reserve(copies.size());

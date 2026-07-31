@@ -68,11 +68,13 @@ std::string FormatAddressWithPort(absl::string_view ip, int port) {
 }  // namespace
 
 TorchKVCacheManager::UnpackedLayers TorchKVCacheManager::UnpackLayers(
-    const std::vector<std::vector<at::Tensor>>& device_tensors) {
+    const std::vector<std::vector<at::Tensor>>& device_tensors,
+    bool unsafe_skip_buffer_lock) {
   // Retain the owning DeviceBufferRefs: for view tensors the materialized
   // buffers are fresh allocations owned solely by these refs, so they must
   // outlive every D2h/H2d the manager dispatches.
-  UnpackedTensors u = UnpackTorchTensors(device_tensors);
+  UnpackedTensors u =
+      UnpackTorchTensors(device_tensors, unsafe_skip_buffer_lock);
   UnpackedLayers unpacked;
   unpacked.buffers = std::move(u.buffers);
   unpacked.refs = std::move(u.refs);
@@ -81,7 +83,7 @@ TorchKVCacheManager::UnpackedLayers TorchKVCacheManager::UnpackLayers(
   unpacked.logical_physical_size = u.logical_physical_size;
   unpacked.has_logical_metadata = u.has_logical_metadata;
   if (!unpacked.buffers.empty() && !unpacked.buffers[0].empty()) {
-    unpacked.client = unpacked.buffers[0][0]->device()->client();
+    unpacked.client = unpacked.buffers[0][0].device->client();
   }
   return unpacked;
 }
@@ -90,12 +92,13 @@ TorchKVCacheManager::TorchKVCacheManager(
     const std::vector<std::vector<at::Tensor>>& device_tensors,
     std::optional<int> local_port, std::optional<int> host_blocks_to_allocate,
     bool unsafe_skip_buffer_lock, int parallelism, int64_t node_id)
-    : TorchKVCacheManager(
-          UnpackLayers(device_tensors), local_port, host_blocks_to_allocate,
-          unsafe_skip_buffer_lock, parallelism, node_id,
-          /*local_control_port=*/-1,
-          /*max_blocks=*/0, /*num_slots=*/0, /*timeout_s=*/120.0,
-          /*kv_caches=*/{}) {}
+    : TorchKVCacheManager(UnpackLayers(device_tensors, unsafe_skip_buffer_lock),
+                          local_port, host_blocks_to_allocate,
+                          unsafe_skip_buffer_lock, parallelism, node_id,
+                          /*local_control_port=*/-1,
+                          /*max_blocks=*/0, /*num_slots=*/0,
+                          /*timeout_s=*/120.0,
+                          /*kv_caches=*/{}) {}
 
 TorchKVCacheManager::TorchKVCacheManager(
     UnpackedLayers unpacked, std::optional<int> local_port,
@@ -114,10 +117,12 @@ TorchKVCacheManager::TorchKVCacheManager(
           CreateHostMemoryAllocator(
               unpacked.client, max_blocks,
               (unpacked.buffers.empty() || unpacked.buffers[0].empty() ||
-               unpacked.buffers[0][0] == nullptr)
+               unpacked.buffers[0][0].buffer == nullptr)
                   ? 0
-                  : unpacked.buffers[0][0]->GetOnDeviceSizeInBytes().value_or(
-                        0)),
+                  : unpacked.buffers[0][0]
+                        .buffer->GetOnDeviceSizeInBytes()
+                        .value_or(0)),
+
           node_id, local_control_port, max_blocks, num_slots, timeout_s),
       kv_caches_(std::move(kv_caches)),
       // Move the keep-alive refs in AFTER the base ctor has acquired the

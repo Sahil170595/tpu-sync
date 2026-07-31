@@ -28,20 +28,23 @@ namespace torch {
 WeightSynchronizer::WeightSynchronizer(
     const std::vector<std::vector<at::Tensor>>& device_tensors,
     std::optional<int> local_port, int parallelism,
-    std::optional<int> listener_port, std::optional<std::string> bind_ip)
-    : WeightSynchronizer(UnpackTorchTensors(device_tensors), local_port,
-                         parallelism, listener_port, bind_ip) {}
+    std::optional<int> listener_port, std::optional<std::string> bind_ip,
+    bool unsafe_skip_buffer_lock)
+    : WeightSynchronizer(
+          UnpackTorchTensors(device_tensors, unsafe_skip_buffer_lock),
+          local_port, parallelism, listener_port, bind_ip,
+          unsafe_skip_buffer_lock) {}
 
 WeightSynchronizer::WeightSynchronizer(UnpackedTensors unpacked,
                                        std::optional<int> local_port,
                                        int parallelism,
                                        std::optional<int> listener_port,
-                                       std::optional<std::string> bind_ip)
-    : weight_sync::WeightSynchronizerBase(std::move(unpacked.buffers),
-                                          local_port,
-                                          /*external_host_ptrs=*/std::nullopt,
-                                          /*unsafe_skip_buffer_lock=*/true,
-                                          parallelism, listener_port, bind_ip),
+                                       std::optional<std::string> bind_ip,
+                                       bool unsafe_skip_buffer_lock)
+    : weight_sync::WeightSynchronizerBase(
+          std::move(unpacked.buffers), local_port,
+          /*external_host_ptrs=*/std::nullopt, unsafe_skip_buffer_lock,
+          parallelism, listener_port, bind_ip),
       buffer_refs_(std::move(unpacked.refs)) {}
 
 WeightSynchronizer::~WeightSynchronizer() = default;

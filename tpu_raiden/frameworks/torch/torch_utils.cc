@@ -37,7 +37,8 @@ bool SameLogicalMetadata(const UnpackedTensors& out,
 }  // namespace
 
 UnpackedTensors UnpackTorchTensors(
-    const std::vector<std::vector<at::Tensor>>& device_tensors) {
+    const std::vector<std::vector<at::Tensor>>& device_tensors,
+    bool unsafe_skip_buffer_lock) {
   UnpackedTensors out;
   size_t num_layers = device_tensors.size();
   if (num_layers == 0) return out;
@@ -52,10 +53,12 @@ UnpackedTensors UnpackTorchTensors(
           "Symmetrical shards count mismatch across layers during PyTorch "
           "unpack");
     }
-    std::vector<xla::PjRtBuffer*> shard_buffers;
+    std::vector<raiden::RaidenBufferHandle> shard_buffers;
     shard_buffers.reserve(num_shards);
     for (size_t sh = 0; sh < num_shards; ++sh) {
-      UnpackedTensor unpacked = UnpackTorchTensor(device_tensors[l][sh]);
+      UnpackedTensor unpacked =
+          UnpackTorchTensor(device_tensors[l][sh], unsafe_skip_buffer_lock);
+
       if (!logical_metadata_mismatch && unpacked.logical_slice_byte_size > 0 &&
           unpacked.logical_physical_size > 0 &&
           !unpacked.logical_dimensions.empty()) {

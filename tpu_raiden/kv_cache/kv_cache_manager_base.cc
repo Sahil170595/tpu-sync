@@ -195,7 +195,7 @@ struct TransferPipelinedState {
 }  // namespace
 
 KVCacheManagerBase::KVCacheManagerBase(
-    const std::vector<std::vector<xla::PjRtBuffer*>>& layer_buffers,
+    const std::vector<std::vector<raiden::RaidenBufferHandle>>& layer_buffers,
     std::optional<int> local_port, std::optional<int> host_blocks_to_allocate,
     bool unsafe_skip_buffer_lock, int parallelism,
     HostBufferAllocator host_allocator, std::optional<std::string> bind_ip,
@@ -208,9 +208,9 @@ KVCacheManagerBase::KVCacheManagerBase(
           layer_buffers.empty() ? 0 : layer_buffers[0].size(),
           logical_slice_byte_size.has_value()
               ? *logical_slice_byte_size
-              : (layer_buffers.empty()
-                     ? 0
-                     : raiden::GetMajorSliceByteSize(layer_buffers[0][0])),
+              : (layer_buffers.empty() ? 0
+                                       : raiden::GetMajorSliceByteSize(
+                                             layer_buffers[0][0].shape)),
           local_port, parallelism, bind_ip),
       host_allocator_(host_allocator) {
   if (num_layers_ == 0 || num_shards_ == 0) {
@@ -223,15 +223,18 @@ KVCacheManagerBase::KVCacheManagerBase(
     DetectAndAssignNumaNode(layer_buffers);
   }
 
-  xla::PjRtBuffer* first_buffer = layer_buffers[0][0];
-  const xla::Shape& shape = first_buffer->on_device_shape();
+  const auto& first_handle = layer_buffers[0][0];
+  const xla::Shape& shape = first_handle.shape;
 
   is_blocked_layout_ = (shape.dimensions().size() == 5);
 
   // max_physical_size_ will be set to the max across all layers below.
   max_physical_size_ = 0;
 
-  extension_ = raiden::GetRawBufferExtension(first_buffer, &c_api_);
+  if (!first_handle.is_common_buffer && first_handle.c_hold) {
+    c_api_ = first_handle.c_hold->c_api;
+    extension_ = first_handle.c_hold->extension;
+  }
 
   int num_host_blocks = host_blocks_to_allocate.value_or(64);
   host_block_manager_ = std::make_unique<LogicalBlockManager>(num_host_blocks);
@@ -257,20 +260,20 @@ KVCacheManagerBase::KVCacheManagerBase(
     // every layer has the same value; for hybrid (HMA) models they
     // may differ (e.g. mamba conv_state bf16 vs ssm_state f32).
     device_info.physical_size =
-        layer_buffers[layer_idx][0]->GetOnDeviceSizeInBytes().value();
+        layer_buffers[layer_idx][0].GetOnDeviceSizeInBytes();
     max_physical_size_ =
         std::max(max_physical_size_, device_info.physical_size);
     VLOG(1) << "KVCacheManagerBase: layer " << layer_idx << " on_device_shape: "
-            << layer_buffers[layer_idx][0]->on_device_shape().ToString()
+            << layer_buffers[layer_idx][0].shape.ToString()
             << " size: " << device_info.physical_size;
     layer_info.shards.reserve(num_shards_);
     device_info.holds.reserve(num_shards_);
 
     for (size_t i = 0; i < num_shards_; ++i) {
-      xla::PjRtBuffer* dst_buffer = dst_buffers[i];
+      const auto& dst_buffer = dst_buffers[i];
       ShardBufferInfoBase shard_info;
 
-      shard_info.device_size = dst_buffer->GetOnDeviceSizeInBytes().value();
+      shard_info.device_size = dst_buffer.GetOnDeviceSizeInBytes();
       if (shard_info.device_size < device_info.physical_size) {
         throw std::runtime_error(
             "Device buffer shard size smaller than physical size");
@@ -280,7 +283,7 @@ KVCacheManagerBase::KVCacheManagerBase(
       // so the buffer is large enough for any layer.
       size_t alloc_size = num_host_blocks * bytes_per_block();
       if (host_allocator) {
-        const xla::PjRtDevice* target_dev = dst_buffer->device();
+        const xla::PjRtDevice* target_dev = dst_buffer.device;
         auto status_or_allocation = host_allocator(alloc_size, target_dev);
         if (!status_or_allocation.ok()) {
           throw std::runtime_error(absl::StrCat(
@@ -321,14 +324,7 @@ KVCacheManagerBase::KVCacheManagerBase(
                 << shard_info.host_size;
       }
 
-      auto status_or_hold = raiden::BufferHoldAndAlias::Acquire(
-          dst_buffer, c_api_, extension_, unsafe_skip_buffer_lock);
-      if (!status_or_hold.ok()) {
-        throw std::runtime_error(
-            std::string("Failed to acquire PJRT hold: ") +
-            std::string(status_or_hold.status().message()));
-      }
-      device_info.holds.push_back(std::move(status_or_hold.value()));
+      device_info.holds.push_back(dst_buffer);
       layer_info.shards.push_back(std::move(shard_info));
     }
     layers_.push_back(std::move(layer_info));
@@ -469,9 +465,9 @@ absl::StatusOr<raiden::PjRtCopyFuture> KVCacheManagerBase::H2d(
       int node = -1;
       if (layer_idx < buffer_holds_.size() &&
           shard_idx < buffer_holds_[layer_idx].holds.size()) {
-        auto* buf = buffer_holds_[layer_idx].holds[shard_idx].buffer;
-        if (buf && buf->device()) {
-          node = GetPjRtDeviceNumaNode(buf->device());
+        auto* device = buffer_holds_[layer_idx].holds[shard_idx].device;
+        if (device) {
+          node = GetPjRtDeviceNumaNode(device);
         }
       }
       grouped_work[node].push_back({layer_idx, shard_idx});
@@ -606,9 +602,9 @@ KVCacheManagerBase::DispatchD2hChunks(const std::vector<int64_t>& src_offsets,
       int node = -1;
       if (layer_idx < buffer_holds_.size() &&
           shard_idx < buffer_holds_[layer_idx].holds.size()) {
-        auto* buf = buffer_holds_[layer_idx].holds[shard_idx].buffer;
-        if (buf && buf->device()) {
-          node = GetPjRtDeviceNumaNode(buf->device());
+        auto* device = buffer_holds_[layer_idx].holds[shard_idx].device;
+        if (device) {
+          node = GetPjRtDeviceNumaNode(device);
         }
       }
       grouped_work[node].push_back({layer_idx, shard_idx});
@@ -1103,13 +1099,11 @@ void KVCacheManagerBase::SetExternalHostBuffer(
   for (size_t l = 0; l < num_layers_; ++l) {
     for (size_t sh = 0; sh < num_shards_; ++sh) {
       if (idx < buffer_holds.size()) {
-        auto u_ptr_or = buffer_holds[idx].buffer->client()->UnsafeBufferPointer(
-            buffer_holds[idx].buffer);
-        if (u_ptr_or.ok()) {
-          layers_[l].shards[sh].host_ptr =
-              reinterpret_cast<uint8_t*>(u_ptr_or.value());
+        void* host_ptr = buffer_holds[idx].GetHostPointer();
+        if (host_ptr) {
+          layers_[l].shards[sh].host_ptr = reinterpret_cast<uint8_t*>(host_ptr);
           layers_[l].shards[sh].host_size =
-              buffer_holds[idx].buffer->GetOnDeviceSizeInBytes().value();
+              buffer_holds[idx].GetOnDeviceSizeInBytes();
         }
         idx++;
       }

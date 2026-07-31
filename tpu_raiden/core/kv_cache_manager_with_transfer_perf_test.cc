@@ -128,7 +128,8 @@ void RunSlotBenchmark(TpuPjrtManager* manager,
   // 1. Allocate Device Buffers and Fill with Pattern
   std::vector<std::vector<std::unique_ptr<xla::PjRtBuffer>>> device_buffers(
       kNumLayers);
-  std::vector<std::vector<xla::PjRtBuffer*>> layer_buffers(kNumLayers);
+  std::vector<std::vector<raiden::RaidenBufferHandle>> layer_buffers(
+      kNumLayers);
   std::vector<std::vector<std::vector<T>>> host_init_buffers(kNumLayers);
 
   for (int i = 0; i < kNumLayers; ++i) {
@@ -150,13 +151,16 @@ void RunSlotBenchmark(TpuPjrtManager* manager,
           manager->BufferFromHost(host_init_buffers[i][d].data(),
                                   primitive_type, layer_shape, devices[d]));
       device_buffers[i][d] = std::move(buf);
-      layer_buffers[i][d] = device_buffers[i][d].get();
+      auto handle_or =
+          raiden::RaidenBufferHandle::Acquire(device_buffers[i][d].get());
+      ASSERT_OK(handle_or.status());
+      layer_buffers[i][d] = std::move(handle_or).value();
     }
   }
 
   for (auto& bufs : layer_buffers) {
-    for (auto* buf : bufs) {
-      ASSERT_OK(buf->GetReadyFuture().Await());
+    for (auto& handle : bufs) {
+      ASSERT_OK(handle.buffer->GetReadyFuture().Await());
     }
   }
 

@@ -98,7 +98,7 @@ class TorchKVCacheManager : public KVCacheManagerWithTransfer {
   // Buffers unpacked from a 2D tensor list, together with the owning
   // DeviceBufferRefs that must outlive their use (see UnpackTorchTensor).
   struct UnpackedLayers {
-    std::vector<std::vector<xla::PjRtBuffer*>> buffers;
+    std::vector<std::vector<raiden::RaidenBufferHandle>> buffers;
     std::vector<torch_tpu::DeviceBufferRef> refs;
     xla::PjRtClient* client = nullptr;
     std::vector<int64_t> logical_dimensions;
@@ -107,7 +107,8 @@ class TorchKVCacheManager : public KVCacheManagerWithTransfer {
     bool has_logical_metadata = false;
   };
   static UnpackedLayers UnpackLayers(
-      const std::vector<std::vector<at::Tensor>>& device_tensors);
+      const std::vector<std::vector<at::Tensor>>& device_tensors,
+      bool unsafe_skip_buffer_lock = false);
 
   // Delegated-to constructor for BOTH public ctors. Moves the keep-alive refs
   // into buffer_refs_ so the materialized device buffers survive for this

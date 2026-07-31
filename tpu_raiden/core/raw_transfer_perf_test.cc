@@ -71,7 +71,9 @@
 #include "xla/tsl/platform/statusor.h"
 #include "xla/tsl/platform/test.h"
 #include "tpu_raiden/core/host_memory_allocator.h"
+#include "tpu_raiden/core/raw_transfer_core.h"
 #include "tpu_raiden/core/raw_transfer_impl.h"
+#include "tpu_raiden/core/status_macros.h"
 #include "tpu_raiden/core/tpu_pjrt_manager.h"
 #include "tpu_raiden/core/tpu_utils.h"
 
@@ -310,8 +312,14 @@ void RunBenchmarkScenarioA(tpu_raiden::TpuPjrtManager* manager,
       if (bufs_d[d].empty()) continue;
       futures.push_back(
           std::async(std::launch::async, [&, d]() -> absl::Status {
+            std::vector<RaidenBufferHandle> handles;
+            handles.reserve(bufs_d[d].size());
+            for (auto* buf : bufs_d[d]) {
+              ASSIGN_OR_RETURN(auto handle, RaidenBufferHandle::Acquire(buf));
+              handles.push_back(std::move(handle));
+            }
             auto future_or =
-                transfer_d2h_core(bufs_d[d], dsts_d[d], sizes_d[d], src_offsets,
+                transfer_d2h_core(handles, dsts_d[d], sizes_d[d], src_offsets,
                                   dst_offsets, copy_sizes);
             if (!future_or.ok()) return future_or.status();
             return future_or.value().Await();
@@ -340,8 +348,14 @@ void RunBenchmarkScenarioA(tpu_raiden::TpuPjrtManager* manager,
       if (bufs_d[d].empty()) continue;
       futures.push_back(
           std::async(std::launch::async, [&, d]() -> absl::Status {
+            std::vector<RaidenBufferHandle> handles;
+            handles.reserve(bufs_d[d].size());
+            for (auto* buf : bufs_d[d]) {
+              ASSIGN_OR_RETURN(auto handle, RaidenBufferHandle::Acquire(buf));
+              handles.push_back(std::move(handle));
+            }
             auto future_or =
-                transfer_h2d_core(bufs_d[d], srcs_d[d], sizes_d[d], src_offsets,
+                transfer_h2d_core(handles, srcs_d[d], sizes_d[d], src_offsets,
                                   dst_offsets, copy_sizes);
             if (!future_or.ok()) return future_or.status();
             return future_or.value().Await();
@@ -571,8 +585,14 @@ void RunBenchmarkScenarioB(tpu_raiden::TpuPjrtManager* manager,
       if (bufs_d[d].empty()) continue;
       futures.push_back(
           std::async(std::launch::async, [&, d]() -> absl::Status {
+            std::vector<RaidenBufferHandle> handles;
+            handles.reserve(bufs_d[d].size());
+            for (auto* buf : bufs_d[d]) {
+              ASSIGN_OR_RETURN(auto handle, RaidenBufferHandle::Acquire(buf));
+              handles.push_back(std::move(handle));
+            }
             auto future_or =
-                transfer_d2h_core(bufs_d[d], dsts_d[d], sizes_d[d], src_offsets,
+                transfer_d2h_core(handles, dsts_d[d], sizes_d[d], src_offsets,
                                   dst_offsets, copy_sizes);
             if (!future_or.ok()) return future_or.status();
             return future_or.value().Await();
@@ -601,8 +621,14 @@ void RunBenchmarkScenarioB(tpu_raiden::TpuPjrtManager* manager,
       if (bufs_d[d].empty()) continue;
       futures.push_back(
           std::async(std::launch::async, [&, d]() -> absl::Status {
+            std::vector<RaidenBufferHandle> handles;
+            handles.reserve(bufs_d[d].size());
+            for (auto* buf : bufs_d[d]) {
+              ASSIGN_OR_RETURN(auto handle, RaidenBufferHandle::Acquire(buf));
+              handles.push_back(std::move(handle));
+            }
             auto future_or =
-                transfer_h2d_core(bufs_d[d], srcs_d[d], sizes_d[d], src_offsets,
+                transfer_h2d_core(handles, srcs_d[d], sizes_d[d], src_offsets,
                                   dst_offsets, copy_sizes);
             if (!future_or.ok()) return future_or.status();
             return future_or.value().Await();

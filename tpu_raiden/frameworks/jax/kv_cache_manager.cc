@@ -146,8 +146,10 @@ namespace {
 
 #ifndef WITHOUT_PYTHON
 namespace {
-UnpackedCache UnpackAndMove(nanobind::list device_arrays) {
-  auto layer_buffers = ::tpu_raiden::jax::UnpackJaxArrays(device_arrays);
+UnpackedCache UnpackAndMove(nanobind::list device_arrays,
+                            bool unsafe_skip_buffer_lock = false) {
+  auto layer_buffers = ::tpu_raiden::jax::UnpackJaxArrays(
+      device_arrays, unsafe_skip_buffer_lock);
   return {std::move(layer_buffers), std::move(device_arrays)};
 }
 }  // namespace
@@ -156,9 +158,10 @@ NumaAwareKVCacheManager::NumaAwareKVCacheManager(
     nb::list device_arrays, std::optional<int> local_port,
     std::optional<int> host_blocks_to_allocate, bool unsafe_skip_buffer_lock,
     int parallelism, int64_t node_id)
-    : NumaAwareKVCacheManager(UnpackAndMove(std::move(device_arrays)),
-                              local_port, host_blocks_to_allocate,
-                              unsafe_skip_buffer_lock, parallelism, node_id) {}
+    : NumaAwareKVCacheManager(
+          UnpackAndMove(std::move(device_arrays), unsafe_skip_buffer_lock),
+          local_port, host_blocks_to_allocate, unsafe_skip_buffer_lock,
+          parallelism, node_id) {}
 
 NumaAwareKVCacheManager::NumaAwareKVCacheManager(
     UnpackedCache&& cache, std::optional<int> local_port,
@@ -174,10 +177,10 @@ NumaAwareKVCacheManager::NumaAwareKVCacheManager(
     nanobind::list kv_caches, int64_t node_id, int64_t local_control_port,
     int64_t max_blocks, int64_t num_slots, double timeout_s,
     bool unsafe_skip_buffer_lock, int parallelism)
-    : NumaAwareKVCacheManager(UnpackAndMove(std::move(kv_caches)), node_id,
-                              local_control_port, max_blocks, num_slots,
-                              timeout_s, unsafe_skip_buffer_lock, parallelism) {
-}
+    : NumaAwareKVCacheManager(
+          UnpackAndMove(std::move(kv_caches), unsafe_skip_buffer_lock), node_id,
+          local_control_port, max_blocks, num_slots, timeout_s,
+          unsafe_skip_buffer_lock, parallelism) {}
 
 NumaAwareKVCacheManager::NumaAwareKVCacheManager(
     UnpackedCache&& cache, int64_t node_id, int64_t local_control_port,
@@ -223,7 +226,7 @@ NumaAwareKVCacheManager::NumaAwareKVCacheManager(
 NumaAwareKVCacheManager::~NumaAwareKVCacheManager() = default;
 
 void NumaAwareKVCacheManager::InitSubManagers(
-    const std::vector<std::vector<xla::PjRtBuffer*>>& layer_buffers,
+    const std::vector<std::vector<raiden::RaidenBufferHandle>>& layer_buffers,
     std::optional<int> local_port, std::optional<int> host_blocks_to_allocate,
     bool unsafe_skip_buffer_lock, int parallelism, int64_t node_id,
     int64_t local_control_port, int64_t max_blocks, int64_t num_slots,
@@ -236,10 +239,8 @@ void NumaAwareKVCacheManager::InitSubManagers(
   std::map<int, std::vector<int>> numa_to_shards;
   for (size_t sh = 0; sh < total_num_shards_; ++sh) {
     int numa = 0;
-    if (layer_buffers[0][sh] != nullptr) {
-      if (layer_buffers[0][sh]->device() != nullptr) {
-        numa = GetPjRtDeviceNumaNode(layer_buffers[0][sh]->device());
-      }
+    if (layer_buffers[0][sh].device != nullptr) {
+      numa = GetPjRtDeviceNumaNode(layer_buffers[0][sh].device);
     }
     if (numa < 0) numa = 0;
     numa_to_shards[numa].push_back(static_cast<int>(sh));
@@ -308,7 +309,8 @@ void NumaAwareKVCacheManager::InitSubManagers(
       }
       submanager_to_global_shards_.push_back(std::move(gshards));
 
-      std::vector<std::vector<xla::PjRtBuffer*>> sub_buffers(num_layers);
+      std::vector<std::vector<raiden::RaidenBufferHandle>> sub_buffers(
+          num_layers);
       for (size_t l = 0; l < num_layers; ++l) {
         sub_buffers[l].reserve(shards.size());
         for (int sh : shards) {
@@ -317,10 +319,9 @@ void NumaAwareKVCacheManager::InitSubManagers(
       }
 
       xla::PjRtClient* client = nullptr;
-      if (!sub_buffers.empty() && !sub_buffers[0].empty() &&
-          sub_buffers[0][0] != nullptr) {
-        if (sub_buffers[0][0]->device() != nullptr) {
-          client = sub_buffers[0][0]->device()->client();
+      if (!sub_buffers.empty() && !sub_buffers[0].empty()) {
+        if (sub_buffers[0][0].device != nullptr) {
+          client = sub_buffers[0][0].device->client();
         }
       }
       ::tpu_raiden::HostBufferAllocator host_alloc;
@@ -328,10 +329,9 @@ void NumaAwareKVCacheManager::InitSubManagers(
       if (shm_key_env != nullptr && std::strlen(shm_key_env) > 0) {
         host_alloc = ::tpu_raiden::CreateHostMemoryAllocator(
             client, max_blocks,
-            (sub_buffers.empty() || sub_buffers[0].empty() ||
-             sub_buffers[0][0] == nullptr)
+            (sub_buffers.empty() || sub_buffers[0].empty())
                 ? 0
-                : sub_buffers[0][0]->GetOnDeviceSizeInBytes().value_or(0));
+                : sub_buffers[0][0].GetOnDeviceSizeInBytes());
       } else {
         host_alloc = LocalCreateHostMemoryAllocator(client);
       }

@@ -43,7 +43,7 @@ class WeightSynchronizerBase : public tpu_raiden::RaidenManagerBase {
  public:
   // Symmetrical core constructor wrapping raw PJRT buffers directly E2E
   WeightSynchronizerBase(
-      const std::vector<std::vector<xla::PjRtBuffer*>>& layer_buffers,
+      const std::vector<std::vector<raiden::RaidenBufferHandle>>& layer_buffers,
       std::optional<int> local_port = std::nullopt,
       std::optional<std::vector<const uint8_t*>> external_host_ptrs =
           std::nullopt,

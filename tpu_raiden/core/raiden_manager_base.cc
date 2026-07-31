@@ -32,11 +32,9 @@
 #include "absl/strings/string_view.h"
 #include "absl/synchronization/mutex.h"
 #include "xla/future.h"
-#include "xla/pjrt/pjrt_client.h"
 #include "tpu_raiden/core/raw_transfer_core.h"
 #include "tpu_raiden/core/tpu_utils.h"
 #include "tpu_raiden/transport/block_transport.h"
-#include "tpu_raiden/transport/lib/raw_buffer_transport.h"
 
 namespace tpu_raiden {
 

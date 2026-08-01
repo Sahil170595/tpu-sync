@@ -460,8 +460,15 @@ class KVCacheManagerBase : public tpu_raiden::RaidenManagerBase {
     tpu_raiden::rpc::StartTransferRequest request;
     bool is_sender = false;
   };
-  absl::flat_hash_map<uint64_t, RegisteredPlan> active_plans_
-      ABSL_GUARDED_BY(plans_mu_);
+  // Plans are stored behind shared_ptr so the per-push readers
+  // (GetBlockChunks / GetPoolPushProgressSpec) snapshot with a refcount bump
+  // instead of deep-copying the schedule proto under plans_mu_: a pool-reshard
+  // receiver's plan carries one schedule entry per (pool, rank, page range)
+  // and the copy dominated per-push latency. Unregister drops the map entry
+  // while in-flight readers keep their snapshot alive, which preserves the
+  // previous copy semantics exactly.
+  absl::flat_hash_map<uint64_t, std::shared_ptr<const RegisteredPlan>>
+      active_plans_ ABSL_GUARDED_BY(plans_mu_);
 };
 
 }  // namespace kv_cache

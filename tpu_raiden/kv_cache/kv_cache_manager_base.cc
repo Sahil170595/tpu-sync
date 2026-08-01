@@ -1729,13 +1729,20 @@ bool KVCacheManagerBase::AcceptsPlanlessExplicitPush(uint64_t uuid) const {
 absl::StatusOr<std::optional<tpu_raiden::transport::PoolPushProgressSpec>>
 KVCacheManagerBase::GetPoolPushProgressSpec(size_t pool_idx,
                                             uint64_t uuid) const {
-  absl::MutexLock l(plans_mu_);
-  auto it = active_plans_.find(uuid);
-  if (it == active_plans_.end() || it->second.request.pool_groups_size() == 0) {
+  std::shared_ptr<const RegisteredPlan> plan_snapshot;
+  {
+    absl::MutexLock l(plans_mu_);
+    auto it = active_plans_.find(uuid);
+    if (it != active_plans_.end()) {
+      plan_snapshot = it->second;
+    }
+  }
+  if (plan_snapshot == nullptr ||
+      plan_snapshot->request.pool_groups_size() == 0) {
     return std::nullopt;
   }
 
-  const auto& request = it->second.request;
+  const auto& request = plan_snapshot->request;
   bool pool_is_transferred = false;
   for (int32_t transferred_pool_idx : request.transfer_pool_indices()) {
     if (transferred_pool_idx >= 0 &&
@@ -2104,8 +2111,9 @@ absl::Status KVCacheManagerBase::RegisterActivePlan(
     }
   }
   absl::MutexLock l(plans_mu_);
-  if (auto [it, inserted] =
-          active_plans_.try_emplace(uuid, RegisteredPlan{request, is_sender});
+  if (auto [it, inserted] = active_plans_.try_emplace(
+          uuid, std::make_shared<const RegisteredPlan>(
+                    RegisteredPlan{request, is_sender}));
       !inserted) {
     return absl::AlreadyExistsError(
         absl::StrCat("Plan with UUID ", uuid, " is already registered!"));
@@ -2147,16 +2155,15 @@ KVCacheManagerBase::GetBlockChunks(size_t layer_idx, size_t shard_idx,
                                    int64_t sender_node_id,
                                    absl::string_view peer, int64_t src_block_id,
                                    int64_t dst_block_id) {
-  RegisteredPlan plan;
-  bool has_plan = false;
+  std::shared_ptr<const RegisteredPlan> plan_snapshot;
   {
     absl::MutexLock l(plans_mu_);
     auto it = active_plans_.find(uuid);
     if (it != active_plans_.end()) {
-      plan = it->second;
-      has_plan = true;
+      plan_snapshot = it->second;
     }
   }
+  const bool has_plan = plan_snapshot != nullptr;
 
   // Resolve addressing geometry. With explicit pools the wire index is a pool
   // index: blocks stride at the pool's own stride from the pool's base offset
@@ -2216,11 +2223,11 @@ KVCacheManagerBase::GetBlockChunks(size_t layer_idx, size_t shard_idx,
     return chunks;
   }
 
-  const auto& request = plan.request;
+  const auto& request = plan_snapshot->request;
   const auto& schedules = request.shard_push_schedules();
   auto schedule_it = schedules.find(static_cast<int32_t>(shard_idx));
 
-  bool is_sender = plan.is_sender;
+  bool is_sender = plan_snapshot->is_sender;
 
   // Pool reshard plans scope every entry to one pool group; an entry only
   // resolves chunks for pools of its own group. Only LEGACY (non-pool)

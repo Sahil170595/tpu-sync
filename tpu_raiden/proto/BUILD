@@ -100,7 +100,10 @@ cc_grpc_library(
 proto_library(
     name = "kv_cache_store_service_proto",
     srcs = ["kv_cache_store_service.proto"],
-    deps = ["//tpu_raiden/rpc:raiden_service_proto"],
+    deps = [
+        ":worker_service_proto",
+        "//tpu_raiden/rpc:raiden_service_proto",
+    ],
 )
 
 cc_proto_library(

@@ -48,10 +48,38 @@
 #include "tpu_raiden/kv_cache/lru_cache.h"
 #include "tpu_raiden/kv_cache/raiden_id.h"
 #include "tpu_raiden/proto/kv_cache_store_service.pb.h"
+#include "tpu_raiden/proto/worker_service.pb.h"
 #include "tpu_raiden/rpc/raiden_service.pb.h"
 
 namespace tpu_raiden {
 namespace kv_cache {
+
+namespace {
+
+std::vector<::tpu_raiden::proto::RaidenWorkerEndpointsProto>
+BuildLocalWorkerEndpoints(controller::RaidenController* ctrl) {
+  std::vector<::tpu_raiden::proto::RaidenWorkerEndpointsProto> result;
+  if (ctrl == nullptr || ctrl->worker_registry() == nullptr) {
+    return result;
+  }
+  const auto& registered_workers = ctrl->worker_registry()->GetRegisteredWorkers();
+  result.reserve(registered_workers.size());
+  for (const auto& reg : registered_workers) {
+    ::tpu_raiden::proto::RaidenWorkerEndpointsProto group;
+    group.set_node_id(reg.node_id);
+    group.set_worker_id(reg.worker_id);
+    group.mutable_endpoints()->Reserve(reg.raiden_transfer_endpoints.size());
+    for (const auto& ep : reg.raiden_transfer_endpoints) {
+      auto* ep_proto = group.add_endpoints();
+      ep_proto->set_endpoint(ep.endpoint);
+      ep_proto->mutable_shards()->Add(ep.shards.begin(), ep.shards.end());
+    }
+    result.push_back(std::move(group));
+  }
+  return result;
+}
+
+}  // namespace
 
 HostOffloadBackend::HostOffloadBackend(
     size_t capacity, std::optional<KVCacheMetadata> metadata,
@@ -699,8 +727,11 @@ tsl::Future<> HostOffloadBackend::Load(
   auto [load_promise, load_future] = tsl::MakePromise<>();
 
   tpu_raiden::rpc::RaidenIdProto client_raiden_id = ctrl->unit();
+  std::vector<::tpu_raiden::proto::RaidenWorkerEndpointsProto>
+      client_worker_endpoints = BuildLocalWorkerEndpoints(ctrl);
   tsl::Future<proto::FetchResponse> fetch_future = client->Fetch(
-      block_hashes, device_block_ids, dst_host_block_ids, client_raiden_id);
+      block_hashes, device_block_ids, dst_host_block_ids, client_raiden_id,
+      client_worker_endpoints);
 
   fetch_future.OnReady(
       [this, dst_host_block_ids,

@@ -186,13 +186,34 @@ TEST_F(KVCacheStoreServiceTest, Fetch5StepWorkflowSuccess) {
   client_id.set_job_name("client_job");
   client_id.set_job_replica_id("0");
 
+  ::tpu_raiden::proto::RaidenWorkerEndpointsProto client_ep;
+  client_ep.set_node_id(0);
+  client_ep.set_worker_id("dst_worker_0");
+  auto* ep = client_ep.add_endpoints();
+  ep->set_endpoint(test_worker_server_->server_address);
+
   tsl::Future<proto::FetchResponse> future = client_->Fetch(
-      hashes, /*device_block_ids=*/{}, host_block_ids, client_id);
+      hashes, /*device_block_ids=*/{}, host_block_ids, client_id,
+      {client_ep});
   auto response_or = future.Await();
   ASSERT_OK(response_or.status());
   EXPECT_THAT(response_or->done_block_hashes(),
               UnorderedElementsAre("block_hash_1", "block_hash_2"));
   EXPECT_EQ(response_or->failed_block_hashes_size(), 0);
+}
+
+TEST_F(KVCacheStoreServiceTest, FetchCrossNodeMissingEndpointsFails) {
+  std::vector<std::string> hashes = {"block_hash_1"};
+  std::vector<int32_t> host_block_ids = {100};
+  rpc::RaidenIdProto client_id;
+  client_id.set_job_name("client_job");
+  client_id.set_job_replica_id("0");
+
+  tsl::Future<proto::FetchResponse> future = client_->Fetch(
+      hashes, /*device_block_ids=*/{}, host_block_ids, client_id);
+  auto response_or = future.Await();
+  EXPECT_FALSE(response_or.status().ok());
+  EXPECT_EQ(response_or.status().code(), absl::StatusCode::kInvalidArgument);
 }
 
 TEST_F(KVCacheStoreServiceTest, FetchValidationFailsForMissingHash) {
@@ -299,6 +320,69 @@ TEST_F(KVCacheStoreServiceTest, ConcurrentFetchRPCs) {
         UnorderedElementsAre("concurrent_hash_" + std::to_string(2 * i),
                              "concurrent_hash_" + std::to_string(2 * i + 1)));
   }
+}
+
+::tpu_raiden::proto::RaidenWorkerEndpointsProto MakeGroup(
+    int64_t node_id, absl::string_view worker_id, absl::string_view endpoint) {
+  ::tpu_raiden::proto::RaidenWorkerEndpointsProto group;
+  group.set_node_id(node_id);
+  group.set_worker_id(std::string(worker_id));
+  auto* ep = group.add_endpoints();
+  ep->set_endpoint(std::string(endpoint));
+  ep->add_shards(0);
+  return group;
+}
+
+TEST_F(KVCacheStoreServiceTest, FetchRoutesToClientAdvertisedEndpoints) {
+  rpc::RaidenIdProto client_id;
+  client_id.set_job_name("client_job");
+  client_id.set_job_replica_id("0");
+  client_id.set_data_name("client_data");
+  client_id.set_data_replica_idx(0);
+
+  // The fixture's source controller has one worker, registered with node_id 0.
+  std::vector<::tpu_raiden::proto::RaidenWorkerEndpointsProto> groups = {
+      MakeGroup(/*node_id=*/0, "client_worker_0", "10.0.0.9:44001")};
+
+  std::vector<std::string> hashes = {"block_hash_1"};
+  std::vector<int32_t> host_ids = {201};
+  auto res = client_
+                 ->Fetch(hashes, /*device_block_ids=*/{}, host_ids, client_id,
+                         groups)
+                 .Await();
+  ASSERT_TRUE(res.ok()) << res.status();
+
+  ASSERT_EQ(dst_transfer_mock_->last_write_descriptors.size(), 1);
+  EXPECT_EQ(dst_transfer_mock_->last_write_descriptors[0].endpoint,
+            "10.0.0.9:44001");
+}
+
+TEST_F(KVCacheStoreServiceTest, CrossNodeFetchWithoutEndpointsIsRejected) {
+  rpc::RaidenIdProto client_id;
+  client_id.set_job_name("client_job");
+  client_id.set_job_replica_id("0");
+  client_id.set_data_name("client_data");
+  client_id.set_data_replica_idx(0);
+
+  dst_transfer_mock_->last_write_descriptors.clear();
+
+  std::vector<std::string> hashes = {"block_hash_1"};
+  std::vector<int32_t> host_ids = {201};
+  auto res =
+      client_->Fetch(hashes, /*device_block_ids=*/{}, host_ids, client_id)
+          .Await();
+
+  EXPECT_THAT(res.status(),
+              StatusIs(absl::StatusCode::kInvalidArgument));
+  // Nothing was transferred -- in particular nothing was written locally.
+  EXPECT_TRUE(dst_transfer_mock_->last_write_descriptors.empty());
+}
+
+TEST_F(KVCacheStoreServiceTest, SameNodeFetchNeedsNoEndpoints) {
+  std::vector<std::string> hashes = {"block_hash_1"};
+  std::vector<int32_t> host_ids = {201};
+  auto res = client_->Fetch(hashes, /*device_block_ids=*/{}, host_ids).Await();
+  EXPECT_TRUE(res.ok()) << res.status();
 }
 
 }  // namespace

@@ -46,13 +46,39 @@
 #include "xla/tsl/concurrency/future.h"
 #include "tpu_raiden/core/buffer.h"
 #include "tpu_raiden/core/controller/raiden_controller.h"
+#include "tpu_raiden/core/raiden_transfer_endpoint.h"
 #include "tpu_raiden/core/status_macros.h"
 #include "tpu_raiden/kv_cache/kv_cache_metadata.h"
 #include "tpu_raiden/kv_cache/kv_cache_store_backend.h"
+#include "tpu_raiden/kv_cache/raiden_id.h"
 #include "tpu_raiden/proto/kv_cache_store_service.pb.h"
+#include "tpu_raiden/proto/worker_service.pb.h"
 
 namespace tpu_raiden {
 namespace kv_cache {
+
+namespace {
+
+template <typename ProtoContainer>
+std::vector<RaidenWorkerEndpoints> UnpackWorkerEndpointsProto(
+    const ProtoContainer& proto_groups) {
+  std::vector<RaidenWorkerEndpoints> result;
+  result.reserve(proto_groups.size());
+  for (const auto& group_proto : proto_groups) {
+    std::vector<RaidenTransferEndpoint> eps;
+    eps.reserve(group_proto.endpoints_size());
+    for (const auto& ep_proto : group_proto.endpoints()) {
+      eps.push_back({ep_proto.endpoint(),
+                     std::vector<int64_t>(ep_proto.shards().begin(),
+                                          ep_proto.shards().end())});
+    }
+    result.push_back(
+        {group_proto.node_id(), group_proto.worker_id(), std::move(eps)});
+  }
+  return result;
+}
+
+}  // namespace
 
 KVCacheStoreServiceImpl::KVCacheStoreServiceImpl(
     KVCacheStoreBackend* backend,
@@ -112,6 +138,26 @@ KVCacheStoreServiceImpl::KVCacheStoreServiceImpl(
     src_host_block_ids.push_back(slice.host_block_id);
   }
 
+  // Cross-node validation: require worker endpoints if request is from peer controller.
+  RaidenId client_id{
+      request->client_raiden_id().job_name(),
+      request->client_raiden_id().job_replica_id(),
+      request->client_raiden_id().data_name(),
+      request->client_raiden_id().data_replica_idx(),
+  };
+  const auto& server_unit = controller_->unit();
+  bool is_cross_node =
+      !client_id.empty() &&
+      (client_id.job_name != server_unit.job_name() ||
+       client_id.job_replica_id != server_unit.job_replica_id() ||
+       client_id.data_name != server_unit.data_name() ||
+       client_id.data_replica_idx != server_unit.data_replica_idx());
+  if (is_cross_node && request->client_worker_endpoints().empty()) {
+    return ::grpc::Status(
+        ::grpc::StatusCode::INVALID_ARGUMENT,
+        "Cross-node FetchRequest requires non-empty client_worker_endpoints.");
+  }
+
   // =========================================================================
   // STEP 2: Pinning
   // Protect source host blocks against LRU eviction during DMA transfer.
@@ -135,18 +181,8 @@ KVCacheStoreServiceImpl::KVCacheStoreServiceImpl(
   // Transfer data from local source host DRAM directly to destination host DRAM
   // using RaidenController::TransferBuffers with Buffer structs.
   // =========================================================================
-  RaidenId client_id{
-      request->client_raiden_id().job_name(),
-      request->client_raiden_id().job_replica_id(),
-      request->client_raiden_id().data_name(),
-      request->client_raiden_id().data_replica_idx(),
-  };
-  std::optional<std::string> client_address;
-  if (!client_id.empty()) {
-    client_address =
-        absl::StrCat(client_id.job_name, "/", client_id.job_replica_id, "/",
-                     client_id.data_name, "/", client_id.data_replica_idx);
-  }
+  std::vector<RaidenWorkerEndpoints> client_groups =
+      UnpackWorkerEndpointsProto(request->client_worker_endpoints());
 
   std::vector<Buffer> src_buffers;
   src_buffers.reserve(src_host_block_ids.size());
@@ -158,8 +194,12 @@ KVCacheStoreServiceImpl::KVCacheStoreServiceImpl(
   std::vector<Buffer> dst_buffers;
   dst_buffers.reserve(dst_host_block_ids.size());
   for (int id : dst_host_block_ids) {
-    dst_buffers.emplace_back(id, std::vector<BufferShard>{}, client_address,
+    Buffer dst_buf(id, std::vector<BufferShard>{}, std::nullopt,
                              rpc::MEMORY_TYPE_DRAM);
+    if (!client_groups.empty()) {
+      dst_buf.set_remote_worker_endpoints(client_groups);
+    }
+    dst_buffers.push_back(std::move(dst_buf));
   }
 
   tsl::Future<> transfer_future =

@@ -16,6 +16,7 @@ syntax = "proto3";
 
 package tpu_raiden.kv_cache.proto;
 
+import "tpu_raiden/proto/worker_service.proto";
 import "tpu_raiden/rpc/raiden_service.proto";
 
 option java_multiple_files = true;
@@ -45,6 +46,10 @@ message FetchRequest {
   // Target destination info: Unique RaidenId of the client node initiating the
   // fetch.
   tpu_raiden.rpc.RaidenIdProto client_raiden_id = 4;
+
+  // Data-plane transfer endpoints of the CLIENT (the node the bytes are
+  // written into), one group per worker, tagged with node_id.
+  repeated tpu_raiden.proto.RaidenWorkerEndpointsProto client_worker_endpoints = 5;
 }
 
 // Response describing the outcome of a fetch request.

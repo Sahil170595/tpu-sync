@@ -62,7 +62,9 @@ tsl::Future<proto::FetchResponse> KVCacheStoreClient::Fetch(
     absl::Span<const std::string> block_hashes,
     absl::Span<const int32_t> device_block_ids,
     absl::Span<const int32_t> host_block_ids,
-    const rpc::RaidenIdProto& client_raiden_id) {
+    const rpc::RaidenIdProto& client_raiden_id,
+    absl::Span<const ::tpu_raiden::proto::RaidenWorkerEndpointsProto>
+        client_worker_endpoints) {
   if (block_hashes.empty()) {
     return tsl::Future<proto::FetchResponse>(proto::FetchResponse{});
   }
@@ -92,6 +94,11 @@ tsl::Future<proto::FetchResponse> KVCacheStoreClient::Fetch(
     request.add_host_block_ids(host_id);
   }
   *request.mutable_client_raiden_id() = client_raiden_id;
+  request.mutable_client_worker_endpoints()->Reserve(
+      client_worker_endpoints.size());
+  for (const auto& group : client_worker_endpoints) {
+    *request.add_client_worker_endpoints() = group;
+  }
 
   auto [promise, future] = tsl::MakePromise<proto::FetchResponse>();
   auto context = std::make_shared<grpc::ClientContext>();

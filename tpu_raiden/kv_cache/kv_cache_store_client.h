@@ -39,6 +39,7 @@
 #include "grpcpp/channel.h"
 #include "xla/tsl/concurrency/future.h"
 #include "tpu_raiden/proto/kv_cache_store_service.grpc.pb.h"
+#include "tpu_raiden/proto/worker_service.pb.h"
 #include "tpu_raiden/rpc/raiden_service.pb.h"
 
 namespace tpu_raiden {
@@ -57,7 +58,9 @@ class KVCacheStoreClient {
       absl::Span<const std::string> block_hashes,
       absl::Span<const int32_t> device_block_ids = {},
       absl::Span<const int32_t> host_block_ids = {},
-      const rpc::RaidenIdProto& client_raiden_id = {});
+      const rpc::RaidenIdProto& client_raiden_id = {},
+      absl::Span<const ::tpu_raiden::proto::RaidenWorkerEndpointsProto>
+          client_worker_endpoints = {});
 
  private:
   std::unique_ptr<proto::KVCacheStoreService::StubInterface> stub_;

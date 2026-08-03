@@ -151,7 +151,10 @@ TEST(KVCacheStoreBackendFactoryTest, KVCacheStoreCreateIntegration) {
   config.type = "HostOffloadBackend";
   config.capacity = 200;
 
-  auto store_or = KVCacheStore::Create(config);
+  auto store_or = KVCacheStore::Create(
+      config, /*capacity=*/0, /*global_registry_address=*/"", RaidenId{},
+      /*num_shards=*/1, /*shard_size_bytes=*/512,
+      /*raiden_orchestrator_address=*/"", /*store_server_ip=*/"127.0.0.1");
   ASSERT_TRUE(store_or.ok()) << store_or.status();
   ASSERT_NE(*store_or, nullptr);
   EXPECT_EQ((*store_or)->capacity(), 200);

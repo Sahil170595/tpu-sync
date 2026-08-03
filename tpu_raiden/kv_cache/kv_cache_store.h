@@ -114,8 +114,11 @@ class KVCacheStore {
       absl::string_view store_server_ip = "", int raiden_controller_port = 0,
       absl::string_view global_registry_address = "");
 
-  // Links RaidenController to all backends in backends_.
-  void SetRaidenController(
+  // Links RaidenController to all backends in backends_. Returns an error iff
+  // this store owns a store_server_ip and starting/publishing its server
+  // failed -- store initialization requires the store to be discoverable
+  // whenever the caller asked for one.
+  absl::Status SetRaidenController(
       tpu_raiden::controller::RaidenController* controller);
 
   // If `metadata` is provided, every LRU cache entry whose data lives in
@@ -343,6 +346,19 @@ class KVCacheStore {
   absl::StatusOr<size_t> RecoverFromLocalManifest();
 
  private:
+  // Tag selecting the constructor overload below that does NOT auto-wire the
+  // controller (SetRaidenController) or FATAL on failure -- used exclusively
+  // by Create(), which does that wiring itself afterward so a publish failure
+  // can return a Status instead of aborting the process. The public
+  // constructor with the same parameters delegates to this one and then
+  // wires+FATALs, for direct (non-Create()) callers.
+  struct CreateTag {};
+  KVCacheStore(std::vector<std::shared_ptr<KVCacheStoreBackend>> backends,
+              RaidenId raiden_id, int num_shards, int64_t shard_size_bytes,
+              absl::string_view raiden_orchestrator_address,
+              absl::string_view store_server_ip, int raiden_controller_port,
+              absl::string_view global_registry_address, CreateTag);
+
   // Registers ValidateAndPinHostBlocks/UnpinHostBlocks as ReadRemote step-6a
   // hooks on raiden_controller_ (no-op if there is no controller).
   void RegisterReadRemoteHooks();
@@ -393,10 +409,12 @@ class KVCacheStore {
   };
 
   // Starts (if needed) the peer-facing store server, computes
-  // store_server_address_, and publishes it to the global registry. Idempotent:
-  // SetRaidenController may be called more than once, and Create calls it again
-  // after construction.
-  void EnsureStoreServerAndRegister(
+  // store_server_address_, and publishes it to the global registry.
+  // Idempotent: SetRaidenController may be called more than once, and Create
+  // calls it again after construction. With no registry_client_, this is
+  // a no-op -- no server is started anywhere. Returns an error iff a registry
+  // is configured and starting or publishing the server failed.
+  absl::Status EnsureStoreServerAndRegister(
       tpu_raiden::controller::RaidenController* controller);
 
   mutable absl::Mutex mutex_;

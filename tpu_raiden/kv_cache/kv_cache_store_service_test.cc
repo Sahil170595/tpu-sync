@@ -109,11 +109,13 @@ class KVCacheStoreServiceTest : public ::testing::Test {
         },
         [&](absl::Span<const std::string> /*h*/) {});
 
-    // Create dst KVCacheStore
+    // Create dst KVCacheStore. No global registry: the orchestrator address
+    // used to be (mis)passed in the registry slot.
     store_ = std::make_unique<KVCacheStore>(
-        /*capacity=*/100, orchestrator_address, dst_raiden_id, /*num_shards=*/1,
+        /*capacity=*/100, /*global_registry_address=*/"", dst_raiden_id,
+        /*num_shards=*/1,
         /*shard_size_bytes=*/1024, orchestrator_address,
-        /*store_server_ip=*/"");
+        /*store_server_ip=*/"127.0.0.1");
 
     ::tpu_raiden::core::controller::RaidenControllerClient
         dst_controller_client(store_->raiden_controller_address());
@@ -409,7 +411,9 @@ TEST_F(KVCacheStoreServiceTest, FetchWithMultiWorkerEndpointsRoutesPerWorker) {
   // be routed to it.
   RaidenId multi_id{"multi_job", "0", "multi_data", 0};
   KVCacheStore store(/*capacity=*/16, /*global_registry_address=*/"", multi_id,
-                     /*num_shards=*/1, /*shard_size_bytes=*/1024);
+                     /*num_shards=*/1, /*shard_size_bytes=*/1024,
+                     /*raiden_orchestrator_address=*/"",
+                     /*store_server_ip=*/"127.0.0.1");
   ::tpu_raiden::core::controller::RaidenControllerClient ctrl_client(
       store.raiden_controller_address());
   ASSERT_OK(ctrl_client.RegisterWorker("w_a", worker_a->server_address,

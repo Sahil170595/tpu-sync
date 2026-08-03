@@ -20,15 +20,18 @@
 #include <cstring>
 #include <memory>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <utility>
 
 #include "absl/log/log.h"
 #include "absl/status/status.h"
+#include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "tpu_raiden/kv_cache/kv_cache_metadata.h"
 #include "tpu_raiden/kv_cache/kv_cache_metadata_shm.h"
 #include "tpu_raiden/kv_cache/kv_cache_store.h"
+#include "tpu_raiden/kv_cache/kv_cache_store_backend_factory.h"
 #include "tpu_raiden/kv_cache/raiden_id.h"
 
 namespace tpu_raiden {
@@ -77,10 +80,20 @@ KVCacheStoreWrapper::KVCacheStoreWrapper(
     }
   }
 
-  controller_ = std::make_unique<KVCacheStore>(
-      lru_capacity, global_registry_address, std::move(raiden_id), num_shards,
-      shard_size_bytes, raiden_orchestrator_address, store_server_ip,
-      raiden_controller_port, std::move(metadata));
+  // Routed through Create() (not the raw constructor) so a misconfigured
+  // caller -- e.g. a missing store_server_ip -- gets a Python exception
+  // instead of aborting the process.
+  BackendConfig config;
+  config.type = "HostOffloadBackend";
+  config.capacity = lru_capacity;
+  auto store_or = KVCacheStore::Create(
+      config, /*capacity=*/lru_capacity, global_registry_address, raiden_id,
+      num_shards, shard_size_bytes, raiden_orchestrator_address,
+      store_server_ip, raiden_controller_port, metadata);
+  if (!store_or.ok()) {
+    throw std::invalid_argument(std::string(store_or.status().message()));
+  }
+  controller_ = *std::move(store_or);
 
   if (metadata_region_ != nullptr && metadata_region_->warm()) {
     auto recovered_or = controller_->RecoverFromLocalManifest();

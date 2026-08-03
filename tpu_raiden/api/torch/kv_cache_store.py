@@ -158,21 +158,30 @@ class KVCacheStore:
       capacity: int,
       global_registry_address: str = "",
       raiden_id: RaidenId | None = None,
-      num_shards: int = 0,
+      *,
+      num_shards: int,
+      store_server_ip: str,
       shard_size_bytes: int = 0,
       raiden_orchestrator_address: str = "",
-      store_server_ip: str = "",
       raiden_controller_port: int = 0,
   ):
     """Creates a KVCacheStore.
 
+    Every store has a RaidenController (num_shards >= 1) and a
+    store_server_ip; there is no controller-less or unpublished
+    configuration. Same-host use: "127.0.0.1".
+    num_shards and store_server_ip have no default and must be passed by
+    keyword -- there is no value for either that is valid to fall into by
+    omission.
+
     Args:
+      num_shards: Shard count for this store's RaidenController; must be
+        >= 1.
       store_server_ip: IP that peers use to reach this store. Bind-and-
         advertise: this store's KVCacheStoreService and RaidenController both
-        bind it, and it is the host published to the global registry, so it
-        must be an IP this process can bind. Ports are chosen by gRPC. Leave
-        empty to bind the wildcard interface and publish nothing, in which
-        case peers cannot discover this store.
+        bind it, and it is the host published to the global registry. Must be
+        an IP (or hostname) this process can bind -- not empty, not a
+        wildcard.
       raiden_controller_port: Port for this store's RaidenController; 0 lets
         gRPC choose. Note that the IP address of the controller reuses
         store_server_ip.

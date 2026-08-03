@@ -37,10 +37,11 @@ class KVCacheStore:
       capacity: int,
       global_registry_address: str = '',
       raiden_id: RaidenId = ...,
-      num_shards: int = 0,
+      *,
+      num_shards: int,
       shard_size_bytes: int = 0,
       raiden_orchestrator_address: str = '',
-      store_server_ip: str = '',
+      store_server_ip: str,
       raiden_controller_port: int = 0,
   ) -> None: ...
 

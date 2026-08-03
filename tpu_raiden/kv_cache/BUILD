@@ -124,14 +124,18 @@ cc_library(
     name = "kv_cache_store_wrapper",
     srcs = ["kv_cache_store_wrapper.cc"],
     hdrs = ["kv_cache_store_wrapper.h"],
+    copts = ["-fexceptions"],
+    features = ["-use_header_modules"],
     visibility = ["//visibility:public"],
     deps = [
         ":kv_cache_metadata",
         ":kv_cache_metadata_shm",
         ":kv_cache_store",
+        ":kv_cache_store_backend_factory",
         ":raiden_id",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
     ],
 )
@@ -139,6 +143,8 @@ cc_library(
 cc_test(
     name = "kv_cache_store_wrapper_test",
     srcs = ["kv_cache_store_wrapper_test.cc"],
+    copts = ["-fexceptions"],
+    features = ["-use_header_modules"],
     deps = [
         ":kv_cache_store",
         ":kv_cache_store_wrapper",
@@ -413,6 +419,7 @@ cc_test(
         "//tpu_raiden/core/controller:raiden_controller",
         "//tpu_raiden/core/controller:raiden_orchestrator",
         "//tpu_raiden/core/controller:test_util",
+        "//tpu_raiden/kv_cache/global_registry:global_registry_cc_grpc",
         "//tpu_raiden/kv_cache/global_registry:global_registry_client_cc",
         "//tpu_raiden/kv_cache/global_registry:global_registry_server_lib",
         "@com_github_grpc_grpc//:grpc++",

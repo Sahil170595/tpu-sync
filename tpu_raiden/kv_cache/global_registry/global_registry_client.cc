@@ -26,6 +26,7 @@
 #include "absl/strings/escaping.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
+#include "absl/time/clock.h"
 #include "absl/time/time.h"
 #include "grpcpp/channel.h"
 #include "grpcpp/client_context.h"
@@ -40,6 +41,12 @@ namespace kv_cache {
 namespace global_registry {
 
 namespace {
+
+// RegisterStore runs synchronously inside KVCacheStore construction, so
+// it needs a bound: a dead-but-routable registry must not hang construction
+// indefinitely.
+constexpr absl::Duration kRegisterStoreRpcTimeout = absl::Seconds(10);
+
 void ToProto(const RaidenId& id, ::tpu_raiden::rpc::RaidenIdProto* proto) {
   proto->set_job_name(id.job_name);
   proto->set_job_replica_id(id.job_replica_id);
@@ -164,6 +171,8 @@ absl::Status GlobalRegistryClient::RegisterStore(
 
   RegisterStoreResponse response;
   grpc::ClientContext context;
+  context.set_deadline(
+      absl::ToChronoTime(absl::Now() + kRegisterStoreRpcTimeout));
   grpc::Status status = stub_->RegisterStore(&context, request, &response);
 
   if (!status.ok()) {

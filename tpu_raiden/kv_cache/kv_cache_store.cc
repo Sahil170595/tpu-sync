@@ -75,6 +75,33 @@ std::string ComposeControllerAddress(absl::string_view store_server_ip,
   return absl::StrCat(store_server_ip, ":", raiden_controller_port);
 }
 
+// Every store has a
+// controller, and store_server_ip is mandatory and never a wildcard -- it is
+// the host of the controller address registered with the orchestrator, so it
+// must be routable by peers. Hostnames are allowed (same-host tests use
+// "localhost"); empty and wildcard are not.
+absl::Status ValidateConstructionRules(absl::string_view store_server_ip,
+                                       int num_shards) {
+  if (store_server_ip.empty()) {
+    return absl::InvalidArgumentError(
+        "store_server_ip is required: it is the host peers and the "
+        "orchestrator use to reach this store. Same-host use: \"127.0.0.1\".");
+  }
+  if (store_server_ip == "[::]" || store_server_ip == "::" ||
+      store_server_ip == "0.0.0.0" ||
+      store_server_ip == "0:0:0:0:0:0:0:0") {
+    return absl::InvalidArgumentError(absl::StrCat(
+        "store_server_ip may not be a wildcard (got \"", store_server_ip,
+        "\"): a wildcard binds but cannot be published or dialled."));
+  }
+  if (num_shards < 1) {
+    return absl::InvalidArgumentError(
+        "num_shards must be >= 1: every KVCacheStore has a RaidenController; "
+        "the controller-less configuration is not supported.");
+  }
+  return absl::OkStatus();
+}
+
 }  // namespace
 
 absl::StatusOr<std::unique_ptr<KVCacheStore>> KVCacheStore::Create(
@@ -87,6 +114,8 @@ absl::StatusOr<std::unique_ptr<KVCacheStore>> KVCacheStore::Create(
   if (backend_configs.empty()) {
     return absl::InvalidArgumentError("backend_configs must not be empty");
   }
+  // Before any resource is created (violation must not leak).
+  RETURN_IF_ERROR(ValidateConstructionRules(store_server_ip, num_shards));
 
   std::vector<std::shared_ptr<KVCacheStoreBackend>> backends;
   backends.reserve(backend_configs.size());
@@ -127,13 +156,20 @@ absl::StatusOr<std::unique_ptr<KVCacheStore>> KVCacheStore::Create(
                                      ? backend_configs[0].raiden_id
                                      : raiden_id;
 
+  // CreateTag: the constructor itself must not wire the controller (and
+  // FATAL on failure) -- that would defeat Create()'s whole purpose of
+  // returning a recoverable Status. Create() does the wiring below instead.
   auto store = absl::WrapUnique(new KVCacheStore(
       std::move(backends), effective_raiden_id, num_shards, shard_size_bytes,
       raiden_orchestrator_address, store_server_ip, raiden_controller_port,
-      global_registry_address));
+      global_registry_address, KVCacheStore::CreateTag{}));
 
   if (store->raiden_controller_ != nullptr) {
-    store->SetRaidenController(store->raiden_controller_.get());
+    RETURN_IF_ERROR(
+        store->SetRaidenController(store->raiden_controller_.get()));
+    store->RegisterReadRemoteHooks();
+    store->poller_thread_ =
+        std::make_unique<std::thread>(&KVCacheStore::PollerLoop, store.get());
   }
 
   return store;
@@ -158,11 +194,17 @@ KVCacheStore::KVCacheStore(
     RaidenId raiden_id, int num_shards, int64_t shard_size_bytes,
     absl::string_view raiden_orchestrator_address,
     absl::string_view store_server_ip, int raiden_controller_port,
-    absl::string_view global_registry_address)
+    absl::string_view global_registry_address, CreateTag)
     : backends_(std::move(backends)),
       raiden_id_(std::move(raiden_id)),
       store_server_ip_(store_server_ip),
       write_through_pool_(std::make_unique<::tpu_raiden::NumaThreadPool>(4)) {
+  if (absl::Status v = ValidateConstructionRules(store_server_ip,
+                                                 num_shards);
+      !v.ok()) {
+    LOG(FATAL) << "KVCacheStore construction validation failed: " << v.message()
+               << " Use KVCacheStore::Create() for a recoverable error.";
+  }
   // Created before SetRaidenController: publishing happens there, and needs it.
   if (!global_registry_address.empty()) {
     auto channel = grpc::CreateChannel(std::string(global_registry_address),
@@ -184,8 +226,28 @@ KVCacheStore::KVCacheStore(
             raiden_orchestrator_address,
             ComposeControllerAddress(store_server_ip, raiden_controller_port));
   }
+  // Deliberately does NOT wire the controller here (see CreateTag) -- the
+  // caller (Create()) does that itself so a publish failure can return a
+  // Status instead of aborting the process.
+}
+
+KVCacheStore::KVCacheStore(
+    std::vector<std::shared_ptr<KVCacheStoreBackend>> backends,
+    RaidenId raiden_id, int num_shards, int64_t shard_size_bytes,
+    absl::string_view raiden_orchestrator_address,
+    absl::string_view store_server_ip, int raiden_controller_port,
+    absl::string_view global_registry_address)
+    : KVCacheStore(std::move(backends), std::move(raiden_id), num_shards,
+                   shard_size_bytes, raiden_orchestrator_address,
+                   store_server_ip, raiden_controller_port,
+                   global_registry_address, CreateTag{}) {
   if (raiden_controller_) {
-    SetRaidenController(raiden_controller_.get());
+    if (absl::Status s = SetRaidenController(raiden_controller_.get());
+        !s.ok()) {
+      LOG(FATAL) << "KVCacheStore failed to start/publish its store server: "
+                 << s.message()
+                 << " Use KVCacheStore::Create() for a recoverable error.";
+    }
     RegisterReadRemoteHooks();
     poller_thread_ =
         std::make_unique<std::thread>(&KVCacheStore::PollerLoop, this);
@@ -216,6 +278,12 @@ KVCacheStore::KVCacheStore(size_t capacity,
     : raiden_id_(raiden_id),
       store_server_ip_(store_server_ip),
       write_through_pool_(std::make_unique<::tpu_raiden::NumaThreadPool>(4)) {
+  if (absl::Status v = ValidateConstructionRules(store_server_ip,
+                                                 num_shards);
+      !v.ok()) {
+    LOG(FATAL) << "KVCacheStore construction validation failed: " << v.message()
+               << " Use KVCacheStore::Create() for a recoverable error.";
+  }
   if (!global_registry_address.empty()) {
     auto channel = grpc::CreateChannel(std::string(global_registry_address),
                                        grpc::InsecureChannelCredentials());
@@ -240,7 +308,12 @@ KVCacheStore::KVCacheStore(size_t capacity,
       capacity, std::move(metadata), raiden_id_, raiden_controller_.get())};
 
   if (raiden_controller_) {
-    SetRaidenController(raiden_controller_.get());
+    if (absl::Status s = SetRaidenController(raiden_controller_.get());
+        !s.ok()) {
+      LOG(FATAL) << "KVCacheStore failed to start/publish its store server: "
+                 << s.message()
+                 << " Use KVCacheStore::Create() for a recoverable error.";
+    }
     RegisterReadRemoteHooks();
     poller_thread_ =
         std::make_unique<std::thread>(&KVCacheStore::PollerLoop, this);
@@ -258,6 +331,17 @@ KVCacheStore::KVCacheStore(
       raiden_controller_(std::move(raiden_controller)),
       store_server_ip_(store_server_ip),
       write_through_pool_(std::make_unique<::tpu_raiden::NumaThreadPool>(4)) {
+  if (absl::Status v =
+          ValidateConstructionRules(store_server_ip, /*num_shards=*/1);
+      !v.ok()) {
+    LOG(FATAL) << "KVCacheStore construction validation failed: " << v.message();
+  }
+  if (raiden_controller_ == nullptr) {
+    LOG(FATAL) << "KVCacheStore requires a RaidenController; the "
+                  "controller-less configuration is not supported. "
+                  "(store_server_ip/controller-host consistency is the "
+                  "caller's promise on this constructor.)";
+  }
   if (!global_registry_address.empty()) {
     auto channel = grpc::CreateChannel(std::string(global_registry_address),
                                        grpc::InsecureChannelCredentials());
@@ -269,30 +353,44 @@ KVCacheStore::KVCacheStore(
       capacity, std::move(metadata), raiden_id_, raiden_controller_.get())};
 
   if (raiden_controller_) {
-    SetRaidenController(raiden_controller_.get());
+    if (absl::Status s = SetRaidenController(raiden_controller_.get());
+        !s.ok()) {
+      LOG(FATAL) << "KVCacheStore failed to start/publish its store server: "
+                 << s.message()
+                 << " Use KVCacheStore::Create() for a recoverable error.";
+    }
     RegisterReadRemoteHooks();
     poller_thread_ =
         std::make_unique<std::thread>(&KVCacheStore::PollerLoop, this);
   }
 }
 
-void KVCacheStore::SetRaidenController(
+absl::Status KVCacheStore::SetRaidenController(
     tpu_raiden::controller::RaidenController* controller) {
   // Runs first so that store_server_ip_ decides the bind address: StartServer
   // never rebinds a running server, so whoever starts it first wins.
-  EnsureStoreServerAndRegister(controller);
+  RETURN_IF_ERROR(EnsureStoreServerAndRegister(controller));
 
   for (auto& backend : backends_) {
     if (backend != nullptr) {
       backend->SetRaidenController(controller);
     }
   }
+  return absl::OkStatus();
 }
 
-void KVCacheStore::EnsureStoreServerAndRegister(
+absl::Status KVCacheStore::EnsureStoreServerAndRegister(
     tpu_raiden::controller::RaidenController* controller) {
   if (store_server_ != nullptr || controller == nullptr) {
-    return;  // Already done; SetRaidenController may be called repeatedly.
+    return absl::OkStatus();  // Already done; may be called repeatedly.
+  }
+
+  // The global registry decides whether the P2P plane exists at all. No
+  // registry client, no server -- not adopted from a backend, not owned by
+  // this store. (store_server_ip_ is never empty here: validation
+  // makes it mandatory.)
+  if (registry_client_ == nullptr) {
+    return absl::OkStatus();
   }
 
   // Reuse a backend's server if one exists, so a node never serves peers from
@@ -307,71 +405,43 @@ void KVCacheStore::EnsureStoreServerAndRegister(
     }
   }
   if (store_server_ == nullptr) {
-    // No backend hosts one. Only stand a server up when this store was given
-    // an IP to publish -- otherwise it would be an unreachable, unadvertised
-    // port on every store in the process, which is a behaviour change for
-    // every existing caller.
-    if (store_server_ip_.empty()) {
-      return;
-    }
     // backend() indexes backends_[0] without checking, and an empty or
     // null-headed backends_ is reachable -- capacity() guards for exactly
     // that. A service with no backend can answer nothing, so decline rather
     // than stand up a server that fails every RPC.
     if (backends_.empty() || backends_[0] == nullptr) {
       LOG(WARNING) << "KVCacheStore has no tier-0 backend; not serving peers.";
-      return;
+      return absl::OkStatus();
     }
     owned_store_server_ = KVCacheStoreServer::Create();
     store_server_ = owned_store_server_.get();
     serving_backend = backends_[0].get();
   }
 
-  // Empty ip keeps the legacy wildcard bind. The port is always gRPC's choice.
-  const std::string bind_address =
-      store_server_ip_.empty() ? "[::]:0" : absl::StrCat(store_server_ip_, ":0");
+  // store_server_ip_ is mandatory; the port is always gRPC's choice.
+  const std::string bind_address = absl::StrCat(store_server_ip_, ":0");
 
-  // StartServer on an already-running server is a NO-OP -- it does not rebind
-  // and does not re-point the service. So if something started this server
-  // first, `bind_address` is ignored. The one in-tree path that does is
-  // GlobalMemoryPoolingBackend::Create(config, controller), which starts it
-  // from the factory using the host of the controller's address. That happens
-  // to agree with us, because the controller address is itself composed from
-  // store_server_ip_ -- but only by construction, so say so out loud rather
-  // than publish an address nobody verified.
-  const bool already_running = store_server_->GetGrpcPort() != 0;
   absl::Status status =
       store_server_->StartServer(serving_backend, controller, bind_address);
   if (!status.ok()) {
-    LOG(ERROR) << "Failed to start KVCacheStoreServer on " << bind_address
-               << ": " << status.message()
-               << ". This store cannot serve peers.";
     store_server_ = nullptr;
     owned_store_server_.reset();
-    return;
-  }
-  if (already_running) {
-    LOG(WARNING) << "KVCacheStoreServer was already running on port "
-                 << store_server_->GetGrpcPort() << "; requested bind address "
-                 << bind_address
-                 << " was NOT applied and the service keeps the backend and "
-                    "controller it was started with.";
+    return absl::Status(
+        status.code(),
+        absl::StrCat("Failed to start KVCacheStoreServer on ", bind_address,
+                     ": ", status.message()));
   }
 
-  if (store_server_ip_.empty()) {
-    LOG(INFO) << "KVCacheStore has no store_server_ip; serving on "
-              << bind_address
-              << " but publishing nothing -- peers cannot discover this store.";
-    return;
-  }
-
+  // The server is the single source of truth for its own address -- it
+  // remembers the host it was actually started with. This is empty only if
+  // something adopted (bound before this call) it on a wildcard/empty host --
+  // unreachable for any in-tree caller, but checked rather than
+  // publishing a blank address.
   store_server_address_ = store_server_->GetServerAddress();
-
-  if (registry_client_ == nullptr) {
-    LOG(WARNING) << "KVCacheStore listening on " << store_server_address_
-                 << " but no global registry is configured; peers cannot "
-                    "discover this store.";
-    return;
+  if (store_server_address_.empty()) {
+    return absl::FailedPreconditionError(
+        "KVCacheStoreServer has no publishable address (bound on a wildcard "
+        "or empty host); cannot register with the global registry.");
   }
 
   absl::Status register_status = registry_client_->RegisterStore(
@@ -379,12 +449,15 @@ void KVCacheStore::EnsureStoreServerAndRegister(
       raiden_controller_ != nullptr ? raiden_controller_->controller_address()
                                     : "");
   if (!register_status.ok()) {
-    LOG(ERROR) << "Failed to publish store address " << store_server_address_
-               << " to the global registry: " << register_status.message();
-    return;
+    return absl::Status(
+        register_status.code(),
+        absl::StrCat("Failed to publish store address ",
+                     store_server_address_, " to the global registry: ",
+                     register_status.message()));
   }
   registered_in_global_registry_ = true;
   LOG(INFO) << "KVCacheStore published at " << store_server_address_;
+  return absl::OkStatus();
 }
 
 KVCacheStore::~KVCacheStore() {

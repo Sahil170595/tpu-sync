@@ -121,6 +121,12 @@ std::string KVCacheStoreServer::GetServerAddress() const {
   if (grpc_port_ <= 0) {
     return "";
   }
+  if (server_host_.empty() || server_host_ == "[::]" ||
+      server_host_ == "0.0.0.0") {
+    // Wildcard bind: no routable host to report, and no publishable one --
+    // no in-tree caller uses a wildcard bind anymore.
+    return "";
+  }
   return absl::StrCat(server_host_, ":", grpc_port_);
 }
 

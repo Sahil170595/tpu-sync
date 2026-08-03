@@ -231,7 +231,9 @@ TEST(HostOffloadBackendTest, ServerLifecycleAndControllerInitialization) {
   ASSERT_NE(backend, nullptr);
 
   auto store_server = KVCacheStoreServer::Create();
-  ASSERT_OK(store_server->StartServer(backend.get(), &controller, ""));
+  // A wildcard bind reports no publishable address,
+  // so bind a real, dialable host.
+  ASSERT_OK(store_server->StartServer(backend.get(), &controller, "127.0.0.1"));
   EXPECT_GT(store_server->GetGrpcPort(), 0);
   EXPECT_FALSE(store_server->GetServerAddress().empty());
   store_server->Shutdown();
@@ -380,7 +382,10 @@ TEST(HostOffloadBackendTest, EndToEndFetchRPC) {
       {{test_worker_server->server_address, {}}}));
 
   auto store_server = KVCacheStoreServer::Create();
-  ASSERT_OK(store_server->StartServer(backend.get(), &dst_controller, ""));
+  // A wildcard bind reports no publishable address,
+  // so bind a real, dialable host.
+  ASSERT_OK(
+      store_server->StartServer(backend.get(), &dst_controller, "127.0.0.1"));
   EXPECT_GT(store_server->GetGrpcPort(), 0);
 
   // 7. Issue Fetch RPC using KVCacheStoreClient
@@ -511,7 +516,10 @@ TEST(HostOffloadBackendTest, LoadSuccess) {
   remote_backend->Insert({"load_hash_1"}, remote_slices, /*on_host=*/true);
 
   auto remote_server = KVCacheStoreServer::Create();
-  ASSERT_OK(remote_server->StartServer(remote_backend.get(), &controller, ""));
+  // A wildcard bind reports no publishable address,
+  // so bind a real, dialable host -- this test publishes it below.
+  ASSERT_OK(remote_server->StartServer(remote_backend.get(), &controller,
+                                       "127.0.0.1"));
 
   ASSERT_OK(registry_client->RegisterStore(
       remote_node_id, remote_server->GetServerAddress(), orchestrator_address));
@@ -553,14 +561,29 @@ TEST(HostOffloadBackendTest, LoadSuccess) {
 }
 
 TEST(HostOffloadBackendTest, StoreServerOverride) {
+  RaidenId local_node_id{"override_job", "0", "cache", 0};
+  rpc::RaidenIdProto local_unit;
+  local_unit.set_job_name(local_node_id.job_name);
+  local_unit.set_job_replica_id(local_node_id.job_replica_id);
+  local_unit.set_data_name(local_node_id.data_name);
+  local_unit.set_data_replica_idx(local_node_id.data_replica_idx);
+
+  controller::RaidenController controller(
+      local_unit, /*num_blocks=*/100, /*num_shards=*/1,
+      /*shard_size_bytes=*/1024, /*raiden_orchestrator_address=*/"",
+      /*raiden_controller_address=*/"");
+
   BackendConfig config;
   config.type = "HostOffloadBackend";
   config.capacity = 100;
-  auto backend_or = HostOffloadBackend::Create(config);
+  auto backend_or = HostOffloadBackend::Create(config, &controller);
   ASSERT_OK(backend_or.status());
   auto backend = std::dynamic_pointer_cast<HostOffloadBackend>(*backend_or);
   ASSERT_NE(backend, nullptr);
+  EXPECT_EQ(backend->store_server(), nullptr);
+  ASSERT_TRUE(backend->StartServer("127.0.0.1").ok());
   EXPECT_NE(backend->store_server(), nullptr);
+  backend->store_server()->Shutdown();
 }
 
 }  // namespace

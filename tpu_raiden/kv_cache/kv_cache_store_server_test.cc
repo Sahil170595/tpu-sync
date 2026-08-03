@@ -106,12 +106,13 @@ class KVCacheStoreServerTest : public ::testing::Test {
         },
         [&](absl::Span<const std::string> /*h*/) {});
 
-    // 4. Create destination KVCacheStore
+    // 4. Create destination KVCacheStore. No global registry: the
+    // orchestrator address used to be (mis)passed in the registry slot.
     store_ = std::make_unique<KVCacheStore>(
-        /*capacity=*/100, orchestrator_address_, dst_raiden_id,
+        /*capacity=*/100, /*global_registry_address=*/"", dst_raiden_id,
         /*num_shards=*/1,
         /*shard_size_bytes=*/1024, orchestrator_address_,
-        /*store_server_ip=*/"");
+        /*store_server_ip=*/"127.0.0.1");
 
     ::tpu_raiden::core::controller::RaidenControllerClient
         dst_controller_client(store_->raiden_controller_address());
@@ -152,8 +153,10 @@ class KVCacheStoreServerTest : public ::testing::Test {
 
 TEST_F(KVCacheStoreServerTest, StartServerWithRawPointerStore) {
   server_ = KVCacheStoreServer::Create();
+  // A wildcard bind reports no publishable address (no in-tree caller ever
+  // wildcard-binds), so use a real, dialable host.
   ASSERT_OK(server_->StartServer(store_->backend().get(),
-                                 store_->raiden_controller(), "[::]:0"));
+                                 store_->raiden_controller(), "127.0.0.1:0"));
 
   int port = server_->GetGrpcPort();
   EXPECT_GT(port, 0);
@@ -180,7 +183,7 @@ TEST_F(KVCacheStoreServerTest, StartServerWithRawPointerStore) {
 TEST_F(KVCacheStoreServerTest, RestartServerAfterShutdown) {
   server_ = KVCacheStoreServer::Create();
   ASSERT_OK(server_->StartServer(store_->backend().get(),
-                                 store_->raiden_controller(), "[::]:0"));
+                                 store_->raiden_controller(), "127.0.0.1:0"));
   int first_port = server_->GetGrpcPort();
   EXPECT_GT(first_port, 0);
 
@@ -190,7 +193,7 @@ TEST_F(KVCacheStoreServerTest, RestartServerAfterShutdown) {
 
   // Restart server on a new ephemeral port
   ASSERT_OK(server_->StartServer(store_->backend().get(),
-                                 store_->raiden_controller(), "[::]:0"));
+                                 store_->raiden_controller(), "127.0.0.1:0"));
   int second_port = server_->GetGrpcPort();
   EXPECT_GT(second_port, 0);
 

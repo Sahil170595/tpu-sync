@@ -18,6 +18,7 @@
 #include <chrono>  // NOLINT(build/c++11)
 #include <csignal>
 #include <cstddef>
+#include <cstdlib>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -41,6 +42,9 @@
 #include "grpcpp/security/server_credentials.h"
 #include "grpcpp/server.h"
 #include "grpcpp/server_builder.h"
+#include "grpcpp/server_context.h"
+#include "grpcpp/support/status.h"
+#include "grpcpp/support/sync_stream.h"
 #include "xla/tsl/concurrency/future.h"
 #include "tpu_raiden/core/controller/controller_client.h"
 #include "tpu_raiden/core/controller/orchestrator_service_client.h"
@@ -48,6 +52,7 @@
 #include "tpu_raiden/core/controller/raiden_orchestrator.h"
 #include "tpu_raiden/core/controller/test_util.h"
 #include "tpu_raiden/core/kv_manager_holder.h"
+#include "tpu_raiden/kv_cache/global_registry/global_registry.grpc.pb.h"
 #include "tpu_raiden/kv_cache/global_registry/global_registry_client.h"
 #include "tpu_raiden/kv_cache/global_registry/global_registry_server.h"
 #include "tpu_raiden/kv_cache/host_offload_backend.h"
@@ -60,6 +65,15 @@
 #ifndef _WIN32
 int ignore_sigpipe = []() {
   std::signal(SIGPIPE, SIG_IGN);
+  return 0;
+}();
+
+// Every KVCacheStore owns a real
+// RaidenController, so this binary mints many controllers in one process.
+// A private ControllerServer per controller keeps them from sharing (and
+// re-pointing) the process-wide singleton.
+int use_private_controller_servers = []() {
+  setenv("RAIDEN_DISABLE_SINGLETON_WORKER", "1", /*overwrite=*/1);
   return 0;
 }();
 #endif
@@ -107,7 +121,9 @@ TEST(KVCacheStoreTest, RaidenBlockIDConstructorAndEquality) {
 }
 
 TEST(KVCacheStoreTest, BasicTests) {
-  KVCacheStore controller(50);
+  KVCacheStore controller(50, "", {}, /*num_shards=*/1,
+                          /*shard_size_bytes=*/512, "",
+                          /*store_server_ip=*/"127.0.0.1");
   EXPECT_EQ(controller.capacity(), 50);
 
   std::vector<std::string> hashes = {"4001", "4002"};
@@ -142,7 +158,9 @@ TEST(KVCacheStoreTest, BasicTests) {
 }
 
 TEST(KVCacheStoreTest, PinAndRelease) {
-  KVCacheStore controller(2);
+  KVCacheStore controller(2, "", {}, /*num_shards=*/1,
+                          /*shard_size_bytes=*/512, "",
+                          /*store_server_ip=*/"127.0.0.1");
 
   std::vector<std::string> hashes = {"101", "102"};
   std::vector<RaidenBlockID> slices = {
@@ -188,7 +206,9 @@ TEST(KVCacheStoreTest, PinAndRelease) {
 }
 
 TEST(KVCacheStoreTest, PartialPinRollback) {
-  KVCacheStore controller(2);
+  KVCacheStore controller(2, "", {}, /*num_shards=*/1,
+                          /*shard_size_bytes=*/512, "",
+                          /*store_server_ip=*/"127.0.0.1");
 
   std::vector<std::string> hashes = {"201", "202"};
   std::vector<RaidenBlockID> slices = {
@@ -206,7 +226,9 @@ TEST(KVCacheStoreTest, PartialPinRollback) {
 }
 
 TEST(KVCacheStoreTest, EvictionTracking) {
-  KVCacheStore controller(2);
+  KVCacheStore controller(2, "", {}, /*num_shards=*/1,
+                          /*shard_size_bytes=*/512, "",
+                          /*store_server_ip=*/"127.0.0.1");
 
   std::vector<std::string> hashes_1_2 = {"101", "102"};
   std::vector<RaidenBlockID> slices_1_2 = {
@@ -283,7 +305,10 @@ TEST(KVCacheStoreTest, GlobalLookupFallback) {
           .ok());
 
   // 3. Create KVCacheStore with the registry address
-  KVCacheStore store(50, server_address);
+  RaidenId store_id{"store_job", "0", "kv_cache", 0};
+  KVCacheStore store(50, server_address, store_id, /*num_shards=*/1,
+                     /*shard_size_bytes=*/512, "",
+                     /*store_server_ip=*/"127.0.0.1");
 
   // Insert blocks locally
   std::vector<std::string> local_hashes = {"local_only_hash", "shared_hash"};
@@ -382,9 +407,79 @@ TEST(KVCacheStoreTest, GlobalLookupFallback) {
   server->Shutdown();
 }
 
+// Delegates every RPC to a real GlobalRegistryServiceImpl except Lookup,
+// which always fails. Models a registry that IS reachable -- RegisterStore at
+// construction succeeds -- but whose Lookup path is down. The old version of
+// this test pointed construction itself at an unreachable address; that no
+// longer works because RegisterStore failure now fails construction:
+// a registry that cannot be reached AT ALL can no
+// longer be distinguished from a misconfigured store, so the only
+// representable "down" is Lookup failing after the store is already up.
+class LookupFailingRegistryService final
+    : public global_registry::GlobalRegistryService::Service {
+ public:
+  grpc::Status Register(
+      grpc::ServerContext* context,
+      const global_registry::RegisterRequest* request,
+      global_registry::RegisterResponse* response) override {
+    return delegate_.Register(context, request, response);
+  }
+  grpc::Status Lookup(grpc::ServerContext* context,
+                      const global_registry::LookupRequest* request,
+                      global_registry::LookupResponse* response) override {
+    return grpc::Status(grpc::StatusCode::UNAVAILABLE, "registry lookup down");
+  }
+  grpc::Status Unregister(
+      grpc::ServerContext* context,
+      const global_registry::UnregisterRequest* request,
+      global_registry::UnregisterResponse* response) override {
+    return delegate_.Unregister(context, request, response);
+  }
+  grpc::Status PullOwned(
+      grpc::ServerContext* context,
+      const global_registry::PullOwnedRequest* request,
+      grpc::ServerWriter<global_registry::PullOwnedResponse>* writer)
+      override {
+    return delegate_.PullOwned(context, request, writer);
+  }
+  grpc::Status RegisterStore(
+      grpc::ServerContext* context,
+      const global_registry::RegisterStoreRequest* request,
+      global_registry::RegisterStoreResponse* response) override {
+    return delegate_.RegisterStore(context, request, response);
+  }
+  grpc::Status ResolveStore(
+      grpc::ServerContext* context,
+      const global_registry::ResolveStoreRequest* request,
+      global_registry::ResolveStoreResponse* response) override {
+    return delegate_.ResolveStore(context, request, response);
+  }
+  grpc::Status UnregisterStore(
+      grpc::ServerContext* context,
+      const global_registry::UnregisterStoreRequest* request,
+      global_registry::UnregisterStoreResponse* response) override {
+    return delegate_.UnregisterStore(context, request, response);
+  }
+
+ private:
+  global_registry::GlobalRegistryServiceImpl delegate_;
+};
+
 TEST(KVCacheStoreTest, GlobalLookupRegistryDown) {
-  // Create KVCacheStore with an unreachable registry address
-  KVCacheStore store(50, "invalid.address:12345");
+  LookupFailingRegistryService service;
+  grpc::ServerBuilder builder;
+  int port = 0;
+  builder.AddListeningPort("localhost:0", grpc::InsecureServerCredentials(),
+                           &port);
+  builder.RegisterService(&service);
+  auto server = builder.BuildAndStart();
+  std::string server_address = "localhost:" + std::to_string(port);
+
+  // Construction succeeds: RegisterStore is reachable and healthy.
+  RaidenId store_id{"store_job", "0", "kv_cache", 0};
+  KVCacheStore store(50, server_address, store_id, /*num_shards=*/1,
+                     /*shard_size_bytes=*/512, "",
+                     /*store_server_ip=*/"127.0.0.1");
 
   // Insert one block locally
   std::vector<std::string> local_hashes = {"local_hash"};
@@ -393,20 +488,23 @@ TEST(KVCacheStoreTest, GlobalLookupRegistryDown) {
   ASSERT_TRUE(store.Insert(local_hashes, local_slices, true).first);
 
   // Lookup with enable_global = true.
-  // It should NOT fail even though the registry is down. It should return the
-  // local hit.
+  // It should NOT fail even though Lookup RPCs to the registry fail. It
+  // should return the local hit.
   auto lookup_res = store.Lookup({"local_hash", "missing_hash"},
                                  /*enable_global=*/true);
   ASSERT_TRUE(lookup_res.ok());
   EXPECT_EQ(lookup_res->size(), 1);
   EXPECT_EQ((*lookup_res)[0].first, "local_hash");
   EXPECT_EQ((*lookup_res)[0].second.raiden_id.job_name, "local_job");
+
+  server->Shutdown();
 }
 
 // --- ReadRemote All-or-Nothing validate & pin block hashes at the src controller: source-side ValidateAndPinHostBlocks ---
 
 TEST(KVCacheStoreTest, ValidateAndPinHostBlocksSuccessReDerivesIdsAndPins) {
-  KVCacheStore store(4);
+  KVCacheStore store(4, "", {}, /*num_shards=*/1, /*shard_size_bytes=*/512, "",
+                     /*store_server_ip=*/"127.0.0.1");
   RaidenId rid{"src_job", "0", "src_cache", 0};
   std::vector<std::string> hashes = {"h0", "h1"};
   std::vector<RaidenBlockID> slices = {
@@ -429,14 +527,16 @@ TEST(KVCacheStoreTest, ValidateAndPinHostBlocksSuccessReDerivesIdsAndPins) {
 }
 
 TEST(KVCacheStoreTest, ValidateAndPinHostBlocksMissingReturnsNotFound) {
-  KVCacheStore store(4);
+  KVCacheStore store(4, "", {}, /*num_shards=*/1, /*shard_size_bytes=*/512, "",
+                     /*store_server_ip=*/"127.0.0.1");
   auto ids_or =
       store.ValidateAndPinHostBlocks(std::vector<std::string>{"missing"});
   EXPECT_TRUE(absl::IsNotFound(ids_or.status())) << ids_or.status();
 }
 
 TEST(KVCacheStoreTest, ValidateAndPinHostBlocksWrongStatusFailedPrecondition) {
-  KVCacheStore store(4);
+  KVCacheStore store(4, "", {}, /*num_shards=*/1, /*shard_size_bytes=*/512, "",
+                     /*store_server_ip=*/"127.0.0.1");
   RaidenId rid{"src_job", "0", "src_cache", 0};
   std::vector<std::string> hashes = {"remote_h"};
   std::vector<RaidenBlockID> slices = {
@@ -450,7 +550,8 @@ TEST(KVCacheStoreTest, ValidateAndPinHostBlocksWrongStatusFailedPrecondition) {
 }
 
 TEST(KVCacheStoreTest, ValidateAndPinHostBlocksAtomicRollbackOnPartialMiss) {
-  KVCacheStore store(4);
+  KVCacheStore store(4, "", {}, /*num_shards=*/1, /*shard_size_bytes=*/512, "",
+                     /*store_server_ip=*/"127.0.0.1");
   RaidenId rid{"src_job", "0", "src_cache", 0};
   // "ok" is HOST, "bad" is REMOTE -> the whole batch must abort and "ok" must
   // NOT remain pinned (all-or-nothing).
@@ -469,7 +570,8 @@ TEST(KVCacheStoreTest, ValidateAndPinHostBlocksAtomicRollbackOnPartialMiss) {
 }
 
 TEST(KVCacheStoreTest, ValidateAndPinHostBlocksEmptyInputIsOk) {
-  KVCacheStore store(4);
+  KVCacheStore store(4, "", {}, /*num_shards=*/1, /*shard_size_bytes=*/512, "",
+                     /*store_server_ip=*/"127.0.0.1");
   auto ids_or = store.ValidateAndPinHostBlocks(std::vector<std::string>{});
   ASSERT_TRUE(ids_or.ok());
   EXPECT_TRUE(ids_or->empty());
@@ -477,7 +579,8 @@ TEST(KVCacheStoreTest, ValidateAndPinHostBlocksEmptyInputIsOk) {
 
 TEST(KVCacheStoreTest,
      ValidateAndPinHostBlocksIncrementsAndReleasesExistingPin) {
-  KVCacheStore store(4);
+  KVCacheStore store(4, "", {}, /*num_shards=*/1, /*shard_size_bytes=*/512, "",
+                     /*store_server_ip=*/"127.0.0.1");
   RaidenId rid{"src_job", "0", "src_cache", 0};
   std::vector<std::string> hashes = {"h0"};
   std::vector<RaidenBlockID> slices = {RaidenBlockID(
@@ -496,7 +599,8 @@ TEST(KVCacheStoreTest,
 }
 
 TEST(KVCacheStoreTest, LookupCapLimit) {
-  KVCacheStore store(2);
+  KVCacheStore store(2, "", {}, /*num_shards=*/1, /*shard_size_bytes=*/512, "",
+                     /*store_server_ip=*/"127.0.0.1");
 
   std::vector<std::string> hashes = {"101", "102"};
   std::vector<RaidenBlockID> slices = {
@@ -549,7 +653,10 @@ TEST(KVCacheStoreTest, LookupCapLimitWithGlobal) {
                   .ok());
 
   // 3. Create KVCacheStore with capacity 2
-  KVCacheStore store(2, server_address);
+  RaidenId store_id{"store_job", "0", "kv_cache", 0};
+  KVCacheStore store(2, server_address, store_id, /*num_shards=*/1,
+                     /*shard_size_bytes=*/512, "",
+                     /*store_server_ip=*/"127.0.0.1");
 
   // Lookup 3 hashes, but capacity is 2. It should only return 2.
   std::vector<std::string> lookup_hashes = {"global_hash_1", "global_hash_2",
@@ -592,7 +699,10 @@ TEST(KVCacheStoreTest, LookupCapLimitMixed) {
           .ok());
 
   // 3. Create KVCacheStore with capacity 2
-  KVCacheStore store(2, server_address);
+  RaidenId store_id{"store_job", "0", "kv_cache", 0};
+  KVCacheStore store(2, server_address, store_id, /*num_shards=*/1,
+                     /*shard_size_bytes=*/512, "",
+                     /*store_server_ip=*/"127.0.0.1");
 
   // Insert 1 block locally
   std::vector<std::string> local_hashes = {"local_hash_1"};
@@ -614,7 +724,8 @@ TEST(KVCacheStoreTest, LookupCapLimitMixed) {
 }
 
 TEST(KVCacheStoreTest, LookupAvailableSpaceLimit) {
-  KVCacheStore store(3);
+  KVCacheStore store(3, "", {}, /*num_shards=*/1, /*shard_size_bytes=*/512, "",
+                     /*store_server_ip=*/"127.0.0.1");
 
   std::vector<std::string> hashes = {"101", "102", "103"};
   std::vector<RaidenBlockID> slices = {
@@ -639,7 +750,8 @@ TEST(KVCacheStoreTest, LookupAvailableSpaceLimit) {
 }
 
 TEST(KVCacheStoreTest, InsertAndLock) {
-  KVCacheStore store(2);
+  KVCacheStore store(2, "", {}, /*num_shards=*/1, /*shard_size_bytes=*/512, "",
+                     /*store_server_ip=*/"127.0.0.1");
 
   // Insert local block
   std::vector<std::string> local_hashes = {"local_1"};
@@ -687,7 +799,8 @@ TEST(KVCacheStoreTest, LruCachePutBack) {
 }
 
 TEST(KVCacheStoreTest, ReleaseAndDelete) {
-  KVCacheStore store(2);
+  KVCacheStore store(2, "", {}, /*num_shards=*/1, /*shard_size_bytes=*/512, "",
+                     /*store_server_ip=*/"127.0.0.1");
 
   // Insert two local blocks (not remote)
   std::vector<std::string> local_hashes = {"local_1", "local_2"};
@@ -775,7 +888,8 @@ TEST(KVCacheStoreTest, ReleaseAndDelete) {
 }
 
 TEST(KVCacheStoreTest, RollbackRescue) {
-  KVCacheStore store(3);
+  KVCacheStore store(3, "", {}, /*num_shards=*/1, /*shard_size_bytes=*/512, "",
+                     /*store_server_ip=*/"127.0.0.1");
 
   // 1. Insert 3 local blocks to fill the cache (HOST status)
   std::vector<std::string> local_hashes = {"local_1", "local_2", "local_3"};
@@ -840,7 +954,8 @@ TEST(KVCacheStoreTest, RollbackRescue) {
 }
 
 TEST(KVCacheStoreTest, EvictRaceCondition) {
-  KVCacheStore store(3);
+  KVCacheStore store(3, "", {}, /*num_shards=*/1, /*shard_size_bytes=*/512, "",
+                     /*store_server_ip=*/"127.0.0.1");
 
   // Insert local_1 (HOST status)
   std::vector<std::string> local_hashes = {"local_1"};
@@ -882,14 +997,29 @@ class MetadataRegion {
   std::vector<uint8_t> buffer_;
 };
 
+// Worker-less controller: sufficient for the metadata and recovery tests,
+// which only touch the logical block manager.
+std::unique_ptr<::tpu_raiden::controller::RaidenController>
+MakeRecoveryController(const RaidenId& rid, int num_blocks) {
+  rpc::RaidenIdProto unit;
+  unit.set_job_name(rid.job_name);
+  unit.set_job_replica_id(rid.job_replica_id);
+  unit.set_data_name(rid.data_name);
+  unit.set_data_replica_idx(rid.data_replica_idx);
+  return std::make_unique<::tpu_raiden::controller::RaidenController>(
+      unit, num_blocks, /*num_shards=*/1, /*shard_size_bytes=*/512,
+      /*raiden_orchestrator_address=*/"", /*raiden_controller_address=*/"");
+}
+
 TEST(KVCacheStoreTest, InsertSetsAndDeleteClearsMetadataEntries) {
   MetadataRegion region(4);
   auto metadata_or = KVCacheMetadata::Format(region.span(), 4);
   ASSERT_TRUE(metadata_or.ok());
 
   RaidenId rid{"local_job", "0", "kv_cache", 0};
-  KVCacheStore store(4, /*raiden_controller=*/nullptr,
-                     /*global_registry_address=*/"", rid, *metadata_or);
+  KVCacheStore store(4, MakeRecoveryController(rid, 4),
+                     /*global_registry_address=*/"", rid, *metadata_or,
+                     /*store_server_ip=*/"127.0.0.1");
 
   // host_1 and host_2 own host blocks and get metadata entries; hbm_1 owns
   // no host data and must stay out of the table.
@@ -915,8 +1045,9 @@ TEST(KVCacheStoreTest, MetadataKeepsEvictionCandidates) {
   ASSERT_TRUE(metadata_or.ok());
 
   RaidenId rid{"local_job", "0", "kv_cache", 0};
-  KVCacheStore store(2, /*raiden_controller=*/nullptr,
-                     /*global_registry_address=*/"", rid, *metadata_or);
+  KVCacheStore store(2, MakeRecoveryController(rid, 4),
+                     /*global_registry_address=*/"", rid, *metadata_or,
+                     /*store_server_ip=*/"127.0.0.1");
 
   ASSERT_TRUE(store
                   .Insert({"host_1", "host_2"},
@@ -957,8 +1088,9 @@ TEST(KVCacheStoreTest, EvictClearsMetadataEntries) {
   ASSERT_TRUE(metadata_or.ok());
 
   RaidenId rid{"local_job", "0", "kv_cache", 0};
-  KVCacheStore store(2, /*raiden_controller=*/nullptr,
-                     /*global_registry_address=*/"", rid, *metadata_or);
+  KVCacheStore store(2, MakeRecoveryController(rid, 2),
+                     /*global_registry_address=*/"", rid, *metadata_or,
+                     /*store_server_ip=*/"127.0.0.1");
 
   ASSERT_TRUE(store
                   .Insert({"host_1", "host_2"},
@@ -1039,7 +1171,8 @@ TEST_F(KVCacheStoreEmbeddedControllerTest, SaveSuccess) {
   RegisterAndInitWorker(*controller, "worker_0", test_server_->server_address);
 
   RaidenId rid{"test_job", "0", "test_cache", 0};
-  KVCacheStore store(10, std::move(controller), "", rid);
+  KVCacheStore store(10, std::move(controller), "", rid, std::nullopt,
+                     /*store_server_ip=*/"127.0.0.1");
 
   std::vector<std::string> hashes = {"hash_1", "hash_2"};
   std::vector<RaidenBlockID> slices = {
@@ -1103,7 +1236,8 @@ TEST_F(KVCacheStoreEmbeddedControllerTest, LoadSuccess) {
   RegisterAndInitWorker(*controller, "worker_0", test_server_->server_address);
 
   RaidenId rid{"test_job", "0", "test_cache", 0};
-  KVCacheStore store(10, std::move(controller), "", rid);
+  KVCacheStore store(10, std::move(controller), "", rid, std::nullopt,
+                     /*store_server_ip=*/"127.0.0.1");
 
   std::vector<std::string> hashes = {"hash_1", "hash_2"};
   // Insert as HOST only blocks
@@ -1175,7 +1309,8 @@ TEST_F(KVCacheStoreEmbeddedControllerTest, SaveMultiWorkerSuccess) {
   RegisterAndInitWorker(*controller, "worker_1", test_server_1->server_address);
 
   RaidenId rid{"test_job", "0", "test_cache", 0};
-  KVCacheStore store(10, std::move(controller), "", rid);
+  KVCacheStore store(10, std::move(controller), "", rid, std::nullopt,
+                     /*store_server_ip=*/"127.0.0.1");
 
   std::vector<std::string> hashes = {"hash_1", "hash_2"};
   std::vector<RaidenBlockID> slices = {
@@ -1245,7 +1380,8 @@ TEST_F(KVCacheStoreEmbeddedControllerTest, LoadMultiWorkerSuccess) {
   RegisterAndInitWorker(*controller, "worker_1", test_server_1->server_address);
 
   RaidenId rid{"test_job", "0", "test_cache", 0};
-  KVCacheStore store(10, std::move(controller), "", rid);
+  KVCacheStore store(10, std::move(controller), "", rid, std::nullopt,
+                     /*store_server_ip=*/"127.0.0.1");
 
   std::vector<std::string> hashes = {"hash_1", "hash_2"};
   std::vector<RaidenBlockID> slices = {
@@ -1318,7 +1454,8 @@ TEST_F(KVCacheStoreEmbeddedControllerTest, SaveWriteThrough) {
 
   // 3. Initialize KVCacheStore with the registry server address & controller
   RaidenId rid{"test_job", "0", "test_cache", 0};
-  KVCacheStore store(10, std::move(controller), server_address, rid);
+  KVCacheStore store(10, std::move(controller), server_address, rid,
+                     std::nullopt, /*store_server_ip=*/"127.0.0.1");
 
   std::vector<std::string> hashes = {"hash_1", "hash_2"};
   std::vector<RaidenBlockID> slices = {
@@ -1422,7 +1559,8 @@ TEST_F(KVCacheStoreEmbeddedControllerTest, EvictByHashesHostAndHbmToErased) {
 
   // 3. Initialize KVCacheStore with the registry server address & controller
   RaidenId rid{"test_job", "0", "test_cache", 0};
-  KVCacheStore store(10, std::move(controller), server_address, rid);
+  KVCacheStore store(10, std::move(controller), server_address, rid,
+                     std::nullopt, /*store_server_ip=*/"127.0.0.1");
 
   // Register in global registry first to simulate write-through
   auto channel =
@@ -1516,7 +1654,8 @@ TEST_F(KVCacheStoreEmbeddedControllerTest, EvictByHashesHostToErased) {
   std::vector<int> host_block_ids = *alloc_or;
 
   RaidenId rid{"test_job", "0", "test_cache", 0};
-  KVCacheStore store(10, std::move(controller), server_address, rid);
+  KVCacheStore store(10, std::move(controller), server_address, rid,
+                     std::nullopt, /*store_server_ip=*/"127.0.0.1");
 
   auto channel =
       grpc::CreateChannel(server_address, grpc::InsecureChannelCredentials());
@@ -1588,7 +1727,8 @@ TEST_F(KVCacheStoreEmbeddedControllerTest, EvictOnSave) {
                         test_server_->server_address);
 
   RaidenId rid{"test_job", "0", "test_cache", 0};
-  KVCacheStore store(3, std::move(controller), server_address, rid);
+  KVCacheStore store(3, std::move(controller), server_address, rid,
+                     std::nullopt, /*store_server_ip=*/"127.0.0.1");
 
   auto channel =
       grpc::CreateChannel(server_address, grpc::InsecureChannelCredentials());
@@ -1671,7 +1811,8 @@ TEST_F(KVCacheStoreEmbeddedControllerTest, ProactiveEvictionWithCandidates) {
   RegisterAndInitWorker(*controller, "worker_0", test_server_->server_address);
 
   RaidenId rid{"test_job", "0", "test_cache", 0};
-  KVCacheStore store(2, std::move(controller), "", rid);
+  KVCacheStore store(2, std::move(controller), "", rid, std::nullopt,
+                     /*store_server_ip=*/"127.0.0.1");
 
   std::vector<std::string> hashes = {"hash_A", "hash_B"};
   std::vector<RaidenBlockID> slices = {
@@ -1855,7 +1996,8 @@ TEST_F(KVCacheStoreEmbeddedControllerTest, ReadRemoteSuccess) {
                         test_server_->server_address);
 
   RaidenId rid{"dst_job", "0", "dst_cache", 0};
-  KVCacheStore store(10, std::move(dst_controller), registry_address, rid);
+  KVCacheStore store(10, std::move(dst_controller), registry_address, rid,
+                     std::nullopt, /*store_server_ip=*/"127.0.0.1");
 
   // Insert and pin remote block in local store
   std::vector<std::string> hashes = {"hash_0"};
@@ -1981,7 +2123,8 @@ TEST_F(KVCacheStoreEmbeddedControllerTest, ReadRemoteFailure) {
                         test_server_->server_address);
 
   RaidenId rid{"dst_job", "0", "dst_cache", 0};
-  KVCacheStore store(2, std::move(dst_controller), registry_address, rid);
+  KVCacheStore store(2, std::move(dst_controller), registry_address, rid,
+                     std::nullopt, /*store_server_ip=*/"127.0.0.1");
 
   // Fill cache with two local blocks
   std::vector<std::string> local_hashes = {"local_1", "local_2"};
@@ -2088,7 +2231,8 @@ TEST_F(KVCacheStoreEmbeddedControllerTest,
   RegisterAndInitWorker(*dst_controller, "worker_0",
                         test_server_->server_address);
   RaidenId rid{"dst_job", "0", "dst_cache", 0};
-  KVCacheStore store(2, std::move(dst_controller), "", rid);
+  KVCacheStore store(2, std::move(dst_controller), "", rid, std::nullopt,
+                     /*store_server_ip=*/"127.0.0.1");
 
   std::vector<std::string> hashes = {"hash_0"};
   std::vector<RaidenBlockID> slices = {
@@ -2160,7 +2304,8 @@ TEST_F(KVCacheStoreEmbeddedControllerTest,
   RegisterAndInitWorker(*dst_controller, "worker_0",
                         test_server_->server_address);
   RaidenId rid{"dst_job", "0", "dst_cache", 0};
-  KVCacheStore store(2, std::move(dst_controller), "", rid);
+  KVCacheStore store(2, std::move(dst_controller), "", rid, std::nullopt,
+                     /*store_server_ip=*/"127.0.0.1");
 
   std::vector<std::string> hashes = {"hash_0"};
   std::vector<RaidenBlockID> slices = {
@@ -2244,7 +2389,8 @@ TEST_F(KVCacheStoreEmbeddedControllerTest, ReadRemoteDuplicateFails) {
                         test_server_->server_address);
 
   RaidenId rid{"dst_job", "0", "dst_cache", 0};
-  KVCacheStore store(10, std::move(dst_controller), "", rid);
+  KVCacheStore store(10, std::move(dst_controller), "", rid, std::nullopt,
+                     /*store_server_ip=*/"127.0.0.1");
 
   std::vector<std::string> hashes = {"hash_0"};
   std::vector<RaidenBlockID> slices = {
@@ -2287,7 +2433,8 @@ TEST_F(KVCacheStoreEmbeddedControllerTest, ReadRemoteAllocationFailureAborts) {
                         test_server_->server_address);
 
   RaidenId rid{"dst_job", "0", "dst_cache", 0};
-  KVCacheStore store(2, std::move(dst_controller), registry_address, rid);
+  KVCacheStore store(2, std::move(dst_controller), registry_address, rid,
+                     std::nullopt, /*store_server_ip=*/"127.0.0.1");
 
   // Insert and pin local_1 (HBM status, device_block_id = 0)
   std::vector<std::string> local_hashes = {"local_1"};
@@ -2428,7 +2575,8 @@ TEST_F(KVCacheStoreEmbeddedControllerTest, ReadRemoteMultipleSources) {
                         test_server_->server_address);
 
   RaidenId rid{"dst_job", "0", "dst_cache", 0};
-  KVCacheStore store(10, std::move(dst_controller), registry_address, rid);
+  KVCacheStore store(10, std::move(dst_controller), registry_address, rid,
+                     std::nullopt, /*store_server_ip=*/"127.0.0.1");
 
   // Insert and pin remote block hash_0 and hash_1
   std::vector<std::string> hashes = {"hash_0", "hash_1"};
@@ -2486,7 +2634,8 @@ TEST_F(KVCacheStoreEmbeddedControllerTest, SaveSetsMetadataEntriesOnCompletion) 
   ASSERT_TRUE(metadata_or.ok());
 
   RaidenId rid{"test_job", "0", "test_cache", 0};
-  KVCacheStore store(10, std::move(controller), "", rid, *metadata_or);
+  KVCacheStore store(10, std::move(controller), "", rid, *metadata_or,
+                     /*store_server_ip=*/"127.0.0.1");
 
   std::vector<std::string> hashes = {"hash_1", "hash_2"};
   std::vector<RaidenBlockID> slices = {
@@ -2586,7 +2735,7 @@ TEST_F(KVCacheStoreEmbeddedControllerTest,
 
   RaidenId rid{"dst_job", "0", "dst_cache", 0};
   KVCacheStore store(10, std::move(dst_controller), registry_address, rid,
-                     *metadata_or);
+                     *metadata_or, /*store_server_ip=*/"127.0.0.1");
 
   std::vector<std::string> hashes = {"hash_0"};
   std::vector<RaidenBlockID> slices = {
@@ -2623,21 +2772,6 @@ TEST_F(KVCacheStoreEmbeddedControllerTest,
   registry_server->Shutdown();
 }
 
-
-// Worker-less controller: sufficient for recovery, which only touches the
-// logical block manager.
-std::unique_ptr<::tpu_raiden::controller::RaidenController>
-MakeRecoveryController(const RaidenId& rid, int num_blocks) {
-  rpc::RaidenIdProto unit;
-  unit.set_job_name(rid.job_name);
-  unit.set_job_replica_id(rid.job_replica_id);
-  unit.set_data_name(rid.data_name);
-  unit.set_data_replica_idx(rid.data_replica_idx);
-  return std::make_unique<::tpu_raiden::controller::RaidenController>(
-      unit, num_blocks, /*num_shards=*/1, /*shard_size_bytes=*/512,
-      /*raiden_orchestrator_address=*/"", /*raiden_controller_address=*/"");
-}
-
 TEST(KVCacheStoreTest, RecoverFromLocalManifestRebuildsLruCache) {
   RaidenId rid{"manifest_job", "0", "kv_cache", 0};
   MetadataRegion region(10);
@@ -2652,7 +2786,8 @@ TEST(KVCacheStoreTest, RecoverFromLocalManifestRebuildsLruCache) {
   auto controller = MakeRecoveryController(rid, 10);
   auto* controller_ptr = controller.get();
   KVCacheStore store(10, std::move(controller),
-                     /*global_registry_address=*/"", rid, *metadata_or);
+                     /*global_registry_address=*/"", rid, *metadata_or,
+                     /*store_server_ip=*/"127.0.0.1");
 
   auto recovered_or = store.RecoverFromLocalManifest();
   ASSERT_TRUE(recovered_or.ok()) << recovered_or.status().ToString();
@@ -2698,7 +2833,8 @@ TEST(KVCacheStoreTest, RecoverFromLocalManifestRebuildsLruOrder) {
   // than the LRU cache capacity. With capacity 2 the oldest entry overflows
   // into a candidate again, keeping its block and metadata entry.
   KVCacheStore store(2, MakeRecoveryController(rid, 10),
-                     /*global_registry_address=*/"", rid, *metadata_or);
+                     /*global_registry_address=*/"", rid, *metadata_or,
+                     /*store_server_ip=*/"127.0.0.1");
   auto recovered_or = store.RecoverFromLocalManifest();
   ASSERT_TRUE(recovered_or.ok()) << recovered_or.status().ToString();
   EXPECT_EQ(*recovered_or, 3);
@@ -2721,7 +2857,8 @@ TEST(KVCacheStoreTest, RecoverFromLocalManifestKeepsNewestDuplicate) {
   auto controller = MakeRecoveryController(rid, 10);
   auto* controller_ptr = controller.get();
   KVCacheStore store(10, std::move(controller),
-                     /*global_registry_address=*/"", rid, *metadata_or);
+                     /*global_registry_address=*/"", rid, *metadata_or,
+                     /*store_server_ip=*/"127.0.0.1");
 
   auto recovered_or = store.RecoverFromLocalManifest();
   ASSERT_TRUE(recovered_or.ok()) << recovered_or.status().ToString();
@@ -2755,7 +2892,8 @@ TEST(KVCacheStoreTest, RecoverFromLocalManifestFailsOnAllocatorConflict) {
   ASSERT_TRUE(controller->AllocateBlockIds(1).ok());
 
   KVCacheStore store(10, std::move(controller),
-                     /*global_registry_address=*/"", rid, *metadata_or);
+                     /*global_registry_address=*/"", rid, *metadata_or,
+                     /*store_server_ip=*/"127.0.0.1");
   auto recovered_or = store.RecoverFromLocalManifest();
   EXPECT_EQ(recovered_or.status().code(),
             absl::StatusCode::kFailedPrecondition);
@@ -2769,23 +2907,22 @@ TEST(KVCacheStoreTest, RecoverFromLocalManifestPreconditions) {
   auto metadata_or = KVCacheMetadata::Format(region.span(), 10);
   ASSERT_TRUE(metadata_or.ok());
 
-  // No raiden controller.
-  KVCacheStore store_no_controller(10, /*raiden_controller=*/nullptr,
-                                   /*global_registry_address=*/"", rid,
-                                   *metadata_or);
-  EXPECT_EQ(store_no_controller.RecoverFromLocalManifest().status().code(),
-            absl::StatusCode::kFailedPrecondition);
+  // A controller-less store is unrepresentable under the construction rules,
+  // so the old no-controller sub-case is gone.
 
   // No attached metadata table.
   KVCacheStore store_no_metadata(10, MakeRecoveryController(rid, 10),
-                                 /*global_registry_address=*/"", rid);
+                                 /*global_registry_address=*/"", rid,
+                                 std::nullopt,
+                                 /*store_server_ip=*/"127.0.0.1");
   EXPECT_EQ(store_no_metadata.RecoverFromLocalManifest().status().code(),
             absl::StatusCode::kFailedPrecondition);
 
   // Non-empty LRU cache.
   KVCacheStore store_non_empty(10, MakeRecoveryController(rid, 10),
                                /*global_registry_address=*/"", rid,
-                               *metadata_or);
+                               *metadata_or,
+                               /*store_server_ip=*/"127.0.0.1");
   ASSERT_TRUE(store_non_empty
                   .Insert({"hash_a"}, {RaidenBlockID(rid, 0, BlockStatus::HOST)},
                           true)
@@ -2799,7 +2936,8 @@ TEST(KVCacheStoreTest, RecoverFromLocalManifestPreconditions) {
   ASSERT_TRUE(empty_metadata_or.ok());
   KVCacheStore store_empty(10, MakeRecoveryController(rid, 10),
                            /*global_registry_address=*/"", rid,
-                           *empty_metadata_or);
+                           *empty_metadata_or,
+                           /*store_server_ip=*/"127.0.0.1");
   auto recovered_or = store_empty.RecoverFromLocalManifest();
   ASSERT_TRUE(recovered_or.ok()) << recovered_or.status().ToString();
   EXPECT_EQ(*recovered_or, 0);
@@ -2822,7 +2960,10 @@ TEST(KVCacheStoreTest, MultiBackendPriorityLookupChain) {
       RaidenBlockID(id, 4, BlockStatus::HOST)};
   b2->Insert(b2_hashes, b2_slices, /*on_host=*/true);
 
-  KVCacheStore store(std::vector<std::shared_ptr<KVCacheStoreBackend>>{b1, b2});
+  KVCacheStore store(std::vector<std::shared_ptr<KVCacheStoreBackend>>{b1, b2},
+                     RaidenId{}, /*num_shards=*/1, /*shard_size_bytes=*/512,
+                     /*raiden_orchestrator_address=*/"",
+                     /*store_server_ip=*/"127.0.0.1");
 
   auto lookup_res =
       store.Lookup({"h1", "h2", "h3", "h4"}, /*enable_global=*/true);
@@ -2848,7 +2989,10 @@ TEST(KVCacheStoreTest, MultiBackendTierGatingWhenGlobalDisabled) {
   b2->Insert({"h2"}, {RaidenBlockID(id, 2, BlockStatus::HOST)},
              /*on_host=*/true);
 
-  KVCacheStore store(std::vector<std::shared_ptr<KVCacheStoreBackend>>{b1, b2});
+  KVCacheStore store(std::vector<std::shared_ptr<KVCacheStoreBackend>>{b1, b2},
+                     RaidenId{}, /*num_shards=*/1, /*shard_size_bytes=*/512,
+                     /*raiden_orchestrator_address=*/"",
+                     /*store_server_ip=*/"127.0.0.1");
 
   // enable_global = false => max_tier = 0 => stops after Tier 0
   auto gated_res = store.Lookup({"h1", "h2"}, /*enable_global=*/false);
@@ -2868,7 +3012,10 @@ TEST(KVCacheStoreTest, MultiBackendInsertAndLockRollback) {
   auto b1 = std::make_shared<HostOffloadBackend>(/*capacity=*/2);
   auto b2 = std::make_shared<HostOffloadBackend>(/*capacity=*/1);
 
-  KVCacheStore store(std::vector<std::shared_ptr<KVCacheStoreBackend>>{b1, b2});
+  KVCacheStore store(std::vector<std::shared_ptr<KVCacheStoreBackend>>{b1, b2},
+                     RaidenId{}, /*num_shards=*/1, /*shard_size_bytes=*/512,
+                     /*raiden_orchestrator_address=*/"",
+                     /*store_server_ip=*/"127.0.0.1");
 
   RaidenId id{"job", "0", "cache", 0};
   std::vector<std::string> hashes = {"h1", "h2"};
@@ -2897,7 +3044,10 @@ TEST(KVCacheStoreTest, MultiBackendPinAndRelease) {
   b2->Insert({"h2"}, {RaidenBlockID(id, 2, BlockStatus::HOST)},
              /*on_host=*/true);
 
-  KVCacheStore store(std::vector<std::shared_ptr<KVCacheStoreBackend>>{b1, b2});
+  KVCacheStore store(std::vector<std::shared_ptr<KVCacheStoreBackend>>{b1, b2},
+                     RaidenId{}, /*num_shards=*/1, /*shard_size_bytes=*/512,
+                     /*raiden_orchestrator_address=*/"",
+                     /*store_server_ip=*/"127.0.0.1");
 
   EXPECT_TRUE(store.Pin({"h1", "h2"}));
   EXPECT_EQ(store.GetPinCount("h1"), 1);
@@ -2990,19 +3140,6 @@ TEST_F(StoreDiscoveryTest, PublishedAddressIsConnectable) {
                                              std::chrono::seconds(10)));
 }
 
-// The escape hatch: no ip means bind the wildcard interface and publish
-// nothing. Every pre-existing caller takes this path.
-TEST_F(StoreDiscoveryTest, NoStoreServerIpPublishesNothing) {
-  RaidenId rid{"disco_job_quiet", "0", "kv_cache", 0};
-  KVCacheStore store(/*capacity=*/16, registry_address_, rid, /*num_shards=*/1,
-                     /*shard_size_bytes=*/512,
-                     /*raiden_orchestrator_address=*/"",
-                     /*store_server_ip=*/"");
-
-  EXPECT_TRUE(store.store_server_address().empty());
-  EXPECT_TRUE(absl::IsNotFound(client_->ResolveStore(rid).status()));
-}
-
 // Teardown must retract the registration, or peers keep dialling a dead port.
 TEST_F(StoreDiscoveryTest, DestructorUnpublishes) {
   RaidenId rid{"disco_job_gone", "0", "kv_cache", 0};
@@ -3083,31 +3220,32 @@ TEST_F(StoreDiscoveryTest, AdoptsAndPublishesTheBackendsServer) {
   EXPECT_EQ(resolved->store_server_address(), store.store_server_address());
 }
 
+// A backend that already hosts a KVCacheStoreServer (because something started
+// one on it explicitly before store construction) is adopted by the store
+// rather than standing up a second server.
 TEST_F(StoreDiscoveryTest, AdoptsTheBackendsServerRatherThanOwningASecond) {
   RaidenId rid{"disco_job_adopt", "0", "kv_cache", 0};
 
-  BackendConfig host_config;
-  host_config.type = "HostOffloadBackend";
-  host_config.capacity = 16;
-  host_config.raiden_id = rid;
-  host_config.global_registry_address = registry_address_;
-
-  const BackendConfig configs[] = {host_config};
-  auto store_or = KVCacheStore::Create(
-      absl::MakeConstSpan(configs), /*capacity=*/16, registry_address_, rid,
-      /*num_shards=*/1, /*shard_size_bytes=*/512,
-      /*raiden_orchestrator_address=*/"", /*store_server_ip=*/"127.0.0.1");
-  ASSERT_TRUE(store_or.ok()) << store_or.status().ToString();
-  auto& store = **store_or;
-
-  ASSERT_FALSE(store.backends().empty());
-  auto* backend = store.backends()[0].get();
-  ASSERT_NE(backend, nullptr);
+  // Nothing starts a backend's server implicitly: the only way a backend
+  // can already host one by the time the
+  // store wires up is a caller starting it explicitly beforehand, as here.
+  // The bootstrap controller only needs to be non-null for StartServer to
+  // succeed; the store below wires its own controller in afterward.
+  auto bootstrap_controller = MakeRecoveryController(rid, /*num_blocks=*/16);
+  auto backend = std::make_shared<HostOffloadBackend>(
+      /*capacity=*/16, std::nullopt, rid, bootstrap_controller.get());
+  ASSERT_TRUE(backend->StartServer("127.0.0.1").ok());
   ASSERT_NE(backend->store_server(), nullptr);
 
-  // The store adopts the backend's server rather than owning a second one.
-  EXPECT_EQ(store.store_server(), backend->store_server());
-  EXPECT_THAT(store.store_server_address(), StartsWith("127.0.0.1:"));
+  KVCacheStore store(
+      std::vector<std::shared_ptr<KVCacheStoreBackend>>{backend}, rid,
+      /*num_shards=*/1, /*shard_size_bytes=*/512,
+      /*raiden_orchestrator_address=*/"", /*store_server_ip=*/"127.0.0.1",
+      /*raiden_controller_port=*/0, registry_address_);
+
+  ASSERT_NE(store.store_server(), nullptr);
+  ASSERT_FALSE(store.backends().empty());
+  EXPECT_EQ(store.store_server(), store.backends()[0]->store_server());
 }
 
 // The controller is addressed from the same ip, with its port either chosen by
@@ -3209,6 +3347,105 @@ TEST_F(StoreDiscoveryTest, NoBackendDoesNotServeOrCrash) {
   EXPECT_EQ(store.store_server(), nullptr);
   EXPECT_TRUE(store.store_server_address().empty());
   EXPECT_TRUE(absl::IsNotFound(client_->ResolveStore(rid).status()));
+}
+
+
+// ---------------------------------------------------------------------------
+// Construction rules (kv_cache_store_construction_rules.md): Create() rejects
+// a missing/wildcard store_server_ip and a controller-less configuration with
+// InvalidArgument; the raw constructors LOG(FATAL) on the same violations.
+// ---------------------------------------------------------------------------
+
+BackendConfig MakeHostBackendConfig() {
+  BackendConfig config;
+  config.type = "HostOffloadBackend";
+  config.capacity = 4;
+  return config;
+}
+
+TEST(KVCacheStoreConstructionTest, CreateRejectsEmptyStoreServerIp) {
+  auto store_or = KVCacheStore::Create(
+      MakeHostBackendConfig(), /*capacity=*/4,
+      /*global_registry_address=*/"", RaidenId{}, /*num_shards=*/1,
+      /*shard_size_bytes=*/512, /*raiden_orchestrator_address=*/"",
+      /*store_server_ip=*/"");
+  EXPECT_TRUE(absl::IsInvalidArgument(store_or.status()))
+      << store_or.status();
+}
+
+TEST(KVCacheStoreConstructionTest, CreateRejectsWildcardStoreServerIp) {
+  for (const char* wildcard : {"[::]", "0.0.0.0", "::"}) {
+    auto store_or = KVCacheStore::Create(
+        MakeHostBackendConfig(), /*capacity=*/4,
+        /*global_registry_address=*/"", RaidenId{}, /*num_shards=*/1,
+        /*shard_size_bytes=*/512, /*raiden_orchestrator_address=*/"",
+        /*store_server_ip=*/wildcard);
+    EXPECT_TRUE(absl::IsInvalidArgument(store_or.status()))
+        << "wildcard \"" << wildcard << "\": " << store_or.status();
+  }
+}
+
+TEST(KVCacheStoreConstructionTest, CreateRejectsZeroShards) {
+  auto store_or = KVCacheStore::Create(
+      MakeHostBackendConfig(), /*capacity=*/4,
+      /*global_registry_address=*/"", RaidenId{}, /*num_shards=*/0,
+      /*shard_size_bytes=*/512, /*raiden_orchestrator_address=*/"",
+      /*store_server_ip=*/"127.0.0.1");
+  EXPECT_TRUE(absl::IsInvalidArgument(store_or.status()))
+      << store_or.status();
+}
+
+TEST(KVCacheStoreConstructionDeathTest, CapacityCtorDiesOnEmptyIp) {
+  GTEST_FLAG_SET(death_test_style, "threadsafe");
+  EXPECT_DEATH(
+      KVCacheStore store(/*capacity=*/4, /*global_registry_address=*/"",
+                         RaidenId{}, /*num_shards=*/1,
+                         /*shard_size_bytes=*/512,
+                         /*raiden_orchestrator_address=*/"",
+                         /*store_server_ip=*/""),
+      "construction validation failed");
+}
+
+TEST(KVCacheStoreConstructionDeathTest, CapacityCtorDiesOnZeroShards) {
+  GTEST_FLAG_SET(death_test_style, "threadsafe");
+  EXPECT_DEATH(
+      KVCacheStore store(/*capacity=*/4, /*global_registry_address=*/"",
+                         RaidenId{}, /*num_shards=*/0,
+                         /*shard_size_bytes=*/512,
+                         /*raiden_orchestrator_address=*/"",
+                         /*store_server_ip=*/"127.0.0.1"),
+      "construction validation failed");
+}
+
+// Regression test: Create() must return a Status on a RegisterStore
+// failure, not FATAL. This is the one failure Create() cannot pre-validate --
+// it only surfaces once the store actually tries to register itself, so it is
+// the whole reason Create() exists as a distinct, recoverable-error path from
+// the raw constructors. This caught a real bug once: the constructor Create()
+// calls internally already wired the controller (and FATALed on failure)
+// before Create() got a chance to do its own recoverable wiring, making
+// Create()'s Status-return dead code for every RegisterStore failure.
+TEST(KVCacheStoreConstructionTest, CreateFailsWhenRegistryPublishFails) {
+  auto service = std::make_unique<global_registry::GlobalRegistryServiceImpl>();
+  grpc::ServerBuilder builder;
+  int port = 0;
+  builder.AddListeningPort("localhost:0", grpc::InsecureServerCredentials(),
+                           &port);
+  builder.RegisterService(service.get());
+  auto server = builder.BuildAndStart();
+  std::string server_address = "localhost:" + std::to_string(port);
+
+  // A reachable registry that genuinely rejects RegisterStore (empty
+  // job_name) -- registered, valid construction args, but a real runtime
+  // publish failure.
+  auto store_or = KVCacheStore::Create(
+      MakeHostBackendConfig(), /*capacity=*/4, server_address, RaidenId{},
+      /*num_shards=*/1, /*shard_size_bytes=*/512,
+      /*raiden_orchestrator_address=*/"", /*store_server_ip=*/"127.0.0.1");
+  EXPECT_FALSE(store_or.ok()) << "expected RegisterStore's rejection to "
+                                 "surface as a Create() failure";
+
+  server->Shutdown();
 }
 
 }  // namespace

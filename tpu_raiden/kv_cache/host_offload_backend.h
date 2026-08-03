@@ -114,9 +114,19 @@ class HostOffloadBackend : public KVCacheStoreBackend {
     SetRaidenController(controller);
   }
 
+  // --- Global Memory Pooling & RPC Methods ---
+  // The peer-facing server this backend hosts, or nullptr until StartServer()
+  // succeeds (construction no longer pre-creates it -- with no registry, no
+  // server is started anywhere). Once started, the owning KVCacheStore adopts THIS
+  // server instead of standing up a second one -- a node must never serve
+  // peers from two ports. The override was lost when GlobalMemoryPoolingBackend
+  // was consolidated into this class.
   KVCacheStoreServer* store_server() const override;
 
-  // --- Global Memory Pooling & RPC Methods ---
+  // Starts this backend's own server bound to `server_address`, which must be
+  // non-empty and non-wildcard. Not called from
+  // Create() -- starting + publishing a server is exclusively
+  // KVCacheStore::EnsureStoreServerAndRegister's job.
   absl::Status StartServer(absl::string_view server_address);
 
   tsl::Future<> Load(const RaidenId& remote_id,

@@ -89,8 +89,7 @@ HostOffloadBackend::HostOffloadBackend(
       metadata_(std::move(metadata)),
       raiden_id_(std::move(raiden_id)),
       raiden_controller_(raiden_controller),
-      registry_client_(std::move(registry_client)),
-      server_(KVCacheStoreServer::Create()) {}
+      registry_client_(std::move(registry_client)) {}
 
 HostOffloadBackend::~HostOffloadBackend() {
   if (server_) {
@@ -130,15 +129,13 @@ absl::StatusOr<std::shared_ptr<KVCacheStoreBackend>> HostOffloadBackend::Create(
     registry_client = std::make_shared<
         ::tpu_raiden::kv_cache::global_registry::GlobalRegistryClient>(channel);
   }
-  bool has_registry = (registry_client != nullptr);
-  auto backend = std::make_shared<HostOffloadBackend>(
+  // Server start + publish is exclusively
+  // KVCacheStore::EnsureStoreServerAndRegister's job -- starting one here
+  // would race it and could bind before the owning store has decided whether
+  // a registry exists at all.
+  return std::make_shared<HostOffloadBackend>(
       config.capacity, config.metadata, config.raiden_id, controller,
       std::move(registry_client));
-  if (controller != nullptr && has_registry) {
-    RETURN_IF_ERROR(
-        backend->StartServer(config.GetProperty("store_server_ip")));
-  }
-  return backend;
 }
 
 absl::Status HostOffloadBackend::StartServer(absl::string_view server_address) {
@@ -151,28 +148,20 @@ absl::Status HostOffloadBackend::StartServer(absl::string_view server_address) {
     return absl::FailedPreconditionError(
         "Cannot start KVCacheStoreServer without a RaidenController.");
   }
+  if (server_address.empty() || server_address == "[::]" ||
+      server_address == "::" || server_address == "0.0.0.0" ||
+      server_address == "0:0:0:0:0:0:0:0") {
+    return absl::InvalidArgumentError(
+        "server_address must be a non-empty, non-wildcard host; it is not "
+        "derived from the controller address.");
+  }
 
   absl::MutexLock lock(mutex_);
   if (!server_) {
     server_ = KVCacheStoreServer::Create();
   }
 
-  std::string target_host(server_address);
-  if (target_host.empty()) {
-    std::string ctrl_addr = ctrl->controller_address();
-    if (!ctrl_addr.empty()) {
-      size_t last_colon = ctrl_addr.rfind(':');
-      size_t last_bracket = ctrl_addr.rfind(']');
-      if (last_colon != std::string::npos &&
-          (last_bracket == std::string::npos || last_colon > last_bracket)) {
-        target_host = ctrl_addr.substr(0, last_colon);
-      } else {
-        target_host = ctrl_addr;
-      }
-    }
-  }
-
-  return server_->StartServer(this, ctrl, target_host);
+  return server_->StartServer(this, ctrl, server_address);
 }
 
 absl::StatusOr<BlockSliceList> HostOffloadBackend::Lookup(

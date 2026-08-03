@@ -51,6 +51,32 @@ _orchestrator_port = None
 _registry_port = None
 
 
+def _registry_binary_path():
+  this_dir = os.path.dirname(os.path.abspath(__file__))
+  return os.path.abspath(
+      os.path.join(
+          this_dir,
+          "..",
+          "..",
+          "kv_cache",
+          "global_registry",
+          "global_registry_server",
+      )
+  )
+  this_dir = os.path.dirname(os.path.abspath(__file__))
+  return os.path.abspath(
+      os.path.join(
+          this_dir,
+          "..",
+          "..",
+          "kv_cache",
+          "global_registry",
+          "global_registry_server",
+      )
+  )
+
+
+
 def setUpModule():
   global _orchestrator_process, _registry_process
   global _orchestrator_port, _registry_port
@@ -175,7 +201,9 @@ class KVCacheStoreTest(absltest.TestCase):
     print("TEST_BASIC_DEVICE_COUNT:", jax.device_count())
     print("TEST_BASIC_MESH_DEVICES:", self.mesh.devices)
     print("TEST_BASIC_MESH_SHAPE:", self.mesh.shape)
-    controller = kv_cache_store.KVCacheStore(capacity=20)
+    controller = kv_cache_store.KVCacheStore(
+        capacity=20, num_shards=1, store_server_ip="127.0.0.1"
+    )
     self.assertEqual(controller.capacity(), 20)
 
     hashes = [b"6001", b"6002"]
@@ -211,7 +239,9 @@ class KVCacheStoreTest(absltest.TestCase):
     )  # Successful again
 
   def test_pin_and_release(self):
-    controller = kv_cache_store.KVCacheStore(capacity=2)
+    controller = kv_cache_store.KVCacheStore(
+        capacity=2, num_shards=1, store_server_ip="127.0.0.1"
+    )
 
     hashes = [b"7001", b"7002"]
     slices = [
@@ -242,7 +272,9 @@ class KVCacheStoreTest(absltest.TestCase):
     self.assertLen(controller.lookup([b"7002"]), 1)
 
   def test_partial_pin_rollback(self):
-    controller = kv_cache_store.KVCacheStore(capacity=2)
+    controller = kv_cache_store.KVCacheStore(
+        capacity=2, num_shards=1, store_server_ip="127.0.0.1"
+    )
 
     hashes = [b"8001", b"8002"]
     slices = [
@@ -271,7 +303,9 @@ class KVCacheStoreTest(absltest.TestCase):
     self.assertLen(controller.lookup([b"8004", b"8005"]), 2)
 
   def test_large_and_arbitrary_length_hashes(self):
-    controller = kv_cache_store.KVCacheStore(capacity=5)
+    controller = kv_cache_store.KVCacheStore(
+        capacity=5, num_shards=1, store_server_ip="127.0.0.1"
+    )
 
     # Test both high-bit 8-byte hash and a very long arbitrary length hash
     large_hash = b"\xff" * 8
@@ -292,7 +326,9 @@ class KVCacheStoreTest(absltest.TestCase):
   def test_global_lookup_case1_local_hit(self):
     # Case 1: Full local hit, no global hit.
     # We don't need a registry server for this because it shouldn't be queried.
-    controller = kv_cache_store.KVCacheStore(capacity=20)
+    controller = kv_cache_store.KVCacheStore(
+        capacity=20, num_shards=1, store_server_ip="127.0.0.1"
+    )
     hashes = [b"local_only"]
     slices = [
         kv_cache_store.RaidenId("local_job", "0", "kv_cache", 0),
@@ -308,7 +344,9 @@ class KVCacheStoreTest(absltest.TestCase):
   def test_global_lookup_case2_and_3_mocked(self):
     # We mock _impl to simulate Case 2 and Case 3 because we don't
     # have a running registry server in Python tests.
-    controller = kv_cache_store.KVCacheStore(capacity=20)
+    controller = kv_cache_store.KVCacheStore(
+        capacity=20, num_shards=1, store_server_ip="127.0.0.1"
+    )
 
     # Create a mock for the C++ impl
     mock_impl = unittest.mock.MagicMock()
@@ -356,16 +394,42 @@ class KVCacheStoreTest(absltest.TestCase):
     mock_impl.lookup.assert_called_with([b"global_1", b"global_2"], True)
 
   def test_global_lookup_error_ignored(self):
-    controller = kv_cache_store.KVCacheStore(
-        capacity=20, global_registry_address="invalid.address:12345"
+    # Construction requires a registry that is actually reachable
+    # (RegisterStore failure now fails construction), so an unreachable address
+    # can no longer model "registry down" at
+    # construction time. Instead: start a real, throwaway registry, construct
+    # against it, then kill it before the Lookup this test cares about --
+    # genuinely down for that RPC, not mocked.
+    throwaway_port = _pick_unused_port()
+    throwaway_registry = subprocess.Popen(
+        [_registry_binary_path(), f"--port={throwaway_port}"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.STDOUT,
     )
+    time.sleep(1)
+    try:
+      controller = kv_cache_store.KVCacheStore(
+          capacity=20,
+          global_registry_address=f"localhost:{throwaway_port}",
+          raiden_id=kv_cache_store.RaidenId(
+              "lookup_error_job", "0", "kv_cache", 0
+          ),
+          num_shards=1,
+          store_server_ip="127.0.0.1",
+      )
+    finally:
+      throwaway_registry.terminate()
+      throwaway_registry.wait()
+
     hashes = [b"9001"]
-    # Should not fail, just return empty because the registry is down
+    # Should not fail, just return empty because the registry is now down.
     res = controller.lookup(hashes, enable_global=True)
     self.assertEmpty(res)
 
   def test_save_and_load_mocked(self):
-    controller = kv_cache_store.KVCacheStore(capacity=20)
+    controller = kv_cache_store.KVCacheStore(
+        capacity=20, num_shards=1, store_server_ip="127.0.0.1"
+    )
     mock_impl = unittest.mock.MagicMock()
     controller._impl = mock_impl
 
@@ -396,7 +460,9 @@ class KVCacheStoreTest(absltest.TestCase):
     mock_impl.poll_load_status.assert_called_once()
 
   def test_insert_and_lock_release_and_delete(self):
-    controller = kv_cache_store.KVCacheStore(capacity=2)
+    controller = kv_cache_store.KVCacheStore(
+        capacity=2, num_shards=1, store_server_ip="127.0.0.1"
+    )
 
     local_hashes = [b"local_1", b"local_2"]
     local_slices = [
@@ -467,6 +533,7 @@ class KVCacheStoreTest(absltest.TestCase):
         num_shards=len(devices),
         shard_size_bytes=local_bytes_per_block,
         raiden_orchestrator_address=f"localhost:{_orchestrator_port}",
+        store_server_ip="localhost",
     )
 
     # 4. Setup Manager
@@ -574,6 +641,7 @@ class KVCacheStoreTest(absltest.TestCase):
         num_shards=len(devices),
         shard_size_bytes=local_bytes_per_block,
         raiden_orchestrator_address=f"localhost:{_orchestrator_port}",
+        store_server_ip="localhost",
     )
 
     # 4. Setup Manager
@@ -655,6 +723,8 @@ class KVCacheStoreTest(absltest.TestCase):
         capacity=10,
         global_registry_address=f"localhost:{_registry_port}",
         raiden_id=kv_cache_store.RaidenId("receiver_job", "0", "kv_cache", 0),
+        num_shards=1,
+        store_server_ip="localhost",
     )
     global_verified = False
     for _ in range(50):

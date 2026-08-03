@@ -20,6 +20,7 @@
 
 #include <cstdlib>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -64,7 +65,7 @@ class KVCacheStoreWrapperTest : public ::testing::Test {
     return std::make_unique<KVCacheStoreWrapper>(
         capacity, /*global_registry_address=*/"", rid, num_shards,
         /*shard_size_bytes=*/512, /*raiden_orchestrator_address=*/"",
-        /*store_server_ip=*/"");
+        /*store_server_ip=*/"127.0.0.1");
   }
 
   bool MetadataSegmentExists(const std::string& suffix) {
@@ -105,10 +106,12 @@ TEST_F(KVCacheStoreWrapperTest, NoShmKeySkipsMetadataTable) {
   EXPECT_EQ((*wrapper)->capacity(), 4);
 }
 
-TEST_F(KVCacheStoreWrapperTest, NumShardsZeroSkipsMetadataTable) {
-  auto wrapper = MakeWrapper(/*capacity=*/4, /*num_shards=*/0);
-  EXPECT_FALSE(MetadataSegmentExists("_metadata"));
-  EXPECT_EQ((*wrapper)->capacity(), 4);
+// num_shards == 0 (the old pure-LRU configuration) is no longer supported.
+// The wrapper is routed through KVCacheStore::Create(), so a misconfigured
+// caller gets a catchable exception, not a process abort.
+TEST_F(KVCacheStoreWrapperTest, NumShardsZeroThrows) {
+  EXPECT_THROW(
+      { MakeWrapper(/*capacity=*/4, /*num_shards=*/0); }, std::invalid_argument);
 }
 
 TEST_F(KVCacheStoreWrapperTest, ColdStartCreatesMetadataTable) {

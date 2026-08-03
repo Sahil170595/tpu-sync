@@ -174,7 +174,8 @@ class KVCacheStore:
         empty to bind the wildcard interface and publish nothing, in which
         case peers cannot discover this store.
       raiden_controller_port: Port for this store's RaidenController; 0 lets
-        gRPC choose.
+        gRPC choose. Note that the IP address of the controller reuses
+        store_server_ip.
     """
     raw_raiden_id = _impl.RaidenId()
     if raiden_id is not None:

@@ -120,6 +120,64 @@ TEST_F(KVCacheManagerTorchTest, WorkerSelfRegistrationWithControllerSuccess) {
                                 std::to_string(mgr.GetRaidenWorkerPort())));
 }
 
+TEST_F(KVCacheManagerTorchTest,
+       WorkerSelfRegistrationUsesDataEndpointsWhenControlPortActive) {
+  auto test_server = core::controller::CreateTestControllerServer();
+  ASSERT_NE(test_server, nullptr);
+
+  std::string raiden_controller_address = test_server->server_address;
+
+  // Create CPU tensor and register mock buffer
+  TF_ASSERT_OK_AND_ASSIGN(
+      xla::PjRtMemorySpace * memory_space,
+      client_->addressable_devices()[0]->default_memory_space());
+  std::vector<float> data(8 * 1024, 1.0f);
+  TF_ASSERT_OK_AND_ASSIGN(
+      auto pjrt_buffer, client_->BufferFromHostBuffer(
+                            data.data(), xla::F32, {8, 1024},
+                            /*byte_strides=*/std::nullopt,
+                            xla::PjRtClient::HostBufferSemantics::
+                                kImmutableUntilTransferCompletes,
+                            /*on_done_with_host_buffer=*/nullptr, memory_space,
+                            /*device_layout=*/nullptr));
+  at::Tensor tensor = ::torch::zeros({8, 1024}, ::torch::kFloat32);
+  RegisterMockTensor(tensor, pjrt_buffer.get());
+
+  std::vector<std::vector<at::Tensor>> device_tensors = {{tensor}};
+
+  // Construct KVCacheManager with local_control_port=50051 (> 0).
+  KVCacheManager mgr(
+      {tensor}, /*node_id=*/0,
+      /*local_control_port=*/50051,
+      /*max_blocks=*/8, /*num_slots=*/8,
+      /*timeout_s=*/120.0, /*unsafe_skip_buffer_lock=*/true,
+      /*parallelism=*/1, /*listener_port=*/std::nullopt,
+      /*raiden_worker_port=*/0,
+      raiden_controller_address,
+      "torch_worker_ctrl");
+
+  // Verify that get_local_endpoints() returns the CONTROL port (50051)
+  // while get_local_data_endpoints() returns the DATA transport port.
+  auto local_control_eps = mgr.torch_manager()->get_local_endpoints();
+  auto local_data_eps = mgr.torch_manager()->get_local_data_endpoints();
+
+  ASSERT_FALSE(local_control_eps.empty());
+  ASSERT_FALSE(local_data_eps.empty());
+
+  EXPECT_TRUE(absl::StrContains(local_control_eps[0].endpoint, "50051"));
+  EXPECT_NE(local_control_eps[0].endpoint, local_data_eps[0].endpoint);
+
+  auto workers =
+      test_server->service->worker_registry()->GetRegisteredWorkers();
+  ASSERT_EQ(workers.size(), 1);
+  EXPECT_EQ(workers[0].worker_id, "torch_worker_ctrl");
+
+  // Verify registered transfer endpoints carry the DATA transport port (local_data_eps), NOT the control port (local_control_eps).
+  ASSERT_FALSE(workers[0].raiden_transfer_endpoints.empty());
+  EXPECT_EQ(workers[0].raiden_transfer_endpoints[0].endpoint, local_data_eps[0].endpoint);
+  EXPECT_NE(workers[0].raiden_transfer_endpoints[0].endpoint, local_control_eps[0].endpoint);
+}
+
 }  // namespace
 }  // namespace torch
 }  // namespace tpu_raiden

@@ -365,8 +365,13 @@ void KVCacheManager::StartGrpcServer(
       worker_endpoint = absl::StrCat(worker_ip, ":", bound_port);
     }
 
+    // Registry endpoints are what remote peers open DATA connections to (a
+    // pull's H2hRead/H2dRead, a push's H2hWrite), so they must be data
+    // endpoints even when this manager also runs a control server --
+    // get_local_endpoints() would hand back the CONTROL port in that case, and
+    // aiming a data-protocol connection at it hangs both sides with no error.
     std::string transfer_endpoint = "";
-    auto local_eps = torch_manager_->get_local_endpoints();
+    auto local_eps = torch_manager_->get_local_data_endpoints();
     if (!local_eps.empty()) {
       transfer_endpoint = local_eps[0].endpoint;
     }

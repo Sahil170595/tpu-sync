@@ -69,7 +69,8 @@ class KVCacheStore {
   // global registry. It must therefore be an IP this process can bind -- not a
   // hostname, and not a NAT/service address. Ports are chosen by gRPC (the
   // store server always; the controller when `raiden_controller_port` is 0),
-  // and the bound port is spliced into the advertised address.
+  // and the bound port is spliced into the advertised address. Note that the IP
+  // address of the RaidenController reuses `store_server_ip`.
   //
   // Leaving `store_server_ip` empty preserves the previous behaviour: bind the
   // wildcard interface and publish nothing, so the store is not discoverable by

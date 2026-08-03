@@ -238,7 +238,8 @@ def _worker_save_load_main(argv):
           raiden_id=rid,
           num_shards=world_size,
           shard_size_bytes=shard_size_bytes,
-          raiden_controller_address=f"localhost:{controller_port}",
+          store_server_ip="127.0.0.1",
+          raiden_controller_port=controller_port,
           raiden_orchestrator_address=f"localhost:{orchestrator_port}",
       )
 
@@ -369,7 +370,8 @@ def _worker_read_remote_main(argv):
           raiden_id=rid_a,
           num_shards=world_size,
           shard_size_bytes=shard_size_bytes,
-          raiden_controller_address=f"localhost:{controller_port_a}",
+          store_server_ip="127.0.0.1",
+          raiden_controller_port=controller_port_a,
           raiden_orchestrator_address=f"localhost:{orchestrator_port}",
       )
 
@@ -382,7 +384,8 @@ def _worker_read_remote_main(argv):
           raiden_id=rid_b,
           num_shards=world_size,
           shard_size_bytes=shard_size_bytes,
-          raiden_controller_address=f"localhost:{controller_port_b}",
+          store_server_ip="127.0.0.1",
+          raiden_controller_port=controller_port_b,
           raiden_orchestrator_address=f"localhost:{orchestrator_port}",
       )
 

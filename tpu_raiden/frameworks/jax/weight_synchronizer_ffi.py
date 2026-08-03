@@ -52,7 +52,7 @@ def init_weight_synchronizer(
     `listener_port >= 0`).
   """
 
-  @compute_on.compute_on2(
+  @compute_on.compute_on(
       compute_type="device_host", out_memory_spaces=jax.memory.Space.Device
   )
   def _local_init(anchor, s_idx):
@@ -118,7 +118,7 @@ def init_weight_synchronizer_and_d2h(
     `listener_port >= 0`).
   """
 
-  @compute_on.compute_on2(
+  @compute_on.compute_on(
       compute_type="device_host", out_memory_spaces=jax.memory.Space.Device
   )
   def _local_init_and_d2h(anchor, s_idx):
@@ -150,9 +150,6 @@ def init_weight_synchronizer_and_d2h(
       in_specs=(anchor_spec, index_spec),
       out_specs=out_spec,
   )(device_array, shard_idx)
-
-
-
 
 
 def prepare_extended_info(
@@ -188,7 +185,7 @@ def h2d(device_array, shard_idx, mesh) -> jax.Array:
     buffer.
   """
 
-  @compute_on.compute_on2(
+  @compute_on.compute_on(
       compute_type="device_host", out_memory_spaces=jax.memory.Space.Device
   )
   def _local_h2d(anchor, s_idx):

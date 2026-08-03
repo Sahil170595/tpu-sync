@@ -114,6 +114,21 @@ class WeightSynchronizerBase : public tpu_raiden::RaidenManagerBase {
   absl::StatusOr<raiden::PjRtCopyFuture> H2d(uint64_t uuid = 0);
   absl::StatusOr<raiden::PjRtCopyFuture> D2h(uint64_t uuid = 0);
 
+  // Binds new device buffers to the weight synchronizer in-place.
+  //
+  // This replaces the existing bound buffers with the new ones. The new buffers
+  // must match the shape and layout configuration (number of layers, shards,
+  // and size per shard) established at initialization.
+  //
+  // Calling this releases the holds on the previously bound buffers and
+  // acquires holds on the new ones.
+  //
+  // Returns InvalidArgumentError if the number of layers, shards, or buffer
+  // sizes do not match the initialized configuration.
+  absl::Status BindWeights(
+      const std::vector<std::vector<raiden::RaidenBufferHandle>>&
+          layer_buffers);
+
   void StoreSkipTiling(uint64_t uuid,
                        const tpu_raiden::rpc::StartTransferRequest& request);
 

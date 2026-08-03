@@ -59,6 +59,15 @@ class WeightSynchronizer:
     """Triggers asynchronous Host-to-Device (H2D) copy of staged host buffer back to Device memory E2E."""
     self._impl.H2d()
 
+  def bind_weights(self, jax_arrays: List[any]) -> None:
+    """Binds the JAX arrays to the weight synchronizer in-place.
+
+    Args:
+      jax_arrays: A list of JAX arrays representing the updated sharded model
+        weights.
+    """
+    self._impl.bind_weights(jax_arrays)
+
   def get_host_buffer(self, layer_idx: int = 0, shard_idx: int = 0) -> any:
     """Returns a zero-copy Host-side CPU NumPy ndarray view of the C++ staging buffer.
 

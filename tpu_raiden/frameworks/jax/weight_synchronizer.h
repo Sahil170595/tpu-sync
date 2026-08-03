@@ -38,13 +38,7 @@ namespace nb = nanobind;
 namespace tpu_raiden {
 namespace jax {
 
-#ifndef WITHOUT_PYTHON
-struct UnpackedWeights {
-  std::vector<std::vector<raiden::RaidenBufferHandle>> layer_buffers;
-  nanobind::list jax_arrays;
-};
 
-#endif
 
 class WeightSynchronizer {
  public:
@@ -59,6 +53,7 @@ class WeightSynchronizer {
                      int parallelism = 1, bool unsafe_skip_buffer_lock = false,
                      std::optional<int> listener_port = std::nullopt,
                      std::optional<std::string> bind_ip = std::nullopt);
+  absl::Status BindWeights(nanobind::list jax_arrays);
 #endif
 
   ~WeightSynchronizer();
@@ -76,11 +71,7 @@ class WeightSynchronizer {
 
  private:
 #ifndef WITHOUT_PYTHON
-  WeightSynchronizer(UnpackedWeights&& weights, std::optional<int> local_port,
-                     int parallelism, bool unsafe_skip_buffer_lock,
-                     std::optional<int> listener_port,
-                     std::optional<std::string> bind_ip);
-  std::optional<nanobind::list> jax_arrays_;
+  bool unsafe_skip_buffer_lock_ = false;
 #endif
   std::unique_ptr<weight_sync::WeightSynchronizerBase> impl_;
 };

@@ -113,6 +113,109 @@ class WeightSynchronizerIntegrationTest(absltest.TestCase):
     for arr in dst2_arrs:
       np.testing.assert_array_equal(np.asarray(arr), 5.0)
 
+  def test_bind_weights(self):
+    src_arrs = [
+        jax.device_put(
+            jnp.ones(self.shape, dtype=self.dtype) * 5.0, self.sharding
+        )
+    ]
+    dst_arrs = [
+        jax.device_put(jnp.zeros(self.shape, dtype=self.dtype), self.sharding)
+    ]
+
+    for arr in src_arrs:
+      arr.block_until_ready()
+    for arr in dst_arrs:
+      arr.block_until_ready()
+
+    ws_source = WeightSynchronizer(
+        jax_arrays=src_arrs,
+        local_port=0,
+        unsafe_skip_buffer_lock=True,
+        listener_port=0,
+        bind_ip="127.0.0.1",
+    )
+    ws_dest = WeightSynchronizer(
+        jax_arrays=dst_arrs,
+        local_port=0,
+        unsafe_skip_buffer_lock=True,
+        bind_ip="127.0.0.1",
+    )
+
+    # --- Sync 1 (V1: 5.0 -> 0.0) ---
+    req = raiden_service_pb2.ControlRequest(
+        command=raiden_service_pb2.ControlRequest.COMMAND_START_TRANSFER,
+        peers=[
+            f"127.0.0.1:{ws_dest.local_port}",
+        ],
+        start_transfer_request=raiden_service_pb2.StartTransferRequest(
+            is_sender=True
+        ),
+    )
+    payload = req.SerializeToString()
+
+    sock = socket.socket(socket.AF_INET6, socket.SOCK_STREAM, 0)
+    sock.connect(("::1", ws_source.listener_port))
+    sock.sendall(len(payload).to_bytes(4, "big") + payload)
+
+    resp_len = int.from_bytes(sock.recv(4), "big")
+    resp_bytes = sock.recv(resp_len)
+    resp = raiden_service_pb2.ControlResponse()
+    resp.ParseFromString(resp_bytes)
+    assert resp.success
+    sock.close()
+
+    ws_dest.h2d()
+
+    # Verify Sync 1
+    for arr in dst_arrs:
+      np.testing.assert_array_equal(np.asarray(arr), 5.0)
+
+    # --- Bind weights to V2 ---
+    new_src_arrs = [
+        jax.device_put(
+            jnp.ones(self.shape, dtype=self.dtype) * 10.0, self.sharding
+        )
+    ]
+    for arr in new_src_arrs:
+      arr.block_until_ready()
+
+    ws_source.bind_weights(new_src_arrs)
+    ws_source.d2h()  # Stage the V2 weights
+
+    new_dst_arrs = [
+        jax.device_put(
+            jnp.ones(self.shape, dtype=self.dtype) * -1.0, self.sharding
+        )
+    ]
+    for arr in new_dst_arrs:
+      arr.block_until_ready()
+
+    ws_dest.bind_weights(new_dst_arrs)
+
+    # --- Sync 2 (V2: 10.0 -> -1.0) ---
+    sock = socket.socket(socket.AF_INET6, socket.SOCK_STREAM, 0)
+    sock.connect(("::1", ws_source.listener_port))
+    sock.sendall(len(payload).to_bytes(4, "big") + payload)
+
+    resp_len = int.from_bytes(sock.recv(4), "big")
+    resp_bytes = sock.recv(resp_len)
+    resp = raiden_service_pb2.ControlResponse()
+    resp.ParseFromString(resp_bytes)
+    assert resp.success
+    sock.close()
+
+    ws_dest.h2d()
+
+    # Verify Sync 2
+    for arr in new_dst_arrs:
+      np.testing.assert_array_equal(np.asarray(arr), 10.0)
+
+    # Verify original V1 arrays were NOT overwritten by Sync 2
+    # (should still be 5.0)
+    for arr in dst_arrs:
+      np.testing.assert_array_equal(np.asarray(arr), 5.0)
+
 
 if __name__ == "__main__":
   absltest.main()

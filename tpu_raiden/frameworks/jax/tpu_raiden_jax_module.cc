@@ -332,6 +332,16 @@ NB_MODULE(_tpu_raiden_jax, m) {
             }
           },
           nb::call_guard<nb::gil_scoped_release>())
+      .def(
+          "bind_weights",
+          [](WeightSynchronizer& self, nb::list jax_arrays) {
+            absl::Status status = self.BindWeights(jax_arrays);
+            if (!status.ok()) {
+              throw std::runtime_error("Bind weights failed: " +
+                                       std::string(status.message()));
+            }
+          },
+          nb::arg("jax_arrays"))
 
       .def(
           "get_host_buffer",

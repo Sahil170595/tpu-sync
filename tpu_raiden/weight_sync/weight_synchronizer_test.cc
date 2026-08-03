@@ -26,13 +26,8 @@
 #include "absl/flags/flag.h"
 #include "absl/log/log.h"
 #include "absl/status/status.h"
-#include "absl/types/span.h"
-#include "xla/layout.h"
-#include "xla/layout_util.h"
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/pjrt/plugin/xla_cpu/xla_cpu_pjrt_client.h"
-#include "xla/shape.h"
-#include "xla/shape_util.h"
 #include "tpu_raiden/core/raw_transfer_core.h"
 #include "tpu_raiden/rpc/raiden_service.pb.h"
 #include "tpu_raiden/weight_sync/weight_synchronizer_base.h"
@@ -556,6 +551,154 @@ TEST_F(WeightSynchronizerTest, PushWeightsReshardedSkipD2h) {
 
   for (size_t i = 0; i < slice_byte_size; ++i) {
     EXPECT_EQ(dest_host_ptr[i], 0xDD) << "Mismatch at byte " << i;
+  }
+}
+
+TEST_F(WeightSynchronizerTest, BindWeights) {
+  auto client_status_or = xla::GetXlaPjrtCpuClient(xla::CpuClientOptions());
+  ASSERT_TRUE(client_status_or.ok()) << client_status_or.status().message();
+  auto client = std::move(client_status_or.value());
+
+  size_t slice_byte_size = 1024;
+  auto memory_space_status_or =
+      client->addressable_devices()[0]->default_memory_space();
+  ASSERT_TRUE(memory_space_status_or.ok())
+      << memory_space_status_or.status().message();
+  xla::PjRtMemorySpace* memory_space = memory_space_status_or.value();
+
+  // 1. Create ALL buffers first to ensure they outlive the synchronizers
+  std::vector<uint8_t> src_device_data(slice_byte_size, 0x11);
+  auto src_buffer_status_or = client->BufferFromHostBuffer(
+      src_device_data.data(), xla::U8, {static_cast<int64_t>(slice_byte_size)},
+      /*byte_strides=*/std::nullopt,
+      xla::PjRtClient::HostBufferSemantics::kImmutableUntilTransferCompletes,
+      /*on_done_with_host_buffer=*/nullptr, memory_space,
+      /*device_layout=*/nullptr);
+  ASSERT_TRUE(src_buffer_status_or.ok())
+      << src_buffer_status_or.status().message();
+  auto src_pjrt_buffer = std::move(src_buffer_status_or.value());
+
+  std::vector<uint8_t> dest_device_data(slice_byte_size, 0x00);
+  auto dest_buffer_status_or = client->BufferFromHostBuffer(
+      dest_device_data.data(), xla::U8, {static_cast<int64_t>(slice_byte_size)},
+      /*byte_strides=*/std::nullopt,
+      xla::PjRtClient::HostBufferSemantics::kImmutableUntilTransferCompletes,
+      /*on_done_with_host_buffer=*/nullptr, memory_space,
+      /*device_layout=*/nullptr);
+  ASSERT_TRUE(dest_buffer_status_or.ok())
+      << dest_buffer_status_or.status().message();
+  auto dest_pjrt_buffer = std::move(dest_buffer_status_or.value());
+
+  std::vector<uint8_t> new_src_device_data(slice_byte_size, 0x22);
+  auto new_src_buffer_status_or = client->BufferFromHostBuffer(
+      new_src_device_data.data(), xla::U8,
+      {static_cast<int64_t>(slice_byte_size)},
+      /*byte_strides=*/std::nullopt,
+      xla::PjRtClient::HostBufferSemantics::kImmutableUntilTransferCompletes,
+      /*on_done_with_host_buffer=*/nullptr, memory_space,
+      /*device_layout=*/nullptr);
+  ASSERT_TRUE(new_src_buffer_status_or.ok())
+      << new_src_buffer_status_or.status().message();
+  auto new_src_pjrt_buffer = std::move(new_src_buffer_status_or.value());
+
+  std::vector<uint8_t> new_dest_device_data(slice_byte_size, 0x00);
+  auto new_dest_buffer_status_or = client->BufferFromHostBuffer(
+      new_dest_device_data.data(), xla::U8,
+      {static_cast<int64_t>(slice_byte_size)},
+      /*byte_strides=*/std::nullopt,
+      xla::PjRtClient::HostBufferSemantics::kImmutableUntilTransferCompletes,
+      /*on_done_with_host_buffer=*/nullptr, memory_space,
+      /*device_layout=*/nullptr);
+  ASSERT_TRUE(new_dest_buffer_status_or.ok())
+      << new_dest_buffer_status_or.status().message();
+  auto new_dest_pjrt_buffer = std::move(new_dest_buffer_status_or.value());
+
+  // 2. Create handles
+  auto src_handle_or =
+      raiden::RaidenBufferHandle::Acquire(src_pjrt_buffer.get());
+  ASSERT_TRUE(src_handle_or.ok()) << src_handle_or.status().message();
+  std::vector<std::vector<raiden::RaidenBufferHandle>> src_buffers = {
+      {src_handle_or.value()}};
+
+  auto dest_handle_or =
+      raiden::RaidenBufferHandle::Acquire(dest_pjrt_buffer.get());
+  ASSERT_TRUE(dest_handle_or.ok()) << dest_handle_or.status().message();
+  std::vector<std::vector<raiden::RaidenBufferHandle>> dest_buffers = {
+      {dest_handle_or.value()}};
+
+  auto new_src_handle_or =
+      raiden::RaidenBufferHandle::Acquire(new_src_pjrt_buffer.get());
+  ASSERT_TRUE(new_src_handle_or.ok()) << new_src_handle_or.status().message();
+  std::vector<std::vector<raiden::RaidenBufferHandle>> new_src_buffers = {
+      {new_src_handle_or.value()}};
+
+  auto new_dest_handle_or =
+      raiden::RaidenBufferHandle::Acquire(new_dest_pjrt_buffer.get());
+  ASSERT_TRUE(new_dest_handle_or.ok()) << new_dest_handle_or.status().message();
+  std::vector<std::vector<raiden::RaidenBufferHandle>> new_dest_buffers = {
+      {new_dest_handle_or.value()}};
+
+  // 3. Create synchronizers (declared after buffers, so destroyed before them)
+  auto ws_source =
+      std::make_unique<WeightSynchronizerBase>(src_buffers, /*local_port=*/0);
+  auto ws_dest =
+      std::make_unique<WeightSynchronizerBase>(dest_buffers, /*local_port=*/0);
+
+  ASSERT_TRUE(ws_source->local_port().has_value());
+  ASSERT_TRUE(ws_dest->local_port().has_value());
+  std::string dest_peer = "localhost:" + std::to_string(*ws_dest->local_port());
+
+  // 4. Bind weights
+  absl::Status status = ws_source->BindWeights(new_src_buffers);
+  ASSERT_TRUE(status.ok()) << status.message();
+
+  status = ws_dest->BindWeights(new_dest_buffers);
+  ASSERT_TRUE(status.ok()) << status.message();
+
+  // 5. Sync
+  tpu_raiden::rpc::StartTransferRequest request;
+  request.set_skip_d2h(false);
+  request.set_uuid(12345);
+
+  auto* schedules = request.mutable_shard_push_schedules();
+  auto* entry = (*schedules)[0].add_entries();
+  entry->set_dst_peer(dest_peer);
+  entry->set_dst_shard_idx(0);
+  entry->set_src_offset_bytes(0);
+  entry->set_dst_offset_bytes(0);
+  entry->set_size_bytes(slice_byte_size);
+  entry->set_count(1);
+  entry->set_layer_idx(0);
+
+  status = ws_source->PushWeightsResharded(request);
+  EXPECT_TRUE(status.ok()) << status.message();
+
+  auto h2d_future_or = ws_dest->H2d();
+  ASSERT_TRUE(h2d_future_or.ok()) << h2d_future_or.status().message();
+  status = h2d_future_or.value().Await();
+  EXPECT_TRUE(status.ok()) << status.message();
+
+  // 6. Verify
+  std::vector<uint8_t> new_dest_readback(slice_byte_size, 0);
+  auto copy_status =
+      new_dest_pjrt_buffer
+          ->CopyRawToHost(new_dest_readback.data(), 0, slice_byte_size)
+          .Await();
+  ASSERT_TRUE(copy_status.ok()) << copy_status.message();
+  for (size_t i = 0; i < slice_byte_size; ++i) {
+    EXPECT_EQ(new_dest_readback[i], 0x22)
+        << "Mismatch in new dest buffer at byte " << i;
+  }
+
+  std::vector<uint8_t> old_dest_readback(slice_byte_size, 0xFF);
+  copy_status =
+      dest_pjrt_buffer
+          ->CopyRawToHost(old_dest_readback.data(), 0, slice_byte_size)
+          .Await();
+  ASSERT_TRUE(copy_status.ok()) << copy_status.message();
+  for (size_t i = 0; i < slice_byte_size; ++i) {
+    EXPECT_EQ(old_dest_readback[i], 0x00)
+        << "Mismatch in old dest buffer at byte " << i;
   }
 }
 

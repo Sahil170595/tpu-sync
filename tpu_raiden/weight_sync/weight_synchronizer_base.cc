@@ -514,6 +514,46 @@ absl::Status WeightSynchronizerBase::PushWeightsResharded(
   return absl::OkStatus();
 }
 
+absl::Status WeightSynchronizerBase::BindWeights(
+    const std::vector<std::vector<raiden::RaidenBufferHandle>>& layer_buffers) {
+  if (layer_buffers.size() != num_layers_) {
+    return absl::InvalidArgumentError("Number of layers mismatch");
+  }
+  for (size_t layer_idx = 0; layer_idx < num_layers_; ++layer_idx) {
+    if (layer_buffers[layer_idx].size() != num_shards_) {
+      return absl::InvalidArgumentError("Number of shards mismatch");
+    }
+    for (size_t shard_idx = 0; shard_idx < num_shards_; ++shard_idx) {
+      const auto& new_buffer = layer_buffers[layer_idx][shard_idx];
+      size_t new_size = new_buffer.GetOnDeviceSizeInBytes();
+      if (new_size != layers_[layer_idx].shards[shard_idx].device_size) {
+        return absl::InvalidArgumentError("Buffer size mismatch");
+      }
+    }
+  }
+
+  if (!layer_buffers.empty() && !layer_buffers[0].empty()) {
+    const auto& first_handle = layer_buffers[0][0];
+    physical_size_ = first_handle.GetOnDeviceSizeInBytes();
+    if (!first_handle.is_common_buffer && first_handle.c_hold) {
+      c_api_ = first_handle.c_hold->c_api;
+      extension_ = first_handle.c_hold->extension;
+    }
+  }
+
+  buffer_holds_.clear();
+  buffer_holds_.reserve(num_layers_);
+  for (size_t layer_idx = 0; layer_idx < num_layers_; ++layer_idx) {
+    std::vector<raiden::BufferHoldAndAlias> hold_info;
+    hold_info.reserve(num_shards_);
+    for (size_t shard_idx = 0; shard_idx < num_shards_; ++shard_idx) {
+      hold_info.push_back(layer_buffers[layer_idx][shard_idx]);
+    }
+    buffer_holds_.push_back(std::move(hold_info));
+  }
+  return absl::OkStatus();
+}
+
 absl::Status WeightSynchronizerBase::OnDataReceived() {
   if (!auto_h2d_) {
     return absl::OkStatus();

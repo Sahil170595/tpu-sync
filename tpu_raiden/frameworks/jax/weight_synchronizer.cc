@@ -14,10 +14,18 @@
 
 #include "tpu_raiden/frameworks/jax/weight_synchronizer.h"
 
+#include <cstddef>
+#include <cstdint>
+#include <exception>
 #include <memory>
 #include <optional>
+#include <string>
 #include <utility>
 
+#include "absl/status/status.h"
+#include "absl/status/statusor.h"
+#include "xla/tsl/platform/errors.h"
+#include "tpu_raiden/core/raw_transfer_core.h"
 #include "tpu_raiden/weight_sync/weight_synchronizer_base.h"
 
 namespace tpu_raiden {
@@ -27,37 +35,30 @@ namespace jax {
 #include <nanobind/nanobind.h>
 #include "tpu_raiden/frameworks/jax/utils.h"
 
-namespace {
-UnpackedWeights UnpackAndMove(nanobind::list jax_arrays,
-                              bool unsafe_skip_buffer_lock) {
-  auto layer_buffers =
-      tpu_raiden::jax::UnpackJaxArrays(jax_arrays, unsafe_skip_buffer_lock);
-  return {std::move(layer_buffers), std::move(jax_arrays)};
-}
-}  // namespace
-
 WeightSynchronizer::WeightSynchronizer(nanobind::list jax_arrays,
                                        std::optional<int> local_port,
                                        int parallelism,
                                        bool unsafe_skip_buffer_lock,
                                        std::optional<int> listener_port,
                                        std::optional<std::string> bind_ip)
-    : WeightSynchronizer(
-          UnpackAndMove(std::move(jax_arrays), unsafe_skip_buffer_lock),
-          local_port, parallelism, unsafe_skip_buffer_lock, listener_port,
-          bind_ip) {}
-
-WeightSynchronizer::WeightSynchronizer(UnpackedWeights&& weights,
-                                       std::optional<int> local_port,
-                                       int parallelism,
-                                       bool unsafe_skip_buffer_lock,
-                                       std::optional<int> listener_port,
-                                       std::optional<std::string> bind_ip)
-    : jax_arrays_(std::move(weights.jax_arrays)) {
+    : unsafe_skip_buffer_lock_(unsafe_skip_buffer_lock) {
+  auto layer_buffers =
+      tpu_raiden::jax::UnpackJaxArrays(jax_arrays, unsafe_skip_buffer_lock);
   impl_ = std::make_unique<weight_sync::WeightSynchronizerBase>(
-      weights.layer_buffers, local_port,
+      layer_buffers, local_port,
       /*external_host_ptrs=*/std::nullopt, unsafe_skip_buffer_lock, parallelism,
       listener_port, bind_ip);
+}
+
+absl::Status WeightSynchronizer::BindWeights(nanobind::list jax_arrays) {
+  try {
+    auto layer_buffers =
+        tpu_raiden::jax::UnpackJaxArrays(jax_arrays, unsafe_skip_buffer_lock_);
+    TF_RETURN_IF_ERROR(impl_->BindWeights(layer_buffers));
+    return absl::OkStatus();
+  } catch (const std::exception& e) {
+    return absl::InternalError(e.what());
+  }
 }
 
 #endif  // WITHOUT_PYTHON

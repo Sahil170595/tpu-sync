@@ -292,6 +292,7 @@ cc_library(
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@nanobind",
+        "@xla//xla/tsl/platform:errors",
     ],
     alwayslink = 1,
 )

@@ -3083,6 +3083,33 @@ TEST_F(StoreDiscoveryTest, AdoptsAndPublishesTheBackendsServer) {
   EXPECT_EQ(resolved->store_server_address(), store.store_server_address());
 }
 
+TEST_F(StoreDiscoveryTest, AdoptsTheBackendsServerRatherThanOwningASecond) {
+  RaidenId rid{"disco_job_adopt", "0", "kv_cache", 0};
+
+  BackendConfig host_config;
+  host_config.type = "HostOffloadBackend";
+  host_config.capacity = 16;
+  host_config.raiden_id = rid;
+  host_config.global_registry_address = registry_address_;
+
+  const BackendConfig configs[] = {host_config};
+  auto store_or = KVCacheStore::Create(
+      absl::MakeConstSpan(configs), /*capacity=*/16, registry_address_, rid,
+      /*num_shards=*/1, /*shard_size_bytes=*/512,
+      /*raiden_orchestrator_address=*/"", /*store_server_ip=*/"127.0.0.1");
+  ASSERT_TRUE(store_or.ok()) << store_or.status().ToString();
+  auto& store = **store_or;
+
+  ASSERT_FALSE(store.backends().empty());
+  auto* backend = store.backends()[0].get();
+  ASSERT_NE(backend, nullptr);
+  ASSERT_NE(backend->store_server(), nullptr);
+
+  // The store adopts the backend's server rather than owning a second one.
+  EXPECT_EQ(store.store_server(), backend->store_server());
+  EXPECT_THAT(store.store_server_address(), StartsWith("127.0.0.1:"));
+}
+
 // The controller is addressed from the same ip, with its port either chosen by
 // gRPC (0) or taken verbatim.
 TEST_F(StoreDiscoveryTest, ControllerAddressComposedFromIpAndPort) {

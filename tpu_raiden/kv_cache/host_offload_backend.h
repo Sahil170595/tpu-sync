@@ -114,6 +114,8 @@ class HostOffloadBackend : public KVCacheStoreBackend {
     SetRaidenController(controller);
   }
 
+  KVCacheStoreServer* store_server() const override;
+
   // --- Global Memory Pooling & RPC Methods ---
   absl::Status StartServer(absl::string_view server_address);
 

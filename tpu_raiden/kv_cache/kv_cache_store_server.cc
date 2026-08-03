@@ -69,6 +69,7 @@ absl::Status KVCacheStoreServer::StartServer(
 absl::Status KVCacheStoreServer::StartServerInternal(
     absl::string_view server_address) {
   std::string target_address;
+  std::string host = "localhost";
   if (server_address.empty()) {
     target_address = "[::]:0";
   } else {
@@ -79,8 +80,13 @@ absl::Status KVCacheStoreServer::StartServerInternal(
         (last_bracket == absl::string_view::npos || last_colon > last_bracket);
     if (!has_port) {
       target_address = absl::StrCat(server_address, ":0");
+      host = std::string(server_address);
     } else {
       target_address = std::string(server_address);
+      host = std::string(server_address.substr(0, last_colon));
+    }
+    if (host == "0.0.0.0" || host == "[::]") {
+      host = "localhost";
     }
   }
 
@@ -100,6 +106,7 @@ absl::Status KVCacheStoreServer::StartServerInternal(
   }
 
   grpc_port_ = selected_port;
+  server_host_ = host;
   started_ = true;
   return absl::OkStatus();
 }
@@ -114,7 +121,7 @@ std::string KVCacheStoreServer::GetServerAddress() const {
   if (grpc_port_ <= 0) {
     return "";
   }
-  return absl::StrCat("localhost:", grpc_port_);
+  return absl::StrCat(server_host_, ":", grpc_port_);
 }
 
 void KVCacheStoreServer::Shutdown() {
@@ -125,6 +132,7 @@ void KVCacheStoreServer::Shutdown() {
   }
   service_.reset();
   grpc_port_ = 0;
+  server_host_ = "localhost";
   started_ = false;
 }
 

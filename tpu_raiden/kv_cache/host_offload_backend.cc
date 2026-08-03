@@ -135,7 +135,8 @@ absl::StatusOr<std::shared_ptr<KVCacheStoreBackend>> HostOffloadBackend::Create(
       config.capacity, config.metadata, config.raiden_id, controller,
       std::move(registry_client));
   if (controller != nullptr && has_registry) {
-    RETURN_IF_ERROR(backend->StartServer(""));
+    RETURN_IF_ERROR(
+        backend->StartServer(config.GetProperty("store_server_ip")));
   }
   return backend;
 }
@@ -652,32 +653,41 @@ void HostOffloadBackend::SetRaidenController(
   raiden_controller_ = controller;
 }
 
+KVCacheStoreServer* HostOffloadBackend::store_server() const {
+  absl::MutexLock lock(mutex_);
+  return server_.get();
+}
+
 absl::StatusOr<std::shared_ptr<KVCacheStoreClient>>
 HostOffloadBackend::GetKVCacheStoreClient(const RaidenId& remote_id) {
-  controller::RaidenController* ctrl = nullptr;
+  std::shared_ptr<global_registry::GlobalRegistryClient> registry;
   {
     absl::MutexLock lock(mutex_);
     auto it = store_clients_.find(remote_id);
     if (it != store_clients_.end()) {
       return it->second;
     }
-    ctrl = raiden_controller_;
+    registry = registry_client_;
   }
 
-  if (ctrl == nullptr) {
-    return absl::FailedPreconditionError("RaidenController is null");
+  // The peer's KVCacheStoreService address comes from the global registry,
+  // which is also what told us this peer owns the blocks. Note this is NOT the
+  // controller address: the two services listen on separate ports, and
+  // ResolvePeerController answers for the wrong one.
+  if (registry == nullptr) {
+    return absl::FailedPreconditionError(
+        "No global registry client; cannot resolve peer store address");
   }
 
-  tpu_raiden::rpc::RaidenIdProto remote_proto;
-  remote_proto.set_job_name(remote_id.job_name);
-  remote_proto.set_job_replica_id(remote_id.job_replica_id);
-  remote_proto.set_data_name(remote_id.data_name);
-  remote_proto.set_data_replica_idx(remote_id.data_replica_idx);
+  ASSIGN_OR_RETURN(global_registry::StoreInfo store_info,
+                   registry->ResolveStore(remote_id));
+  if (store_info.store_server_address().empty()) {
+    return absl::NotFoundError(
+        "Peer is registered but published an empty store server address");
+  }
 
-  ASSIGN_OR_RETURN(std::string address,
-                   ctrl->ResolvePeerController(remote_proto));
-  auto channel =
-      grpc::CreateChannel(address, grpc::InsecureChannelCredentials());
+  auto channel = grpc::CreateChannel(store_info.store_server_address(),
+                                     grpc::InsecureChannelCredentials());
   auto client = std::make_shared<KVCacheStoreClient>(channel);
   {
     absl::MutexLock lock(mutex_);

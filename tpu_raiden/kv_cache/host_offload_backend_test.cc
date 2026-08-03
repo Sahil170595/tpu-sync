@@ -513,16 +513,8 @@ TEST(HostOffloadBackendTest, LoadSuccess) {
   auto remote_server = KVCacheStoreServer::Create();
   ASSERT_OK(remote_server->StartServer(remote_backend.get(), &controller, ""));
 
-  rpc::RaidenIdProto remote_unit;
-  remote_unit.set_job_name(remote_node_id.job_name);
-  remote_unit.set_job_replica_id(remote_node_id.job_replica_id);
-  remote_unit.set_data_name(remote_node_id.data_name);
-  remote_unit.set_data_replica_idx(remote_node_id.data_replica_idx);
-
-  controller::OrchestratorServiceClient orchestrator_client(grpc::CreateChannel(
-      orchestrator_address, grpc::InsecureChannelCredentials()));
-  ASSERT_OK(orchestrator_client.RegisterController(
-      remote_unit, remote_server->GetServerAddress()));
+  ASSERT_OK(registry_client->RegisterStore(
+      remote_node_id, remote_server->GetServerAddress(), orchestrator_address));
 
   BackendConfig local_config;
   local_config.type = "HostOffloadBackend";
@@ -558,6 +550,17 @@ TEST(HostOffloadBackendTest, LoadSuccess) {
   remote_server->Shutdown();
   orchestrator_server->Shutdown();
   server->Shutdown();
+}
+
+TEST(HostOffloadBackendTest, StoreServerOverride) {
+  BackendConfig config;
+  config.type = "HostOffloadBackend";
+  config.capacity = 100;
+  auto backend_or = HostOffloadBackend::Create(config);
+  ASSERT_OK(backend_or.status());
+  auto backend = std::dynamic_pointer_cast<HostOffloadBackend>(*backend_or);
+  ASSERT_NE(backend, nullptr);
+  EXPECT_NE(backend->store_server(), nullptr);
 }
 
 }  // namespace

@@ -83,6 +83,7 @@ class KVCacheStoreServer {
   std::unique_ptr<KVCacheStoreServiceImpl> service_ ABSL_GUARDED_BY(mutex_);
   std::unique_ptr<grpc::Server> grpc_server_ ABSL_GUARDED_BY(mutex_);
   int grpc_port_ ABSL_GUARDED_BY(mutex_) = 0;
+  std::string server_host_ ABSL_GUARDED_BY(mutex_) = "localhost";
   bool started_ ABSL_GUARDED_BY(mutex_) = false;
 };
 

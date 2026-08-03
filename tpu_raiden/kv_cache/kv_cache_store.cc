@@ -365,8 +365,7 @@ void KVCacheStore::EnsureStoreServerAndRegister(
     return;
   }
 
-  store_server_address_ =
-      absl::StrCat(store_server_ip_, ":", store_server_->GetGrpcPort());
+  store_server_address_ = store_server_->GetServerAddress();
 
   if (registry_client_ == nullptr) {
     LOG(WARNING) << "KVCacheStore listening on " << store_server_address_

@@ -88,7 +88,7 @@ class RaidenManagerBase : public tpu_raiden::transport::BlockTransportDelegate {
 
   absl::Status RegisterExpectedChunks(uint64_t uuid, uint32_t expected_chunks);
 
-  void ForgetPushProgress(uint64_t uuid);
+  virtual void ForgetPushProgress(uint64_t uuid);
 
   virtual std::optional<int> local_port() const;
   virtual std::string local_ip() const;

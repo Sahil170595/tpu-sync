@@ -217,6 +217,7 @@ void WeightSynchronizerListener::ConnectionWorker(int client_fd) {
         return;
       }
       uint64_t uuid = req.start_transfer_request().uuid();
+      engine_->StoreSkipTiling(uuid, req.start_transfer_request());
       absl::Status status = engine_->RegisterExpectedChunks(
           uuid, static_cast<uint32_t>(expected_block_count));
       if (!status.ok()) {

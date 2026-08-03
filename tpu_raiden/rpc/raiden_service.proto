@@ -173,6 +173,10 @@ message StartTransferRequest {
   // (ShardPushEntryProto.pool_group) to its own pools, destination
   // block-id space, extents, and receive accounting.
   repeated PoolGroupProto pool_groups = 19;
+  // Keyed by layer index. If true, indicates that tiling/detiling should be
+  // skipped for the corresponding layer because the source and destination
+  // shards have identical shapes, layouts, and mesh configurations.
+  map<int32, bool> skip_tiling = 20;
 }
 
 // One tag class's slice of a multi-tag byte-span transfer.

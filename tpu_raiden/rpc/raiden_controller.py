@@ -238,6 +238,7 @@ class TransferPlan:
       default=None, repr=False, compare=False
   )
   skip_d2h: bool = False
+  skip_tiling: dict[int, bool] = dataclasses.field(default_factory=dict)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -740,6 +741,9 @@ class WorkerRpcClient:
         parallelism=transfer_plan.parallelism,
         skip_d2h=transfer_plan.skip_d2h,
     )
+    for layer_idx, skip in transfer_plan.skip_tiling.items():
+      start_req.skip_tiling[layer_idx] = skip
+
     for group in transfer_plan.pool_groups:
       group_proto = start_req.pool_groups.add()
       group_proto.pool_indices.extend(int(idx) for idx in group["pool_indices"])
@@ -2462,6 +2466,7 @@ class RaidenController:
               expected_block_count=count,
               req_id=hop_req_id,
               skip_d2h=final_plan.skip_d2h or (s != src_unit),
+              skip_tiling=final_plan.skip_tiling,
           )
 
           async def _run_single_transfer(s_node, d_node, plan):
@@ -2726,6 +2731,7 @@ class RaidenController:
       parallelism: Optional[int] = None,
       skip_d2h: bool = False,
       dst_block_counts: Optional[typing.Sequence[int]] = None,
+      skip_tiling: Optional[dict[int, bool]] = None,
   ) -> RaidenFuture:
     """For a requested data transfer, generates a transfer plan for the work units to carry out and start it.
 
@@ -2939,6 +2945,7 @@ class RaidenController:
               expected_block_count=expected_block_count,
               req_id=req_id,
               skip_d2h=skip_d2h,
+              skip_tiling=skip_tiling or {},
           )
 
           # 4. Trigger COMMAND_START_TRANSFER (is_sender=False) on local workers
@@ -3295,6 +3302,59 @@ class RaidenController:
             if unit in data_addresses:
               data_addresses[unit] = list(meta.shards)
 
+          # Compute skip_tiling if not provided
+          local_skip_tiling = skip_tiling
+          if local_skip_tiling is None:
+            local_skip_tiling = {}
+            if not shard_push_schedules and src_units and dst_units:
+              reference_src_unit = src_units[0]
+              with self._lock:
+                reference_src_vars = self._registered_variables.get(
+                    reference_src_unit
+                )
+              if not reference_src_vars:
+                with self._lock:
+                  global_shape = self._registered_global_shapes.get(
+                      reference_src_unit
+                  )
+                  mesh_shape = self._registered_mesh_shapes.get(
+                      reference_src_unit
+                  )
+                  layout = self._registered_layouts.get(reference_src_unit)
+                  itemsize = (
+                      self._registered_itemsizes.get(reference_src_unit) or 4
+                  )
+                if global_shape and mesh_shape and layout:
+                  reference_src_vars = [
+                      _VariableMetadata(
+                          name=reference_src_unit.data_name,
+                          shape=global_shape,
+                          mesh_shape=mesh_shape,
+                          layout=layout,
+                          item_size=itemsize,
+                          layer_idx=0,
+                      )
+                  ]
+                else:
+                  reference_src_vars = []
+
+              reference_dst_unit = dst_units[0]
+              reference_dst_vars = dst_vars_by_unit.get(reference_dst_unit, [])
+
+              for src_var in reference_src_vars:
+                layer_idx = src_var.layer_idx
+                dst_var = next(
+                    (v for v in reference_dst_vars if v.layer_idx == layer_idx),
+                    None,
+                )
+                if dst_var:
+                  is_identical = (
+                      list(src_var.shape) == list(dst_var.shape)
+                      and list(src_var.layout) == list(dst_var.layout)
+                      and list(src_var.mesh_shape) == list(dst_var.mesh_shape)
+                  )
+                  local_skip_tiling[layer_idx] = is_identical
+
           # Build final plan and replace the partial plan
           final_plan = TransferPlan(
               src_units=list(computed_schedules.keys())
@@ -3312,6 +3372,7 @@ class RaidenController:
               expected_block_count=expected_block_count,
               req_id=req_id,
               skip_d2h=skip_d2h,
+              skip_tiling=local_skip_tiling,
           )
           with self._lock:
             self._active_transfers[req_id] = final_plan
@@ -3380,6 +3441,7 @@ class RaidenController:
                     expected_block_count=0,
                     req_id=d2h_req_id,
                     skip_d2h=False,
+                    skip_tiling=local_skip_tiling,
                 )
                 d2h_futures.append(
                     self.worker_rpc_client.start_transfer(src_unit, d2h_plan)
@@ -3468,6 +3530,7 @@ class RaidenController:
                   expected_block_count=expected_block_count,
                   req_id=req_id,
                   skip_d2h=skip_d2h,
+                  skip_tiling=local_skip_tiling,
               )
 
               direct_dsts = []
@@ -3499,6 +3562,8 @@ class RaidenController:
                     src_controller_address,
                     direct_schedules,
                     dst_mem_type,
+                    skip_d2h,
+                    local_skip_tiling,
                 )
                 if not success:
                   raise RuntimeError(
@@ -4026,6 +4091,7 @@ class RaidenControllerServer:
                     if entries:
                       shard_push_schedules[src_unit] = {0: entries}
 
+              skip_tiling = dict(start_req.skip_tiling)
               future = self._controller.start_transfer(
                   src_units=srcs,
                   dst_units=dsts,
@@ -4039,6 +4105,7 @@ class RaidenControllerServer:
                   expected_block_count=start_req.expected_block_count,
                   shard_push_schedules=shard_push_schedules,
                   skip_d2h=start_req.skip_d2h,
+                  skip_tiling=skip_tiling,
               )
             if future.try_start():
               loop.run_until_complete(future.wait())
@@ -4399,6 +4466,7 @@ class RaidenControllerClientFacade:
       shard_push_schedules: Optional[dict] = None,
       dst_mem_type: RaidenMemoryType = RaidenMemoryType.DRAM,
       skip_d2h: bool = False,
+      skip_tiling: Optional[dict[int, bool]] = None,
   ) -> bool:
     """Inter-controller RPC to register computed push schedules and prepare receivers."""
     start_req = self._raiden_proto_module.StartTransferRequest(
@@ -4412,6 +4480,9 @@ class RaidenControllerClientFacade:
         dst_mem_type=int(dst_mem_type),
         skip_d2h=skip_d2h,
     )
+    if skip_tiling:
+      for layer_idx, skip in skip_tiling.items():
+        start_req.skip_tiling[layer_idx] = skip
 
     if shard_push_schedules:
       for src_unit, push_schedules in shard_push_schedules.items():

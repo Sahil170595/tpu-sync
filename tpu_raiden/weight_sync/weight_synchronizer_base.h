@@ -22,8 +22,11 @@
 #include <string>
 #include <vector>
 
+#include "absl/base/thread_annotations.h"
+#include "absl/container/flat_hash_map.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/synchronization/mutex.h"
 #include "xla/pjrt/c/pjrt_c_api.h"
 #include "xla/pjrt/c/pjrt_c_api_raw_buffer_extension.h"
 #include "tpu_raiden/core/raiden_manager_base.h"
@@ -108,8 +111,16 @@ class WeightSynchronizerBase : public tpu_raiden::RaidenManagerBase {
   // Returns the list of layer names associated with the weight synchronizer.
   const std::vector<std::string>& layer_names() const { return layer_names_; }
 
-  absl::StatusOr<raiden::PjRtCopyFuture> H2d();
-  absl::StatusOr<raiden::PjRtCopyFuture> D2h();
+  absl::StatusOr<raiden::PjRtCopyFuture> H2d(uint64_t uuid = 0);
+  absl::StatusOr<raiden::PjRtCopyFuture> D2h(uint64_t uuid = 0);
+
+  void StoreSkipTiling(uint64_t uuid,
+                       const tpu_raiden::rpc::StartTransferRequest& request);
+
+  absl::Status OnBlocksReceived(const std::vector<int>& block_ids,
+                                uint64_t uuid = 0) override;
+
+  void ForgetPushProgress(uint64_t uuid) override;
 
  protected:
   std::unique_ptr<WeightSynchronizerListener> listener_;
@@ -141,6 +152,11 @@ class WeightSynchronizerBase : public tpu_raiden::RaidenManagerBase {
   // When enabled, automatically schedules asynchronous device transfers (H2D)
   // upon complete host buffer writes.
   bool auto_h2d_ = false;
+
+  mutable absl::Mutex skip_tiling_mu_;
+  absl::flat_hash_map<uint64_t, std::vector<bool>> uuid_to_skip_tiling_
+      ABSL_GUARDED_BY(skip_tiling_mu_);
+  std::vector<bool> latest_skip_tiling_ ABSL_GUARDED_BY(skip_tiling_mu_);
 };
 
 }  // namespace weight_sync

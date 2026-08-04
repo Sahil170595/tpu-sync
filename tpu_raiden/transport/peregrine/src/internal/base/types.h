@@ -29,9 +29,6 @@ using Byte = uint8_t;
 // tcp/udp port
 using port_t = uint16_t;
 
-// hash value
-using HashValue = uint64_t;
-
 // io vector
 using IoVec = ::iovec;
 

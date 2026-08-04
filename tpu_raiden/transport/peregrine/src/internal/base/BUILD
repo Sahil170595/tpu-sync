@@ -29,7 +29,6 @@ cc_library(
     srcs = ["ipaddr.cc"],
     hdrs = ["ipaddr.h"],
     deps = [
-        ":types",
         "//tpu_raiden/transport/peregrine/src/util:macro",
         "@com_google_absl//absl/hash",
         "@com_google_absl//absl/log",

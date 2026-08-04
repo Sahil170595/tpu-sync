@@ -15,6 +15,7 @@
 #ifndef THIRD_PARTY_PEREGRINE_SRC_INTERNAL_BASE_ENDPOINT_H_
 #define THIRD_PARTY_PEREGRINE_SRC_INTERNAL_BASE_ENDPOINT_H_
 
+#include <cstddef>
 #include <ostream>
 #include <string>
 #include <string_view>
@@ -98,10 +99,10 @@ class Endpoint final {
   }
 
   // Returns a hash signature of the endpoint.
-  HashValue Hash() const { return Hash(*this); }
+  size_t Hash() const { return Hash(*this); }
 
   // Returns a hash signature of the endpoint.
-  static HashValue Hash(const Endpoint& e) { return absl::Hash<Endpoint>{}(e); }
+  static size_t Hash(const Endpoint& e) { return absl::Hash<Endpoint>{}(e); }
 
   // Returns a string representation of the endpoint.
   std::string ToString() const;

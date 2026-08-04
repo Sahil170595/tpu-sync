@@ -17,13 +17,14 @@ name: H2H Cross-Host Distribution (direct runner)
 
 on:
   workflow_dispatch:
-    inputs:
-      iters:
-        description: "Timed iterations per config = raw samples per config"
-        default: "500"
-      timeout_s:
-        description: "Per-process hard timeout, seconds"
-        default: "2400"
+
+  push:
+    branches:
+      - V11
+
+  pull_request:
+  schedule:
+    - cron: "0 0 * * *"  # Runs at 00:00 UTC every day
 
 permissions:
   contents: read

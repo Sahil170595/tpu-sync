@@ -40,6 +40,29 @@
 namespace tpu_raiden {
 namespace {
 thread_local const xla::PjRtDevice* g_current_device = nullptr;
+
+// PJRT_Client_DmaMap aborts inside libtpu on multi-process TPUv7 pods
+// (tpu::System::DmaMap raw_hash_map::at out-of-range), so DMA mapping must be
+// skipped there.
+bool ShouldSkipDmaMap(xla::PjRtClient* client) {
+  bool is_tpuv7 = false;
+  if (client != nullptr) {
+    absl::string_view version = client->platform_version();
+    if (absl::StrContains(version, "7") || absl::StrContains(version, "v7")) {
+      is_tpuv7 = true;
+    }
+    if (!client->devices().empty() && client->devices()[0] != nullptr) {
+      absl::string_view kind = client->devices()[0]->device_kind();
+      if (absl::StrContains(kind, "7") || absl::StrContains(kind, "v7")) {
+        is_tpuv7 = true;
+      }
+    }
+  }
+  const bool is_multi_process =
+      (std::getenv("PJRT_LOCAL_PROCESS_RANK") != nullptr ||
+       std::getenv("RANK") != nullptr || std::getenv("LOCAL_RANK") != nullptr);
+  return is_tpuv7 && is_multi_process;
+}
 }  // namespace
 
 absl::StatusOr<std::unique_ptr<HostMemoryAllocator>>
@@ -108,25 +131,7 @@ absl::StatusOr<HostBufferAllocation> XlaHostMemoryAllocator::Allocate(
     return alloc;
   }
 
-  bool is_tpuv7 = false;
-  if (client_ != nullptr) {
-    absl::string_view version = client_->platform_version();
-    if (absl::StrContains(version, "7") || absl::StrContains(version, "v7")) {
-      is_tpuv7 = true;
-    }
-    if (!client_->devices().empty() && client_->devices()[0] != nullptr) {
-      absl::string_view kind = client_->devices()[0]->device_kind();
-      if (absl::StrContains(kind, "7") || absl::StrContains(kind, "v7")) {
-        is_tpuv7 = true;
-      }
-    }
-  }
-
-  const bool is_multi_process =
-      (std::getenv("PJRT_LOCAL_PROCESS_RANK") != nullptr ||
-       std::getenv("RANK") != nullptr || std::getenv("LOCAL_RANK") != nullptr);
-
-  const bool skip_dma_map = (is_tpuv7 && is_multi_process);
+  const bool skip_dma_map = ShouldSkipDmaMap(client_);
 
   // HYBRID PATH: When skipping DmaMap on multi-process TPUv7 pods, delegate
   // directly to libtpu's internal host memory allocator pool. This yields
@@ -405,7 +410,8 @@ SharedMemoryHostMemoryAllocator::AllocateDmaMapped(size_t size_bytes) {
   auto alloc_or = Allocate(size_bytes);
   if (!alloc_or.ok()) return alloc_or;
 
-  if (!dma_mapped_ && client_ != nullptr && client_->platform_name() != "cpu") {
+  if (!dma_mapped_ && client_ != nullptr && client_->platform_name() != "cpu" &&
+      !ShouldSkipDmaMap(client_)) {
     VLOG(1) << "[SHM_ALLOCATOR] Registering shared memory mapping with PjRt "
                "DMA engine...";
     auto status = client_->DmaMap(mapped_ptr_, mapped_size_);

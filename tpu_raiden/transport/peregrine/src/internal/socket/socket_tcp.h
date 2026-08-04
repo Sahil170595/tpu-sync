@@ -25,7 +25,6 @@
 #include <string>
 #include <string_view>
 
-#include "absl/base/attributes.h"
 #include "absl/log/check.h"
 #include "absl/types/span.h"
 #include "tpu_raiden/transport/peregrine/src/internal/base/endpoint.h"
@@ -63,7 +62,7 @@ class TcpSocket final : public SocketBase {
   // Connects to the `peer` endpoint.
   bool Connect(const Endpoint& peer);
 
-  // Sends `len` bytes of data from the `buf`.
+  // Sends exactly `len` bytes of data from the `buf`.
   // Returns the number of bytes sent if successful. Zero byte means no data
   // has been sent due to non-error reasons. Returns -1 on error.
   ssize_t Send(const Byte* buf, size_t len) const;
@@ -73,25 +72,15 @@ class TcpSocket final : public SocketBase {
   // peer side has closed the connection. Returns -1 on error.
   ssize_t Recv(Byte* buf, size_t len) const;
 
-  // Sends on the socket `fd` exactly `len` bytes of data from the `buf`.
-  // Returns OK if all the bytes are sent successfully, error otherwise.
-  ABSL_DEPRECATED("temporarily for tpu raiden")
-  static absl::Status Send(fd_t fd, const Byte* buf, size_t len);
+  // Sends exactly `length(iovecs)` bytes of data from the buffers.
+  // Returns the number of bytes sent if successful. Zero byte means no data
+  // has been sent due to non-error reasons. Returns -1 on error.
+  ssize_t SendV(absl::Span<const IoVec> iovecs) const;
 
-  // Receives on the socket `fd` exactly `len` bytes of data into the `buf`.
-  // Returns OK if all the bytes are received successfully, error otherwise.
-  ABSL_DEPRECATED("temporarily for tpu raiden")
-  static absl::Status Recv(fd_t fd, Byte* buf, size_t len);
-
-  // Sends on the socket `fd` exactly all the data from the `iovecs` buffers.
-  // Returns OK if all the bytes are sent successfully, error otherwise.
-  ABSL_DEPRECATED("temporarily for tpu raiden")
-  static absl::Status SendV(fd_t fd, absl::Span<const IoVec> iovecs);
-
-  // Receives on the socket `fd` exactly all the data into the `iovecs` buffers.
-  // Returns OK if all the bytes are received successfully, error otherwise.
-  ABSL_DEPRECATED("temporarily for tpu raiden")
-  static absl::Status RecvV(fd_t fd, absl::Span<const IoVec> iovecs);
+  // Receives exactly `length(iovecs)` bytes of data into the buffers.
+  // Returns the number of bytes received if successful. Zero byte means the
+  // peer side has closed the connection. Returns -1 on error.
+  ssize_t RecvV(absl::Span<const IoVec> iovecs) const;
 
   // Returns a self/peer address pair string of the socket.
   std::string ToString() const;

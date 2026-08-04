@@ -29,8 +29,9 @@ cc_library(
     deps = [
         ":transport_types",
         "//tpu_raiden/transport/peregrine/src/internal/base:types",
-        "//tpu_raiden/transport/peregrine/src/internal/socket:socket_tcp",
         "//tpu_raiden/transport/peregrine/src/internal/socket:socket_util",
+        "//tpu_raiden/transport/peregrine/src/internal/socket:tcp_socket_util",
+        "//tpu_raiden/transport/peregrine/src/internal/util",
         "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/status",

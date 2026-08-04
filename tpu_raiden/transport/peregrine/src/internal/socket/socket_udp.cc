@@ -32,6 +32,7 @@
 #include "absl/log/log.h"
 #include "absl/memory/memory.h"
 #include "absl/strings/str_cat.h"
+#include "absl/types/span.h"
 #include "tpu_raiden/transport/peregrine/src/internal/base/endpoint.h"
 #include "tpu_raiden/transport/peregrine/src/internal/base/types.h"
 #include "tpu_raiden/transport/peregrine/src/internal/socket/socket_base.h"
@@ -95,91 +96,102 @@ bool UdpSocket::Connect(const Endpoint& peer) {
 
 ssize_t UdpSocket::Send(const Byte* const buf, const size_t len) const {
   DCHECK(invariant());
+  DCHECK(IsBlocking());
   DCHECK_GE(len, 1);
   DCHECK_LE(len, std::numeric_limits<ssize_t>::max());
-  DCHECK(IsBlocking());
 
-  const ssize_t bytes = ::send(fd_.value(), buf, len, /*flags=*/0);
-  DCHECK(bytes == len || bytes < 0);
-  if ABSL_PREDICT_TRUE (bytes == len) {
-    VLOG(1) << ioMsg("send", bytes);
-    return bytes;
+  while (true) {
+    const ssize_t bytes = ::send(fd_.value(), buf, len, /*flags=*/0);
+    DCHECK(bytes == len || bytes < 0);
+    if ABSL_PREDICT_TRUE (bytes == len) {
+      VLOG(1) << ioMsg("send", bytes);
+      return bytes;
+    }
+    const auto last_errno = errno;
+    if (Interrupted(last_errno)) continue;
+    DCHECK(!WouldBlock(last_errno));
+    LOG(WARNING) << errMsg("send", last_errno);
+    return -1;
   }
-  const auto last_errno = errno;
-  if (Interrupted(last_errno)) return 0;
-  DCHECK(!WouldBlock(last_errno));
-  LOG(WARNING) << errMsg("send", last_errno);
-  return -1;
 }
 
 ssize_t UdpSocket::Recv(Byte* const buf, const size_t len) const {
   DCHECK(invariant());
+  DCHECK(IsBlocking());
   DCHECK_GE(len, 1);
   DCHECK_LE(len, std::numeric_limits<ssize_t>::max());
-  DCHECK(IsBlocking());
 
-  const ssize_t bytes = ::recv(fd_.value(), buf, len, /*flags=*/0);
-  DCHECK_LE(bytes, len);
-  if ABSL_PREDICT_TRUE (bytes > 0) {
-    VLOG(1) << ioMsg("recv", bytes);
-    return bytes;
-  } else if (bytes < 0) {
-    const auto last_errno = errno;
-    if (Interrupted(last_errno)) return 0;
-    DCHECK(!WouldBlock(last_errno));
-    LOG(WARNING) << errMsg("recv", last_errno);
-    return -1;
-  } else {
-    DCHECK_EQ(bytes, 0);
-    LOG(INFO) << ioMsg("recv no payload", 0);
-    return 0;
+  while (true) {
+    const ssize_t bytes = ::recv(fd_.value(), buf, len, /*flags=*/0);
+    DCHECK_LE(bytes, len);
+    if ABSL_PREDICT_TRUE (bytes > 0) {
+      VLOG(1) << ioMsg("recv", bytes);
+      return bytes;
+    } else if (bytes < 0) {
+      const auto last_errno = errno;
+      if (Interrupted(last_errno)) continue;
+      DCHECK(!WouldBlock(last_errno));
+      LOG(WARNING) << errMsg("recv", last_errno);
+      return -1;
+    } else {
+      DCHECK_EQ(bytes, 0);
+      LOG(INFO) << ioMsg("recv no payload", 0);
+      return 0;
+    }
   }
 }
 
-ssize_t UdpSocket::SendV(const IoVec* const iov, const int n,
-                         const size_t len) const {
+ssize_t UdpSocket::SendV(const absl::Span<const IoVec> iovecs) const {
   DCHECK(invariant());
+  DCHECK(IsBlocking());
+  DCHECK_LE(iovecs.size(), IOV_MAX);
+
+  const size_t len = TotalLength(iovecs);
+  DCHECK_EQ(len, TotalLength(iovecs));
   DCHECK_GE(len, 1);
   DCHECK_LE(len, std::numeric_limits<ssize_t>::max());
-  DCHECK_EQ(TotalLength(iov, n), len);
-  DCHECK(IsBlocking());
 
-  const ssize_t bytes = ::writev(fd_.value(), iov, n);
-  DCHECK(bytes == len || bytes < 0);
-  if ABSL_PREDICT_TRUE (bytes == len) {
-    VLOG(1) << ioMsg("writev", bytes);
-    return bytes;
+  while (true) {
+    const ssize_t bytes = ::writev(fd_.value(), iovecs.data(), iovecs.size());
+    DCHECK(bytes == len || bytes < 0);
+    if ABSL_PREDICT_TRUE (bytes == len) {
+      VLOG(1) << ioMsg("writev", bytes);
+      return bytes;
+    }
+    const auto last_errno = errno;
+    if (Interrupted(last_errno)) continue;
+    DCHECK(!WouldBlock(last_errno));
+    LOG(WARNING) << errMsg("writev", last_errno);
+    return -1;
   }
-  const auto last_errno = errno;
-  if (Interrupted(last_errno)) return 0;
-  DCHECK(!WouldBlock(last_errno));
-  LOG(WARNING) << errMsg("writev", last_errno);
-  return -1;
 }
 
-ssize_t UdpSocket::RecvV(const IoVec* const iov, const int n,
-                         const size_t len) const {
+ssize_t UdpSocket::RecvV(const absl::Span<const IoVec> iovecs) const {
   DCHECK(invariant());
+  DCHECK(IsBlocking());
+  DCHECK_LE(iovecs.size(), IOV_MAX);
+
+  const size_t len = TotalLength(iovecs);
   DCHECK_GE(len, 1);
   DCHECK_LE(len, std::numeric_limits<ssize_t>::max());
-  DCHECK_EQ(TotalLength(iov, n), len);
-  DCHECK(IsBlocking());
 
-  const ssize_t bytes = ::readv(fd_.value(), iov, n);
-  DCHECK_LE(bytes, len);
-  if ABSL_PREDICT_TRUE (bytes > 0) {
-    VLOG(1) << ioMsg("readv", bytes);
-    return bytes;
-  } else if (bytes < 0) {
-    const auto last_errno = errno;
-    if (Interrupted(last_errno)) return 0;
-    DCHECK(!WouldBlock(last_errno));
-    LOG(WARNING) << errMsg("readv", last_errno);
-    return -1;
-  } else {
-    DCHECK_EQ(bytes, 0);
-    LOG(INFO) << ioMsg("readv no payload", 0);
-    return 0;
+  while (true) {
+    const ssize_t bytes = ::readv(fd_.value(), iovecs.data(), iovecs.size());
+    DCHECK_LE(bytes, len);
+    if ABSL_PREDICT_TRUE (bytes > 0) {
+      VLOG(1) << ioMsg("readv", bytes);
+      return bytes;
+    } else if (bytes < 0) {
+      const auto last_errno = errno;
+      if (Interrupted(last_errno)) continue;
+      DCHECK(!WouldBlock(last_errno));
+      LOG(WARNING) << errMsg("readv", last_errno);
+      return -1;
+    } else {
+      DCHECK_EQ(bytes, 0);
+      LOG(INFO) << ioMsg("readv no payload", 0);
+      return 0;
+    }
   }
 }
 

@@ -26,8 +26,9 @@
 #include "absl/types/span.h"
 #include "tpu_raiden/transport/peregrine/src/api/transport_types.h"
 #include "tpu_raiden/transport/peregrine/src/internal/base/types.h"
-#include "tpu_raiden/transport/peregrine/src/internal/socket/socket_tcp.h"
 #include "tpu_raiden/transport/peregrine/src/internal/socket/socket_util.h"
+#include "tpu_raiden/transport/peregrine/src/internal/socket/tcp_socket_util.h"
+#include "tpu_raiden/transport/peregrine/src/internal/util/util.h"
 
 namespace peregrine {
 
@@ -37,7 +38,7 @@ namespace peregrine {
 inline absl::Status WriteExact(int fd, const void* buf, size_t len) {
   DCHECK(internal::IsValidSocket(internal::fd_t(fd)));
   const Byte* const buffer = static_cast<const Byte*>(buf);
-  return internal::TcpSocket::Send(internal::fd_t(fd), buffer, len);
+  return internal::TcpSocketUtil::Send(internal::fd_t(fd), buffer, len);
 }
 
 // Writes all the bytes from the `iovs` to the socket `fd`.
@@ -45,11 +46,12 @@ inline absl::Status WriteExact(int fd, const void* buf, size_t len) {
 // Precondition: the caller must ensure the input parameters are valid.
 inline absl::Status WriteVExact(int fd, absl::Span<const struct iovec> iovs) {
   DCHECK(internal::IsValidSocket(internal::fd_t(fd)));
-  if ABSL_PREDICT_FALSE (iovs.size() > IOV_MAX) {
-    return absl::InvalidArgumentError(
-        absl::StrCat("#iovs=", iovs.size(), " > IOV_MAX=", IOV_MAX));
+  DCHECK(internal::IsValid(iovs));
+  const size_t n = iovs.size();
+  if ABSL_PREDICT_TRUE (1 <= n && n <= IOV_MAX) {
+    return internal::TcpSocketUtil::SendV(internal::fd_t(fd), iovs);
   }
-  return internal::TcpSocket::SendV(internal::fd_t(fd), iovs);
+  return absl::InvalidArgumentError(absl::StrCat("#iovs=", n));
 }
 
 // Reads exactly `len` bytes of data from the socket `fd` into the `buf`.
@@ -58,7 +60,7 @@ inline absl::Status WriteVExact(int fd, absl::Span<const struct iovec> iovs) {
 inline absl::Status ReadExact(int fd, void* buf, size_t len) {
   DCHECK(internal::IsValidSocket(internal::fd_t(fd)));
   Byte* const buffer = static_cast<Byte*>(buf);
-  return internal::TcpSocket::Recv(internal::fd_t(fd), buffer, len);
+  return internal::TcpSocketUtil::Recv(internal::fd_t(fd), buffer, len);
 }
 
 // Reads from the socket `fd` into the `iovs`.
@@ -66,11 +68,12 @@ inline absl::Status ReadExact(int fd, void* buf, size_t len) {
 // Precondition: the caller must ensure the input parameters are valid.
 inline absl::Status ReadVExact(int fd, absl::Span<const struct iovec> iovs) {
   DCHECK(internal::IsValidSocket(internal::fd_t(fd)));
-  if ABSL_PREDICT_FALSE (iovs.size() > IOV_MAX) {
-    return absl::InvalidArgumentError(
-        absl::StrCat("#iovs=", iovs.size(), " > IOV_MAX=", IOV_MAX));
+  DCHECK(internal::IsValid(iovs));
+  const size_t n = iovs.size();
+  if ABSL_PREDICT_TRUE (1 <= n && n <= IOV_MAX) {
+    return internal::TcpSocketUtil::RecvV(internal::fd_t(fd), iovs);
   }
-  return internal::TcpSocket::RecvV(internal::fd_t(fd), iovs);
+  return absl::InvalidArgumentError(absl::StrCat("#iovs=", n));
 }
 
 }  // namespace peregrine

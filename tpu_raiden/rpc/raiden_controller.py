@@ -58,6 +58,9 @@ class _VariableMetadata:
 
 
 def to_physical(logical_shape, logical_mesh_shape, minor_to_major):
+  logical_shape = list(logical_shape)
+  logical_mesh_shape = list(logical_mesh_shape)
+  minor_to_major = list(minor_to_major)
   major_to_minor = list(reversed(minor_to_major))
   rank = len(logical_shape)
   if sorted(minor_to_major) == list(range(rank)):
@@ -2905,7 +2908,7 @@ class RaidenController:
         self._active_transfers[req_id] = plan
 
     async def _execute_transfer() -> None:
-      nonlocal skip_d2h
+      nonlocal skip_d2h, expected_block_count
       if use_block_chunks:
         # === NEW SYMMETRIC DECENTRALIZED WORKFLOW ===
 
@@ -3512,6 +3515,30 @@ class RaidenController:
                     src_controller_address=src_controller_address,
                 )
                 tree_broadcast_tasks.append(task)
+
+            if expected_block_count == 0 and direct_schedules:
+              dst_unit_counts = {}
+              for src_unit, schedules in direct_schedules.items():
+                for shard_idx, entries in schedules.items():
+                  for entry in entries:
+                    dst_peer = entry[0]
+                    dst_unit = data_address_to_unit.get(dst_peer)
+                    if dst_unit:
+                      count = entry[9]
+                      layer_idx = entry[10]
+                      skip = local_skip_tiling.get(layer_idx, False)
+                      push_count = 1 if skip else count
+                      dst_unit_counts[dst_unit] = (
+                          dst_unit_counts.get(dst_unit, 0) + push_count
+                      )
+              if dst_unit_counts:
+                expected_block_count = max(dst_unit_counts.values())
+                logging.info(
+                    "Auto-calculated expected_block_count: %d (counts: %s)",
+                    expected_block_count,
+                    dst_unit_counts,
+                )
+                final_plan.expected_block_count = expected_block_count
 
             # Execute direct schedules (traditional flat route) and tree
             # broadcasts in parallel!

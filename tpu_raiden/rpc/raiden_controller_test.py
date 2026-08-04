@@ -2375,6 +2375,231 @@ class RaidenControllerTest(absltest.TestCase):
       self.assertTrue(plan.skip_d2h)
       self.assertNotEqual(plan.shard_push_schedules, {target_id: {0: []}})
 
+  def test_auto_calculate_expected_block_count(self):
+    client = RecordingWorkerRpcClient()
+    controller = raiden_controller.RaidenController(
+        port=10004, worker_rpc_client=client
+    )
+
+    src = raiden_controller.RaidenId(
+        job_name="trainer", job_replica_id="0", data_name="weights"
+    )
+    target = raiden_controller.RaidenId(
+        job_name="inference_server", job_replica_id="0", data_name="weights"
+    )
+
+    controller.register_work_unit(
+        src,
+        ["10.0.0.1:8000", "10.0.0.1:8001"],
+        mesh_shape=[2],
+        layout=[0],
+        global_shape=[128],
+        itemsize=4,
+        control_plane_rpc_address="10.0.0.1:9000",
+    )
+    controller.register_work_unit(
+        target,
+        ["10.0.0.2:8000", "10.0.0.2:8001"],
+        mesh_shape=[2],
+        layout=[0],
+        global_shape=[128],
+        itemsize=4,
+        control_plane_rpc_address="10.0.0.2:9000",
+    )
+
+    future = controller.start_transfer(
+        src_units=[src],
+        dst_units=[target],
+        use_block_chunks=True,
+    )
+    asyncio.run(future.wait())
+
+    self.assertTrue(len(client.calls) > 0)
+    dst_calls = [call for call in client.calls if call[0] == target]
+    self.assertLen(dst_calls, 1)
+    target_id, plan = dst_calls[0]
+    self.assertEqual(plan.expected_block_count, 2)
+
+  def test_auto_calculate_expected_block_count_strided(self):
+    client = RecordingWorkerRpcClient()
+    controller = raiden_controller.RaidenController(
+        port=10004, worker_rpc_client=client
+    )
+
+    src = raiden_controller.RaidenId(
+        job_name="trainer", job_replica_id="0", data_name="weights"
+    )
+    target = raiden_controller.RaidenId(
+        job_name="inference_server", job_replica_id="0", data_name="weights"
+    )
+    # Src: 1x2 mesh, layout [-1, 0], global [8, 8] -> shard [8, 4]
+    controller.register_work_unit(
+        src,
+        ["10.0.0.1:8000"],
+        mesh_shape=[1, 2],
+        layout=[-1, 0],
+        global_shape=[8, 8],
+        itemsize=4,
+        control_plane_rpc_address="10.0.0.1:9000",
+    )
+    # Dst: 1x4 mesh, layout [-1, 0], global [8, 8] -> shard [8, 2]
+    controller.register_work_unit(
+        target,
+        ["10.0.0.2:8000"],
+        mesh_shape=[1, 4],
+        layout=[-1, 0],
+        global_shape=[8, 8],
+        itemsize=4,
+        control_plane_rpc_address="10.0.0.2:9000",
+    )
+
+    future = controller.start_transfer(
+        src_units=[src],
+        dst_units=[target],
+        use_block_chunks=True,
+    )
+    asyncio.run(future.wait())
+
+    self.assertTrue(len(client.calls) > 0)
+    dst_calls = [call for call in client.calls if call[0] == target]
+    self.assertLen(dst_calls, 1)
+    target_id, plan = dst_calls[0]
+    self.assertEqual(plan.expected_block_count, 8)
+
+  def test_auto_calculate_expected_block_count_strided_skip_tiling(self):
+    client = RecordingWorkerRpcClient()
+    controller = raiden_controller.RaidenController(
+        port=10004, worker_rpc_client=client
+    )
+
+    src = raiden_controller.RaidenId(
+        job_name="trainer", job_replica_id="0", data_name="weights"
+    )
+    target = raiden_controller.RaidenId(
+        job_name="inference_server", job_replica_id="0", data_name="weights"
+    )
+
+    controller.register_work_unit(
+        src,
+        ["10.0.0.1:8000"],
+        mesh_shape=[1, 2],
+        layout=[-1, 0],
+        global_shape=[8, 8],
+        itemsize=4,
+        control_plane_rpc_address="10.0.0.1:9000",
+    )
+    controller.register_work_unit(
+        target,
+        ["10.0.0.2:8000"],
+        mesh_shape=[1, 4],
+        layout=[-1, 0],
+        global_shape=[8, 8],
+        itemsize=4,
+        control_plane_rpc_address="10.0.0.2:9000",
+    )
+
+    future = controller.start_transfer(
+        src_units=[src],
+        dst_units=[target],
+        use_block_chunks=True,
+        skip_tiling={0: True},
+    )
+    asyncio.run(future.wait())
+
+    self.assertTrue(len(client.calls) > 0)
+    dst_calls = [call for call in client.calls if call[0] == target]
+    self.assertLen(dst_calls, 1)
+    target_id, plan = dst_calls[0]
+    self.assertEqual(plan.expected_block_count, 1)
+
+  def test_auto_calculate_expected_block_count_mixed(self):
+    client = RecordingWorkerRpcClient()
+    controller = raiden_controller.RaidenController(
+        port=10004, worker_rpc_client=client
+    )
+
+    src = raiden_controller.RaidenId(
+        job_name="trainer", job_replica_id="0", data_name="weights"
+    )
+    target = raiden_controller.RaidenId(
+        job_name="inference_server", job_replica_id="0", data_name="weights"
+    )
+
+    variables_src = [
+        raiden_service_pb2.VariableMetadataProto(
+            name="weights_0",
+            shape=[8, 8],
+            mesh_shape=[1, 2],
+            layout=[-1, 0],
+            item_size=4,
+            layer_idx=0,
+        ),
+        raiden_service_pb2.VariableMetadataProto(
+            name="weights_1",
+            shape=[8, 8],
+            mesh_shape=[1, 2],
+            layout=[-1, 0],
+            item_size=4,
+            layer_idx=1,
+        ),
+    ]
+
+    variables_dst = [
+        raiden_service_pb2.VariableMetadataProto(
+            name="weights_0",
+            shape=[8, 8],
+            mesh_shape=[1, 4],
+            layout=[-1, 0],
+            item_size=4,
+            layer_idx=0,
+        ),
+        raiden_service_pb2.VariableMetadataProto(
+            name="weights_1",
+            shape=[8, 8],
+            mesh_shape=[1, 4],
+            layout=[-1, 0],
+            item_size=4,
+            layer_idx=1,
+        ),
+    ]
+
+    controller.register_work_unit(
+        src,
+        ["10.0.0.1:8000"],
+        mesh_shape=[1, 2],
+        layout=[-1, 0],
+        global_shape=[8, 8],
+        itemsize=4,
+        control_plane_rpc_address="10.0.0.1:9000",
+        variables=variables_src,
+    )
+    controller.register_work_unit(
+        target,
+        ["10.0.0.2:8000"],
+        mesh_shape=[1, 4],
+        layout=[-1, 0],
+        global_shape=[8, 8],
+        itemsize=4,
+        control_plane_rpc_address="10.0.0.2:9000",
+        variables=variables_dst,
+    )
+
+    # Mixed skip tiling: skip for layer 0 (1 push), don't skip for layer 1 (8 pushes).
+    # Total expected = 1 + 8 = 9.
+    future = controller.start_transfer(
+        src_units=[src],
+        dst_units=[target],
+        use_block_chunks=True,
+        skip_tiling={0: True, 1: False},
+    )
+    asyncio.run(future.wait())
+
+    self.assertTrue(len(client.calls) > 0)
+    dst_calls = [call for call in client.calls if call[0] == target]
+    self.assertLen(dst_calls, 1)
+    target_id, plan = dst_calls[0]
+    self.assertEqual(plan.expected_block_count, 9)
+
 
 def _byte_spans_for_rank(
     rank,

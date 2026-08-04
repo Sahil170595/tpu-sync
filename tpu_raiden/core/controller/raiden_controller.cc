@@ -269,11 +269,13 @@ void RaidenController::Init(absl::Span<const std::string> worker_addresses,
 RaidenController::RaidenController(
     const rpc::RaidenIdProto& unit, int num_blocks, int num_shards,
     int64_t shard_size_bytes, absl::string_view raiden_orchestrator_address,
-    absl::string_view raiden_controller_address)
+    absl::string_view raiden_controller_address,
+    bool preprovision_worker_buffers)
     : unit_(unit),
       num_shards_(num_shards),
       shard_size_bytes_(shard_size_bytes),
       num_total_blocks_(num_blocks),
+      preprovision_worker_buffers_(preprovision_worker_buffers),
       worker_registry_(std::make_shared<core::controller::WorkerRegistry>()),
       block_manager_(
           std::make_unique<kv_cache::LogicalBlockManager>(num_blocks)) {
@@ -286,11 +288,13 @@ RaidenController::RaidenController(
     absl::Span<const std::string> worker_addresses, int num_blocks,
     int num_shards, int64_t shard_size_bytes,
     absl::string_view raiden_orchestrator_address,
-    absl::string_view raiden_controller_address)
+    absl::string_view raiden_controller_address,
+    bool preprovision_worker_buffers)
     : unit_(unit),
       num_shards_(num_shards),
       shard_size_bytes_(shard_size_bytes),
       num_total_blocks_(num_blocks),
+      preprovision_worker_buffers_(preprovision_worker_buffers),
       worker_registry_(std::make_shared<core::controller::WorkerRegistry>()),
       block_manager_(
           std::make_unique<kv_cache::LogicalBlockManager>(num_blocks)) {
@@ -349,16 +353,21 @@ absl::Status RaidenController::InitializeWorkerBuffers(
         "WorkerServiceClient for ", reg.worker_id, " is not initialized"));
   }
 
+  // With pre-provisioning disabled the request is empty: the RPC still runs,
+  // so registration keeps probing that the worker's WorkerService is
+  // reachable, but no physical buffers are created on the worker.
+  const int provision_blocks =
+      preprovision_worker_buffers_ ? num_total_blocks_ : 0;
   proto::CreateBuffersRequest request;
   *request.mutable_unit() = unit_;
-  for (int block_id = 0; block_id < num_total_blocks_; ++block_id) {
+  for (int block_id = 0; block_id < provision_blocks; ++block_id) {
     auto* spec = request.add_buffers();
     spec->set_num_shards(num_shards_);
     spec->set_size_bytes(shard_size_bytes_);
   }
 
   auto resp_or = CreateBuffersForWorker(*reg.worker_service_client, request,
-                                        reg.worker_id, num_total_blocks_);
+                                        reg.worker_id, provision_blocks);
   if (!resp_or.ok()) {
     return absl::FailedPreconditionError(
         absl::StrCat("CreateBuffers RPC failed: ", resp_or.status().message()));
@@ -366,8 +375,8 @@ absl::Status RaidenController::InitializeWorkerBuffers(
   auto resp = *resp_or;
 
   std::vector<proto::BufferProto> created_buffers;
-  created_buffers.reserve(num_total_blocks_);
-  for (int block_id = 0; block_id < num_total_blocks_; ++block_id) {
+  created_buffers.reserve(provision_blocks);
+  for (int block_id = 0; block_id < provision_blocks; ++block_id) {
     proto::BufferProto buf = resp.buffers(block_id);
     buf.set_index(block_id);
     created_buffers.push_back(std::move(buf));
@@ -385,6 +394,15 @@ absl::Status RaidenController::InitializeWorkerBuffers(
 absl::StatusOr<std::vector<proto::BufferProto>> RaidenController::Allocate(
     int num_blocks) {
   absl::MutexLock lock(mutex_);
+  // Without the pre-provisioned buffers (no worker registered yet, or
+  // preprovision_worker_buffers=false) indexing all_sharded_buffers_ below
+  // would be out of bounds -- fail before locking any ids.
+  if (all_sharded_buffers_.empty()) {
+    return absl::FailedPreconditionError(
+        "No physical buffers provisioned: register a worker first, and note "
+        "that Physical/BufferProto mode is unavailable when the controller "
+        "was built with preprovision_worker_buffers=false");
+  }
   ASSIGN_OR_RETURN(std::vector<int> block_ids,
                    block_manager_->Allocate(num_blocks, /*lock=*/true));
   std::vector<proto::BufferProto> result;

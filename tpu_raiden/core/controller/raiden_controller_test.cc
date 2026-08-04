@@ -1007,6 +1007,27 @@ TEST_F(RaidenControllerTest, RegisterWorkerRejectsDuplicateNodeId) {
   EXPECT_TRUE(same.ok()) << same.message();
 }
 
+TEST_F(RaidenControllerTest, PreprovisionDisabledSkipsPhysicalBuffers) {
+  RaidenController controller(unit_, /*num_blocks=*/4, /*num_shards=*/2,
+                              /*shard_size_bytes=*/256, orchestrator_address_,
+                              "", /*preprovision_worker_buffers=*/false);
+  // Registration still succeeds (and still probes the worker's WorkerService
+  // with an empty CreateBuffers)...
+  RegisterAndInitWorker(controller, "worker_0", test_server_->server_address);
+
+  // ...the logical-block ledger is fully usable...
+  auto ids_or = controller.AllocateBlockIds(4);
+  ASSERT_TRUE(ids_or.ok()) << ids_or.status();
+  EXPECT_EQ(ids_or->size(), 4);
+  ASSERT_TRUE(controller.DeallocateBlockIds(*ids_or).ok());
+
+  // ...but no physical buffers exist, so the Legacy Physical/BufferProto
+  // mode reports the precondition instead of indexing an empty pool.
+  auto legacy_or = controller.AllocateBuffers(1);
+  EXPECT_TRUE(absl::IsFailedPrecondition(legacy_or.status()))
+      << legacy_or.status();
+}
+
 TEST_F(RaidenControllerTest, AllocateBuffersAndDeallocateBuffersSuccess) {
   RaidenController controller(
       unit_, std::vector<std::string>{test_server_->server_address},

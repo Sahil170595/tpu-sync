@@ -257,11 +257,15 @@ KVCacheStore::KVCacheStore(
     unit_proto.set_data_replica_idx(raiden_id_.data_replica_idx);
 
     size_t cap = capacity();
+    // The store's block ids resolve against the manager's own pool, so the
+    // legacy physical-buffer pre-provisioning would allocate that pool a
+    // second time on the worker.
     raiden_controller_ =
         std::make_unique<::tpu_raiden::controller::RaidenController>(
             unit_proto, cap, num_shards, shard_size_bytes,
             raiden_orchestrator_address,
-            ComposeControllerAddress(store_server_ip, raiden_controller_port));
+            ComposeControllerAddress(store_server_ip, raiden_controller_port),
+            /*preprovision_worker_buffers=*/false);
   }
   // Deliberately does NOT wire the controller here (see CreateTag) -- the
   // caller (Create()) does that itself so a publish failure can return a
@@ -338,7 +342,8 @@ KVCacheStore::KVCacheStore(size_t capacity,
         std::make_unique<::tpu_raiden::controller::RaidenController>(
             unit_proto, capacity, num_shards, shard_size_bytes,
             raiden_orchestrator_address,
-            ComposeControllerAddress(store_server_ip, raiden_controller_port));
+            ComposeControllerAddress(store_server_ip, raiden_controller_port),
+            /*preprovision_worker_buffers=*/false);
   }
 
   // registry_client_ is assigned a few lines above, and must be: a backend

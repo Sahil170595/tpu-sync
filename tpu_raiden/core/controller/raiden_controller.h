@@ -69,10 +69,19 @@ class RaidenController {
   // disabled (ResolvePeerController will fail), but local transfers (H2D, D2H)
   // and H2H transfers where the peer address is provided directly will function
   // normally.
+  //
+  // `num_blocks` drives two independent things: the size of the logical-block
+  // ledger (AllocateBlockIds), and how many physical buffers are pre-created
+  // on every registering worker for the Legacy Physical/BufferProto mode
+  // (Allocate/AllocateBuffers below). `preprovision_worker_buffers` = false
+  // skips that pre-creation.
+  // TODO(b/542288634): Remove preprovision_worker_buffers and legacy
+  // Physical/BufferProto mode.
   RaidenController(const rpc::RaidenIdProto& unit, int num_blocks,
                    int num_shards, int64_t shard_size_bytes,
                    absl::string_view raiden_orchestrator_address = "",
-                   absl::string_view raiden_controller_address = "");
+                   absl::string_view raiden_controller_address = "",
+                   bool preprovision_worker_buffers = true);
 
   // Constructs a RaidenController for multiple worker addresses.
   // It will also start the ControllerServer to allow dynamic registrations
@@ -81,7 +90,8 @@ class RaidenController {
                    absl::Span<const std::string> worker_addresses,
                    int num_blocks, int num_shards, int64_t shard_size_bytes,
                    absl::string_view raiden_orchestrator_address = "",
-                   absl::string_view raiden_controller_address = "");
+                   absl::string_view raiden_controller_address = "",
+                   bool preprovision_worker_buffers = true);
   // Destructor automatically calls DeleteBuffers to clean up all pre-created
   // buffers on the registered workers.
   ~RaidenController();
@@ -232,6 +242,7 @@ class RaidenController {
   int num_shards_;
   int64_t shard_size_bytes_;
   int num_total_blocks_;
+  bool preprovision_worker_buffers_ = true;
   std::vector<proto::BufferProto> all_sharded_buffers_;
   std::shared_ptr<core::controller::WorkerRegistry> worker_registry_;
   mutable absl::Mutex mutex_;

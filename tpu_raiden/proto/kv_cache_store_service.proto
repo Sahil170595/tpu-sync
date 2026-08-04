@@ -26,6 +26,32 @@ option java_outer_classname = "KVCacheStoreServiceProto";
 service KVCacheStoreService {
   // Fetches remote KV cache blocks to local host memory or device memory.
   rpc Fetch(FetchRequest) returns (FetchResponse);
+
+  // --- Remote write (source-offered, destination-pulled) -------------------
+  //
+  // WriteRemote makes a peer take a copy of blocks this node owns. The use
+  // case is proactive eviction: a node under memory pressure offers cold
+  // blocks to a peer, then frees them locally.
+  //
+  //   WriteRemote      the SOURCE offers. The destination tests what it
+  //                    already holds, allocates landing blocks
+  //                    all-or-nothing, issues the pull, and ACKS with an
+  //                    operation_id -- it does NOT wait for the data.
+  //   (no RPC)         the DESTINATION's own workers pull the bytes.
+  //   PollWriteRemote  the source polls until terminal.
+  //
+  // Why the destination pulls, and why this is not negotiable: if the
+  // SOURCE's workers wrote into destination blocks, a destination that gave
+  // up mid-transfer would free and reallocate them, and the source's
+  // in-flight write would corrupt an unrelated tenant. No commit-time check
+  // can detect that, because the damage is to a third party. With a pull,
+  // only the destination writes its own memory, so it simply does not free
+  // blocks whose transfer future it still holds.
+  //
+  // There is deliberately NO lease here, unlike the read path: the source
+  // INITIATES and holds its own pins, so there is nothing to negotiate.
+  rpc WriteRemote(WriteRemoteRequest) returns (WriteRemoteResponse);
+  rpc PollWriteRemote(PollWriteRemoteRequest) returns (PollWriteRemoteResponse);
 }
 
 // Request to fetch one or more KV cache blocks by hash.
@@ -58,6 +84,7 @@ message FetchRequest {
 // Response describing the outcome of a fetch request.
 message FetchResponse {
   // List of block hashes that were successfully fetched into the target buffer.
+  // `bytes` for the reason given on FetchRequest.block_hashes.
   repeated bytes done_block_hashes = 1;
 
   // List of block hashes that failed to be fetched.
@@ -65,4 +92,119 @@ message FetchResponse {
 
   // Error status code or message for detailed reporting.
   string error_message = 3;
+}
+
+// What the destination already holds of the offered batch. Applied by ONE
+// rule, at BOTH ack time and insert time -- which is what makes the two
+// coherent. Without a single rule the same condition is success if a race
+// lands early and failure if it lands late.
+enum WriteExistState {
+  WRITE_EXIST_STATE_UNSPECIFIED = 0;  // nothing was already present
+  // Every offered hash is already present. SUCCESS: hashes are content-
+  // addressed, so the peer having it means the peer has the same bytes --
+  // exactly the post-condition the caller wanted. No transfer is performed.
+  WRITE_ALL_EXIST = 1;
+  // Some but not all are present. FAILURE: a partial batch does not satisfy
+  // the request, and reporting success would let an eviction caller free
+  // blocks the peer does not have. existing_hashes lists what it does have,
+  // so the source can re-offer only the difference.
+  WRITE_PARTIAL_EXIST = 2;
+}
+
+// The source offers blocks it owns; the destination decides and pulls.
+message WriteRemoteRequest {
+  // Identifies the offering node. The destination pulls FROM it.
+  tpu_raiden.rpc.RaidenIdProto src_raiden_id = 1;
+
+  // MUST be non-empty; an empty list is INVALID_ARGUMENT.
+  repeated bytes block_hashes = 2;
+
+  // The source's authoritative host block ids, in block_hashes order. Unlike
+  // the read path's advisory ids these are correct by construction: the
+  // source holds an internal pin on every one for the life of the operation.
+  repeated int32 src_host_block_ids = 3;
+
+  // The source's worker endpoint groups, tagged with node_id so each
+  // destination worker pairs with the source worker holding its shards.
+  // DATA-plane endpoints, not control.
+  repeated tpu_raiden.proto.RaidenWorkerEndpointsProto src_worker_endpoints = 4;
+
+  // Requested destination deadline, in milliseconds. MUST be > 0.
+  //
+  // proto3 gives a scalar no presence, so an unset field arrives as 0 and
+  // would otherwise read as "deadline already passed", failing every write at
+  // the pre-pull check. 0 is therefore a protocol error, not a default.
+  int64 deadline_ms = 5;
+}
+
+// Response describing the outcome of a remote write request.
+message WriteRemoteResponse {
+  // Non-zero => accepted and the transfer is proceeding. Zero together with
+  // WRITE_EXIST_STATE_UNSPECIFIED is a PROTOCOL ERROR (a default-initialised
+  // message), not a silent no-op.
+  uint64 operation_id = 1;
+
+  WriteExistState exist_state = 2;
+
+  // Populated iff WRITE_PARTIAL_EXIST.
+  repeated bytes existing_hashes = 3;
+
+  // The deadline actually armed, after clamping to the destination's own cap.
+  // AUTHORITATIVE: the source validates that its own HOLD exceeds this. The
+  // two values live in different processes, so neither side can check the
+  // invariant alone -- and an inverted pair lets the source stop protecting
+  // its blocks while the destination is still pulling them.
+  int64 granted_deadline_ms = 4;
+}
+
+message PollWriteRemoteRequest {
+  uint64 operation_id = 1;
+}
+
+message PollWriteRemoteResponse {
+  enum State {
+    STATE_UNSPECIFIED = 0;
+    PENDING = 1;
+    // Inserted AND registered globally. SUCCESS -- and the only state an
+    // eviction caller may free its own copy on. A COMMITTED that meant
+    // "inserted" alone would let the source free blocks that no lookup
+    // anywhere can reach.
+    COMMITTED = 2;
+    // A concurrent writer committed every one of our hashes first. SUCCESS:
+    // our blocks are freed and the bytes we moved are discarded, but the
+    // post-condition holds.
+    ALL_EXIST = 3;
+    // Some of our hashes were present at insert time. FAILURE;
+    // existing_hashes is set. Our blocks are freed.
+    PARTIAL_EXIST = 4;
+    FAILED = 5;
+    // Aged out, or the destination restarted. Indistinguishable from "never
+    // happened": treat as failure.
+    UNKNOWN = 6;
+    // The bytes ARRIVED and the destination kept them, but publishing them to
+    // the global registry failed, so no peer can find them.
+    //
+    // Deliberately not COMMITTED. Nothing is corrupt -- hashes are content-
+    // addressed and an unpublished block is invisible, not wrong -- but
+    // COMMITTED is what licenses an eviction caller to drop its own copy, and
+    // doing that here would move the block from "on the source, findable" to
+    // "on the destination, findable by nobody". That is worse than never
+    // having sent it, and it costs a full transfer to get there.
+    //
+    // So the destination reports what actually happened and the SOURCE
+    // decides: keep its copy (the safe default), free it anyway because the
+    // peer is good enough, or leave it alone rather than re-offering bytes the
+    // peer already holds. unregistered_hashes carries the list.
+    STORED_UNREGISTERED = 7;
+  }
+  State state = 1;
+  repeated bytes committed_hashes = 2;
+  repeated bytes failed_hashes = 3;
+  // Populated iff PARTIAL_EXIST. Carried here as well as on
+  // WriteRemoteResponse so the source never has to remember which reply the
+  // list arrived on.
+  repeated bytes existing_hashes = 4;
+  // Populated iff STORED_UNREGISTERED: the destination holds these, but no
+  // lookup will find them.
+  repeated bytes unregistered_hashes = 5;
 }

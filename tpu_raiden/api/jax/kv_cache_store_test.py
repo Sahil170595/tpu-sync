@@ -76,7 +76,6 @@ def _registry_binary_path():
   )
 
 
-
 def setUpModule():
   global _orchestrator_process, _registry_process
   global _orchestrator_port, _registry_port
@@ -767,6 +766,153 @@ class KVCacheStoreTest(absltest.TestCase):
       device_data = np.asarray(device_caches[l])
       np.testing.assert_array_equal(device_data[5], device_data[0])
       np.testing.assert_array_equal(device_data[6], device_data[1])
+
+  def _make_registry_store(self, job_name, capacity=20):
+    return kv_cache_store.KVCacheStore(
+        capacity=capacity,
+        global_registry_address=f"localhost:{_registry_port}",
+        raiden_id=kv_cache_store.RaidenId(job_name, "0", "kv_cache", 0),
+        num_shards=1,
+        store_server_ip="127.0.0.1",
+    )
+
+  def test_write_remote_requires_a_registry(self):
+    # No global registry address: nothing to resolve the destination through,
+    # and nothing to make the blocks reachable once they landed.
+    store = kv_cache_store.KVCacheStore(
+        capacity=20, num_shards=1, store_server_ip="127.0.0.1"
+    )
+    src_id = kv_cache_store.RaidenId("wr_noreg", "0", "kv_cache", 0)
+    self.assertTrue(
+        store.insert_and_lock(
+            [b"a"],
+            [
+                kv_cache_store.RaidenBlockID(
+                    src_id, 0, kv_cache_store.BlockStatus.HOST
+                )
+            ],
+            True,
+        )
+    )
+    self.assertFalse(
+        store.write_remote(
+            [b"a"], kv_cache_store.RaidenId("wr_dst", "0", "kv_cache", 0)
+        )
+    )
+
+  def test_write_remote_all_exist_settles_done(self):
+    src = self._make_registry_store("wr_src_allexist")
+    dst = self._make_registry_store("wr_dst_allexist")
+    dst_id = dst.raiden_id
+
+    hashes = [b"wr_a", b"wr_b"]
+    src_slices = [
+        kv_cache_store.RaidenBlockID(
+            src.raiden_id, i, kv_cache_store.BlockStatus.HOST
+        )
+        for i in range(len(hashes))
+    ]
+    dst_slices = [
+        kv_cache_store.RaidenBlockID(
+            dst_id, 5 + i, kv_cache_store.BlockStatus.HOST
+        )
+        for i in range(len(hashes))
+    ]
+    self.assertTrue(src.insert_and_lock(hashes, src_slices, True))
+    self.assertTrue(dst.insert_and_lock(hashes, dst_slices, True))
+
+    # The destination already holds every offered hash. That is a SUCCESS:
+    # hashes are content-addressed, so the peer having them is exactly the
+    # post-condition the caller wanted, and no bytes move.
+    self.assertTrue(src.write_remote(hashes, dst_id))
+    done, failed, pending, existing, unregistered = (
+        src.poll_remote_write_status()
+    )
+    self.assertCountEqual(done, hashes)
+    self.assertEmpty(failed)
+    self.assertEmpty(pending)
+    self.assertEmpty(existing)
+
+  def test_write_remote_partial_exist_reports_the_overlap(self):
+    src = self._make_registry_store("wr_src_partial")
+    dst = self._make_registry_store("wr_dst_partial")
+    dst_id = dst.raiden_id
+
+    hashes = [b"wr_p_a", b"wr_p_b"]
+    self.assertTrue(
+        src.insert_and_lock(
+            hashes,
+            [
+                kv_cache_store.RaidenBlockID(
+                    src.raiden_id, i, kv_cache_store.BlockStatus.HOST
+                )
+                for i in range(len(hashes))
+            ],
+            True,
+        )
+    )
+    # Only one of the two.
+    self.assertTrue(
+        dst.insert_and_lock(
+            [hashes[0]],
+            [
+                kv_cache_store.RaidenBlockID(
+                    dst_id, 5, kv_cache_store.BlockStatus.HOST
+                )
+            ],
+            True,
+        )
+    )
+
+    self.assertTrue(src.write_remote(hashes, dst_id))
+    done, failed, pending, existing, unregistered = (
+        src.poll_remote_write_status()
+    )
+    self.assertEmpty(done)
+    self.assertCountEqual(failed, hashes)
+    self.assertEmpty(pending)
+    # The fourth element is the whole reason this poller returns four: the
+    # caller decides whether to reissue with the remainder, and needs to know
+    # what the remainder is. The store does not retry on its own.
+    self.assertCountEqual(existing, [hashes[0]])
+
+  def test_write_remote_carries_a_non_utf8_hash(self):
+    # Real block hashes are raw digests, essentially never valid UTF-8. These
+    # travel through the bindings as bytes and over the wire as proto `bytes`;
+    # while those fields were declared `string` the sender serialized happily
+    # and the receiver rejected the whole message.
+    binary_hash = os.urandom(32)
+    src = self._make_registry_store("wr_src_binary")
+    dst = self._make_registry_store("wr_dst_binary")
+    dst_id = dst.raiden_id
+
+    self.assertTrue(
+        src.insert_and_lock(
+            [binary_hash],
+            [
+                kv_cache_store.RaidenBlockID(
+                    src.raiden_id, 0, kv_cache_store.BlockStatus.HOST
+                )
+            ],
+            True,
+        )
+    )
+    self.assertTrue(
+        dst.insert_and_lock(
+            [binary_hash],
+            [
+                kv_cache_store.RaidenBlockID(
+                    dst_id, 5, kv_cache_store.BlockStatus.HOST
+                )
+            ],
+            True,
+        )
+    )
+
+    self.assertTrue(src.write_remote([binary_hash], dst_id))
+    done, failed, _, _, _ = src.poll_remote_write_status()
+    self.assertCountEqual(done, [binary_hash])
+    self.assertEmpty(failed)
 
 
 if __name__ == "__main__":

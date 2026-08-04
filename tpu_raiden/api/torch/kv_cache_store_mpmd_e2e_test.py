@@ -519,6 +519,214 @@ def _worker_read_remote_main(argv):
     dist.destroy_process_group()
 
 
+def _worker_write_remote_main(argv):
+  rank = FLAGS.rank
+  world_size = FLAGS.world_size
+  master_port = FLAGS.master_port
+  controller_port_a = FLAGS.controller_port
+  controller_port_b = FLAGS.controller_port_b
+  orchestrator_port = FLAGS.orchestrator_port
+  registry_port = FLAGS.registry_port
+
+  os.environ["MASTER_ADDR"] = "localhost"
+  os.environ["MASTER_PORT"] = str(master_port)
+  os.environ["RANK"] = str(rank)
+  os.environ["WORLD_SIZE"] = str(world_size)
+  os.environ["LOCAL_RANK"] = str(rank)
+  os.environ["PJRT_LOCAL_PROCESS_RANK"] = str(rank)
+  os.environ["GROUP_RANK"] = "0"
+  os.environ["LOCAL_WORLD_SIZE"] = str(world_size)
+  os.environ["GLOG_alsologtostderr"] = "1"
+
+  dist.init_process_group(
+      backend="gloo",
+      init_method=f"tcp://127.0.0.1:{master_port}",
+      rank=rank,
+      world_size=world_size,
+  )
+
+  try:
+    device = torch.device("tpu")
+    num_blocks = 4
+    shape = (num_blocks, 128, 8, 8, 128)
+    host_data_a = np.arange(np.prod(shape), dtype=np.float32).reshape(shape) + (
+        rank * 1000.0
+    )
+    tpu_cache_a = torch.tensor(host_data_a, device=device)
+    tpu_cache_b = torch.zeros(shape, dtype=torch.float32, device=device)
+
+    expected_ref = host_data_a.copy()
+
+    store_a = None
+    store_b = None
+    hashes = [b"hash_mpmd_wr_0", b"hash_mpmd_wr_1"]
+
+    if rank == 0:
+      block_elements = 128 * 8 * 8 * 128
+      shard_size_bytes = block_elements * 4
+
+      rid_a = kv_cache_store.RaidenId(
+          "mpmd_wr_job_a", "0", "mpmd_wr_cache_a", 0
+      )
+      store_a = kv_cache_store.KVCacheStore(
+          capacity=num_blocks,
+          global_registry_address=f"localhost:{registry_port}",
+          raiden_id=rid_a,
+          num_shards=world_size,
+          shard_size_bytes=shard_size_bytes,
+          store_server_ip="127.0.0.1",
+          raiden_controller_port=controller_port_a,
+          raiden_orchestrator_address=f"localhost:{orchestrator_port}",
+      )
+
+      rid_b = kv_cache_store.RaidenId(
+          "mpmd_wr_job_b", "0", "mpmd_wr_cache_b", 0
+      )
+      store_b = kv_cache_store.KVCacheStore(
+          capacity=num_blocks,
+          global_registry_address=f"localhost:{registry_port}",
+          raiden_id=rid_b,
+          num_shards=world_size,
+          shard_size_bytes=shard_size_bytes,
+          store_server_ip="127.0.0.1",
+          raiden_controller_port=controller_port_b,
+          raiden_orchestrator_address=f"localhost:{orchestrator_port}",
+      )
+
+      slices_a = [
+          kv_cache_store.RaidenBlockID(
+              rid_a,
+              host_block_id=-1,
+              device_block_id=0,
+              status=kv_cache_store.BlockStatus.HBM,
+          ),
+          kv_cache_store.RaidenBlockID(
+              rid_a,
+              host_block_id=-1,
+              device_block_id=1,
+              status=kv_cache_store.BlockStatus.HBM,
+          ),
+      ]
+      inserted, evicted = store_a.insert(hashes, slices_a, on_host=False)
+      assert inserted, "Failed to insert blocks to store_a"
+      assert store_a.pin(hashes), "Failed to pin hashes before save"
+
+    dist.barrier()
+
+    # Initialize KVCacheManager A and B across all 8 ranks in Unified Host Pool mode
+    manager_a = None
+    for r in range(world_size):
+      if rank == r:
+        manager_a = kv_cache_manager.KVCacheManager(
+            kv_caches=[[tpu_cache_a]],
+            local_control_port=0,
+            max_blocks=num_blocks,
+            num_slots=2,
+            unsafe_skip_buffer_lock=True,
+            raiden_worker_port=0,
+            raiden_controller_address=f"localhost:{controller_port_a}",
+            worker_id=f"worker_a_{rank}",
+            host_blocks_to_allocate=4,
+            node_id=rank,
+        )
+      dist.barrier()
+
+    manager_b = None
+    for r in range(world_size):
+      if rank == r:
+        manager_b = kv_cache_manager.KVCacheManager(
+            kv_caches=[[tpu_cache_b]],
+            local_control_port=0,
+            max_blocks=num_blocks,
+            num_slots=2,
+            unsafe_skip_buffer_lock=True,
+            raiden_worker_port=0,
+            raiden_controller_address=f"localhost:{controller_port_b}",
+            worker_id=f"worker_b_{rank}",
+            host_blocks_to_allocate=4,
+            node_id=rank,
+        )
+      dist.barrier()
+
+    if rank == 0:
+      store_a.save(hashes)
+      deadline = time.time() + 120
+      done = False
+      while time.time() < deadline:
+        save_done, save_failed, _ = store_a.poll_save_status()
+        if save_failed:
+          raise RuntimeError(f"Job A Async Save failed: {save_failed}")
+        if len(save_done) == 2:
+          done = True
+          break
+        time.sleep(0.01)
+      assert done, "Job A Async Save timed out"
+
+      print("=== [Rank 0] Launching WriteRemote from Job A to Job B ===")
+      assert store_a.write_remote(
+          hashes, rid_b
+      ), "write_remote launch failed on store_a"
+
+      deadline = time.time() + 120
+      done = False
+      while time.time() < deadline:
+        wr_done, wr_failed, wr_pending, _, _ = (
+            store_a.poll_remote_write_status()
+        )
+        if wr_failed:
+          raise RuntimeError(f"Job A WriteRemote failed: {wr_failed}")
+        if len(wr_done) == 2:
+          done = True
+          break
+        time.sleep(0.01)
+      assert done, "Job A WriteRemote timed out"
+      store_a.release(hashes)
+
+      # Destination holds blocks locally on host DRAM
+      lookup_res_b = store_b.lookup(hashes, enable_global=False)
+      assert (
+          len(lookup_res_b) == 2
+      ), f"Expected 2 blocks on store_b, got {len(lookup_res_b)}"
+
+      # Load blocks [0, 1] from Job B's host pool into TPU HBM
+      assert store_b.pin(hashes), "pin failed on store_b"
+      assert store_b.load(hashes, [0, 1]), "load failed on store_b"
+      deadline = time.time() + 120
+      done = False
+      while time.time() < deadline:
+        load_done, load_failed, _ = store_b.poll_load_status()
+        if load_failed:
+          raise RuntimeError(f"Job B Load failed: {load_failed}")
+        if len(load_done) == 2:
+          done = True
+          break
+        time.sleep(0.01)
+      assert done, "Job B Load timed out"
+
+      store_b.release_and_delete(hashes)
+
+    dist.barrier()
+    try:
+      torch.tpu.synchronize()
+    except (AttributeError, RuntimeError):
+      pass
+    print(
+        f"=== [Rank {rank}] Verifying TPU memory blocks [0, 1] match offered"
+        " producer blocks ==="
+    )
+    np.testing.assert_array_equal(
+        tpu_cache_b.cpu().numpy()[:2], expected_ref[:2]
+    )
+    print(
+        f"=== [Rank {rank}] SUCCESS: E2E MPMD WriteRemote [0, 1] roundtrip"
+        " verified on physical TPU! ==="
+    )
+
+  finally:
+    dist.barrier()
+    dist.destroy_process_group()
+
+
 class KVCacheStoreMpmdE2ETest(absltest.TestCase):
 
   @classmethod
@@ -594,11 +802,46 @@ class KVCacheStoreMpmdE2ETest(absltest.TestCase):
     if failed:
       self.fail("One or more workers failed in read_remote MPMD test!")
 
+  def test_mpmd_8rank_e2e_write_remote(self):
+    world_size = 8
+    prepare_tpu_environment(world_size)
+    master_port = pick_unused_ports(1)[0]
+    controller_port_a = pick_unused_ports(1)[0]
+    controller_port_b = pick_unused_ports(1)[0]
+
+    procs = []
+    for rank in range(world_size):
+      env = os.environ.copy()
+      cmd = [
+          sys.argv[0],
+          "--run_worker",
+          "--worker_mode=write_remote",
+          f"--rank={rank}",
+          f"--world_size={world_size}",
+          f"--master_port={master_port}",
+          f"--controller_port={controller_port_a}",
+          f"--controller_port_b={controller_port_b}",
+          f"--orchestrator_port={_orchestrator_port}",
+          f"--registry_port={_registry_port}",
+      ]
+      procs.append(subprocess.Popen(cmd, env=env))
+
+    failed = False
+    for p in procs:
+      p.wait()
+      if p.returncode != 0:
+        failed = True
+
+    if failed:
+      self.fail("One or more workers failed in write_remote MPMD test!")
+
 
 def main(argv):
   if FLAGS.run_worker:
     if FLAGS.worker_mode == "read_remote":
       _worker_read_remote_main(argv)
+    elif FLAGS.worker_mode == "write_remote":
+      _worker_write_remote_main(argv)
     else:
       _worker_save_load_main(argv)
   else:

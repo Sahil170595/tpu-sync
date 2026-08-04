@@ -26,6 +26,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Copyright 2026 Google LLC.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """E2E test for JAX KVCacheStore with TPUs."""
 
 import os
@@ -40,7 +54,6 @@ import numpy as np
 import torch
 import torch_tpu
 
-resources = None
 from tpu_raiden.api.torch import kv_cache_manager
 from tpu_raiden.api.torch import kv_cache_store
 
@@ -487,13 +500,13 @@ class KVCacheStoreE2ETest(parameterized.TestCase):
       self.assertLen(lookup_res_b, 2)
 
       # Verify REMOTE status and owner job_a
-      self.assertEqual(lookup_res_b[0][0], f"{tag}_h0".encode())
+      self.assertEqual(lookup_res_b[0][0], hashes[0])
       self.assertEqual(
           lookup_res_b[0][1].status, kv_cache_store.BlockStatus.REMOTE
       )
       self.assertEqual(lookup_res_b[0][1].raiden_id, rid_a)
 
-      self.assertEqual(lookup_res_b[1][0], f"{tag}_h1".encode())
+      self.assertEqual(lookup_res_b[1][0], hashes[1])
       self.assertEqual(
           lookup_res_b[1][1].status, kv_cache_store.BlockStatus.REMOTE
       )
@@ -575,6 +588,206 @@ class KVCacheStoreE2ETest(parameterized.TestCase):
       np.testing.assert_array_equal(tpu_cache_b[0:2].cpu().numpy(), host_data_a[0:2])
     finally:
       del manager_a, manager_b, store_a, store_b
+
+  def _run_remote_write_e2e_test(
+      self,
+      producer_node_id: int = 0,
+      consumer_node_id: int = 0,
+      expect_write_success: bool = True,
+  ):
+    """Job A offers blocks it owns; Job B pulls them and keeps them.
+
+    The mirror image of _run_remote_read_e2e_test: there the destination asks,
+    here the source offers. What this adds over the read path is the
+    WriteRemote control plane -- the ack, the destination's all-or-nothing
+    insert, global registration, and the source polling to COMMITTED -- with a
+    byte comparison at the end, because every control-plane assertion can pass
+    while nothing is actually transferred.
+
+    NOTE: like every torch test in this tree, this is written for parity with
+    the jax suite and is NOT part of any gate. It has never been executed.
+    """
+    num_blocks = 4
+    shape = (num_blocks, 128, 8, 8, 128)
+
+    host_data_a = np.arange(np.prod(shape), dtype=np.float32).reshape(shape)
+    tpu_cache_a = torch.tensor(host_data_a, device=self.device)
+    # Zeroed, so a byte comparison cannot pass on data already present.
+    tpu_cache_b = torch.tensor(
+        np.zeros(shape, dtype=np.float32), device=self.device
+    )
+
+    block_elements = 128 * 8 * 8 * 128
+    shard_size_bytes = (block_elements * 4) // self.num_devices
+
+    controller_port_a = find_free_port()
+    worker_port_a = find_free_port()
+    worker_port_b = find_free_port()
+
+    tag = f"write_{uuid.uuid4().hex[:8]}"
+    rid_a = kv_cache_store.RaidenId(f"{tag}_job_a", "0", f"{tag}_cache_a", 0)
+    store_a = kv_cache_store.KVCacheStore(
+        capacity=4,
+        global_registry_address=f"localhost:{_registry_port}",
+        raiden_id=rid_a,
+        num_shards=self.num_devices,
+        shard_size_bytes=shard_size_bytes,
+        raiden_orchestrator_address=f"localhost:{_orchestrator_port}",
+        store_server_ip="localhost",
+        raiden_controller_port=controller_port_a,
+    )
+    manager_a = kv_cache_manager.KVCacheManager(
+        kv_caches=[[tpu_cache_a]],
+        local_control_port=0,
+        max_blocks=num_blocks,
+        num_slots=2,
+        unsafe_skip_buffer_lock=self.skip_lock,
+        raiden_worker_port=worker_port_a,
+        raiden_controller_address=f"localhost:{controller_port_a}",
+        worker_id=f"{tag}_worker_a",
+        host_blocks_to_allocate=4,
+        node_id=producer_node_id,
+    )
+
+    controller_port_b = find_free_port()
+    rid_b = kv_cache_store.RaidenId(f"{tag}_job_b", "0", f"{tag}_cache_b", 0)
+    store_b = kv_cache_store.KVCacheStore(
+        capacity=4,
+        global_registry_address=f"localhost:{_registry_port}",
+        raiden_id=rid_b,
+        num_shards=self.num_devices,
+        shard_size_bytes=shard_size_bytes,
+        raiden_orchestrator_address=f"localhost:{_orchestrator_port}",
+        store_server_ip="localhost",
+        raiden_controller_port=controller_port_b,
+    )
+    manager_b = kv_cache_manager.KVCacheManager(
+        kv_caches=[[tpu_cache_b]],
+        local_control_port=0,
+        max_blocks=num_blocks,
+        num_slots=2,
+        unsafe_skip_buffer_lock=self.skip_lock,
+        raiden_worker_port=worker_port_b,
+        raiden_controller_address=f"localhost:{controller_port_b}",
+        worker_id=f"{tag}_worker_b",
+        host_blocks_to_allocate=4,
+        node_id=consumer_node_id,
+    )
+
+    try:
+      time.sleep(1)
+      hashes = [f"{tag}_h0".encode(), f"{tag}_h1".encode()]
+
+      # 1. Job A puts the blocks in HBM and saves them to host DRAM. Only
+      #    host-resident blocks can be offered: the pull reads host memory.
+      slices_a = [
+          kv_cache_store.RaidenBlockID(
+              rid_a,
+              host_block_id=-1,
+              device_block_id=i,
+              status=kv_cache_store.BlockStatus.HBM,
+          )
+          for i in range(2)
+      ]
+      inserted_a, evicted_a = store_a.insert(hashes, slices_a, on_host=False)
+      self.assertTrue(inserted_a)
+      self.assertEmpty(evicted_a)
+      self.assertTrue(store_a.pin(hashes))
+      store_a.save(hashes)
+
+      deadline = time.time() + 120
+      while True:
+        save_done, save_failed, _ = store_a.poll_save_status()
+        if save_failed:
+          raise RuntimeError(f"Job A Async Save failed: {save_failed}")
+        if len(save_done) == len(hashes):
+          break
+        if time.time() > deadline:
+          raise RuntimeError("Job A save did not complete in time")
+        time.sleep(0.01)
+
+      # 2. Job A offers them. Returns once Job B has decided, not once the
+      #    bytes have moved.
+      self.assertTrue(store_a.write_remote(hashes, rid_b))
+
+      deadline = time.time() + 120
+      done, failed, existing = [], [], []
+      while time.time() < deadline:
+        done, failed, pending, existing, unregistered = (
+            store_a.poll_remote_write_status()
+        )
+        if done or failed or existing:
+          break
+        time.sleep(0.01)
+
+      if not expect_write_success:
+        self.assertNotEmpty(failed)
+        self.assertEmpty(done)
+        return
+
+      self.assertCountEqual(done, hashes)
+      self.assertEmpty(failed)
+      self.assertEmpty(existing)
+      store_a.release(hashes)
+
+      # 3. Job B holds them locally, host-resident, as its own.
+      lookup_b = store_b.lookup(hashes, enable_global=False)
+      self.assertLen(lookup_b, len(hashes))
+      for _, slice_b in lookup_b:
+        self.assertEqual(slice_b.status, kv_cache_store.BlockStatus.HOST)
+
+      # 4. Prove the bytes are real. Landed blocks arrive UNPINNED -- a remote
+      #    write leaves ordinary evictable entries -- and load() refuses a
+      #    block nothing is holding.
+      self.assertTrue(store_b.pin(hashes))
+      self.assertTrue(store_b.load(hashes, [0, 1]))
+      deadline = time.time() + 120
+      while True:
+        load_done, load_failed, _ = store_b.poll_load_status()
+        if load_failed:
+          raise RuntimeError(f"Job B Load failed: {load_failed}")
+        if len(load_done) == len(hashes):
+          break
+        if time.time() > deadline:
+          raise RuntimeError("Job B load did not complete in time")
+        time.sleep(0.01)
+      store_b.release(hashes)
+
+      try:
+        torch.tpu.synchronize()
+      except (AttributeError, RuntimeError):
+        pass
+      np.testing.assert_array_equal(
+          tpu_cache_b[0:2].cpu().numpy(),
+          host_data_a[0:2],
+          err_msg=(
+              "Job B's device memory does not byte-match what Job A offered:"
+              " the remote write reported COMMITTED without moving the data"
+          ),
+      )
+    finally:
+      del manager_a, manager_b, store_a, store_b
+
+  def test_remote_write_e2e(self):
+    self._run_remote_write_e2e_test()
+
+  def test_remote_write_e2e_matching_node_id(self):
+    self._run_remote_write_e2e_test(
+        producer_node_id=0,
+        consumer_node_id=0,
+        expect_write_success=True,
+    )
+
+  def test_remote_write_e2e_mismatched_node_id_fails(self):
+    # The destination pairs each of its workers with the source worker holding
+    # its shards by node_id; a mismatch leaves the pull with no group to read
+    # from, so the transfer fails and the source is told rather than left
+    # pending.
+    self._run_remote_write_e2e_test(
+        producer_node_id=0,
+        consumer_node_id=1,
+        expect_write_success=False,
+    )
 
   def test_remote_read_e2e_matching_node_id(self):
     self._run_remote_read_e2e_test(

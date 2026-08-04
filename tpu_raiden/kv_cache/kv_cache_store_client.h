@@ -62,6 +62,26 @@ class KVCacheStoreClient {
       absl::Span<const ::tpu_raiden::proto::RaidenWorkerEndpointsProto>
           client_worker_endpoints = {});
 
+  // Asynchronous non-blocking WriteRemote RPC: offer `block_hashes` to the
+  // peer this client is connected to. The peer decides, allocates landing
+  // blocks and starts pulling; it does NOT wait for the bytes, so the
+  // returned future resolves as soon as the offer is accepted or refused.
+  //
+  // `deadline_ms` must be > 0 -- see WriteRemoteRequest.deadline_ms.
+  tsl::Future<proto::WriteRemoteResponse> WriteRemote(
+      const rpc::RaidenIdProto& src_raiden_id,
+      absl::Span<const std::string> block_hashes,
+      absl::Span<const int32_t> src_host_block_ids,
+      absl::Span<const ::tpu_raiden::proto::RaidenWorkerEndpointsProto>
+          src_worker_endpoints,
+      int64_t deadline_ms);
+
+  // Asynchronous non-blocking PollWriteRemote RPC: ask the peer what became
+  // of an operation it accepted. Returns UNKNOWN once the peer's record has
+  // aged out, which is indistinguishable from "never happened".
+  tsl::Future<proto::PollWriteRemoteResponse> PollWriteRemote(
+      uint64_t operation_id);
+
  private:
   std::unique_ptr<proto::KVCacheStoreService::StubInterface> stub_;
 };

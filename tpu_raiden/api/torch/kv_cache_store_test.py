@@ -55,7 +55,6 @@ def _registry_binary_path():
   )
 
 
-
 class KVCacheStoreTest(absltest.TestCase):
 
   def test_raiden_block_id_creation_and_equality(self):

@@ -596,6 +596,38 @@ TEST_F(GlobalRegistryTest, BlockRegistrationDoesNotImplyStoreRegistration) {
   EXPECT_TRUE(absl::IsNotFound(client_->ResolveStore(id).status()));
 }
 
+// Real block hashes are raw digests, not text. Every other test in this file
+// uses an ASCII hash, which is why nothing here noticed while the prefix-hash
+// fields were declared `string`: proto3 validates UTF-8 on PARSE, so a real
+// digest serialized fine at the client and then failed to decode at the
+// server. The failure surfaced as a broken-looking peer, not as bad data.
+//
+// The payload below is deliberately fixed rather than random: it contains a
+// bare 0xFF, a lone continuation byte and an embedded NUL, so it is certainly
+// invalid UTF-8 rather than merely almost-certainly.
+TEST_F(GlobalRegistryTest, RoundTripsNonUtf8PrefixHash) {
+  const std::string binary_hash("\xff\xfe\x80\x00\x01\xc0\xaf\xed\xa0\x80", 10);
+  ASSERT_FALSE(binary_hash.empty());
+  RaidenId host = {"jobBin", "r0", "dataBin", 0};
+
+  ASSERT_TRUE(client_->Register({{binary_hash, host, 11}}).ok());
+
+  auto lookup = client_->Lookup({binary_hash});
+  ASSERT_TRUE(lookup.ok()) << lookup.status().ToString();
+  ASSERT_EQ(lookup->size(), 1);
+  EXPECT_EQ((*lookup)[0].block_id(), 11);
+
+  // The bytes must survive the round trip unaltered, not merely be accepted.
+  auto owned = PullOwned(host);
+  ASSERT_EQ(owned.size(), 1);
+  EXPECT_EQ(owned[0].prefix_hash(), binary_hash);
+
+  ASSERT_TRUE(client_->Unregister({binary_hash}, host).ok());
+  auto after = client_->Lookup({binary_hash});
+  ASSERT_TRUE(after.ok()) << after.status().ToString();
+  EXPECT_TRUE(after->empty());
+}
+
 }  // namespace
 }  // namespace global_registry
 }  // namespace kv_cache

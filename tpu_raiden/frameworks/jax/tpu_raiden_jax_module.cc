@@ -414,8 +414,7 @@ NB_MODULE(_tpu_raiden_jax, m) {
            // valid values a caller can fall into by omission.
            nb::arg("num_shards"), nb::arg("shard_size_bytes") = 0,
            nb::arg("raiden_orchestrator_address") = "",
-           nb::arg("store_server_ip"),
-           nb::arg("raiden_controller_port") = 0)
+           nb::arg("store_server_ip"), nb::arg("raiden_controller_port") = 0)
       .def_prop_ro(
           "raiden_id",
           [](tpu_raiden::kv_cache::KVCacheStoreWrapper& self) {
@@ -601,5 +600,46 @@ NB_MODULE(_tpu_raiden_jax, m) {
                py_pending.push_back(nb::bytes(h.data(), h.size()));
              }
              return std::make_tuple(py_done, py_failed, py_pending);
+           })
+      .def(
+          "write_remote",
+          [](tpu_raiden::kv_cache::KVCacheStoreWrapper& self,
+             const std::vector<nb::bytes>& block_hashes,
+             const tpu_raiden::kv_cache::RaidenId& dst_raiden_id) -> bool {
+            auto hashes = ToStdStringVector(block_hashes);
+            return self->WriteRemote(hashes, dst_raiden_id).ok();
+          },
+          nb::arg("block_hashes"), nb::arg("dst_raiden_id"))
+      .def("poll_remote_write_status",
+           [](tpu_raiden::kv_cache::KVCacheStoreWrapper& self) {
+             // Five vectors. `existing` and `unregistered` annotate
+             // failures rather than being outcomes of their own. See
+             // KVCacheStore::PollRemoteWriteStatus.
+             auto [done, failed, pending, existing, unregistered] =
+                 self->PollRemoteWriteStatus();
+             std::vector<nb::bytes> py_done, py_failed, py_pending, py_existing,
+                 py_unregistered;
+             py_done.reserve(done.size());
+             for (const auto& h : done) {
+               py_done.push_back(nb::bytes(h.data(), h.size()));
+             }
+             py_failed.reserve(failed.size());
+             for (const auto& h : failed) {
+               py_failed.push_back(nb::bytes(h.data(), h.size()));
+             }
+             py_pending.reserve(pending.size());
+             for (const auto& h : pending) {
+               py_pending.push_back(nb::bytes(h.data(), h.size()));
+             }
+             py_existing.reserve(existing.size());
+             for (const auto& h : existing) {
+               py_existing.push_back(nb::bytes(h.data(), h.size()));
+             }
+             py_unregistered.reserve(unregistered.size());
+             for (const auto& h : unregistered) {
+               py_unregistered.push_back(nb::bytes(h.data(), h.size()));
+             }
+             return std::make_tuple(py_done, py_failed, py_pending, py_existing,
+                                    py_unregistered);
            });
 }

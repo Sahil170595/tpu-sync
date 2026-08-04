@@ -133,6 +133,86 @@ class HostOffloadBackend : public KVCacheStoreBackend {
                      absl::Span<const std::string> block_hashes,
                      absl::Span<const int32_t> device_block_ids = {});
 
+  // --- Remote write (WriteRemote); see KVCacheStoreBackend for why each of
+  // these exists rather than reusing Lookup/Insert/Delete.
+  std::vector<std::string> AlreadyPresentHostResident(
+      absl::Span<const std::string> block_hashes) const override;
+
+  bool InsertAllOrNothing(absl::Span<const std::string> block_hashes,
+                          absl::Span<const RaidenBlockID> slices) override;
+
+  void RollbackInsert(absl::Span<const std::string> block_hashes,
+                      absl::Span<const int32_t> host_block_ids) override;
+
+  absl::Status RegisterBlocksSync(
+      absl::Span<const std::string> block_hashes,
+      absl::Span<const int32_t> host_block_ids) override;
+
+  // --- Remote write, source side ------------------------------------------
+  //
+  // The two halves of the source's role. The synchronous half offers blocks
+  // and comes back with the destination's decision; the polling half asks
+  // what became of an accepted offer. Neither owns the retry cadence or the
+  // pins -- KVCacheStore does, because it is what holds the blocks.
+
+  // What the destination decided, before any bytes have moved.
+  struct RemoteWriteAck {
+    // Zero when the destination answered without starting a transfer, which
+    // is the case for both existence outcomes.
+    uint64_t operation_id = 0;
+    // Every offered hash was already there. A SUCCESS: content-addressed
+    // hashes mean the peer having them is the post-condition we wanted.
+    bool all_exist = false;
+    // Non-empty only when the destination held a strict subset. A FAILURE --
+    // the destination does not do partial writes -- and this is the list the
+    // caller needs to decide what, if anything, to re-offer.
+    std::vector<std::string> existing_hashes;
+    absl::Duration granted_deadline;
+  };
+
+  // `requested_deadline` is how long the destination may hold its landing
+  // blocks; it grants at most this and at most its own cap, and reports what
+  // it actually armed. Blocking, on the caller's thread -- this is a control
+  // RPC that returns as soon as the destination has decided, not when the
+  // bytes have arrived.
+  absl::StatusOr<RemoteWriteAck> BeginWriteRemote(
+      const RaidenId& dst_raiden_id, absl::Span<const std::string> block_hashes,
+      absl::Span<const int32_t> src_host_block_ids,
+      absl::Duration requested_deadline);
+
+  // Mirrors PollWriteRemoteResponse::State without depending on it, so the
+  // wire enum stays an implementation detail of this file.
+  enum class RemoteWriteState {
+    kPending,
+    kCommitted,
+    kAllExist,
+    kPartialExist,
+    kFailed,
+    // Aged out, or the destination restarted. Indistinguishable from "never
+    // happened", so callers must treat it as failure.
+    kUnknown,
+    // The destination holds the bytes but could not publish them, so no peer
+    // can find them. Not a success and not a plain failure: the transfer
+    // worked. What to do about it is the source's call.
+    kStoredUnregistered,
+  };
+
+  struct RemoteWriteStatus {
+    RemoteWriteState state = RemoteWriteState::kPending;
+    std::vector<std::string> existing_hashes;
+    std::vector<std::string> unregistered_hashes;
+  };
+
+  absl::StatusOr<RemoteWriteStatus> PollWriteRemote(
+      const RaidenId& dst_raiden_id, uint64_t operation_id);
+
+  // Drops the cached client for `remote_id`, so the next call re-resolves the
+  // peer through the registry instead of redialling the address it had.
+  // Without this a peer that restarts on a new port stays undialable for the
+  // life of THIS process, even after the registry has healed: store_clients_
+  // is a cache with no invalidation of its own.
+  void InvalidateStoreClient(const RaidenId& remote_id);
+
  private:
   absl::StatusOr<std::shared_ptr<KVCacheStoreClient>> GetKVCacheStoreClient(
       const RaidenId& remote_id);

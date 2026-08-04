@@ -32,15 +32,12 @@
 #include <memory>
 #include <string>
 #include <utility>
-#include <vector>
 
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "absl/types/span.h"
-#include "grpcpp/channel.h"
 #include "grpcpp/client_context.h"
-#include "grpcpp/create_channel.h"
 #include "grpcpp/impl/status.h"
 #include "xla/tsl/concurrency/future.h"
 #include "tpu_raiden/proto/kv_cache_store_service.grpc.pb.h"
@@ -112,6 +109,94 @@ tsl::Future<proto::FetchResponse> KVCacheStoreClient::Fetch(
           promise->Set(absl::Status(
               static_cast<absl::StatusCode>(status.error_code()),
               absl::StrCat("Fetch RPC failed: ", status.error_message())));
+        } else {
+          promise->Set(std::move(*response));
+        }
+      });
+  return future;
+}
+
+tsl::Future<proto::WriteRemoteResponse> KVCacheStoreClient::WriteRemote(
+    const rpc::RaidenIdProto& src_raiden_id,
+    absl::Span<const std::string> block_hashes,
+    absl::Span<const int32_t> src_host_block_ids,
+    absl::Span<const ::tpu_raiden::proto::RaidenWorkerEndpointsProto>
+        src_worker_endpoints,
+    int64_t deadline_ms) {
+  if (block_hashes.empty()) {
+    return tsl::Future<proto::WriteRemoteResponse>(
+        absl::InvalidArgumentError("WriteRemote requires at least one hash."));
+  }
+  if (src_host_block_ids.size() != block_hashes.size()) {
+    return tsl::Future<proto::WriteRemoteResponse>(
+        absl::InvalidArgumentError(absl::StrCat(
+            "Mismatched src_host_block_ids count (", src_host_block_ids.size(),
+            ") vs block_hashes count (", block_hashes.size(), ").")));
+  }
+  if (deadline_ms <= 0) {
+    return tsl::Future<proto::WriteRemoteResponse>(absl::InvalidArgumentError(
+        absl::StrCat("WriteRemote requires a positive deadline_ms, got ",
+                     deadline_ms, ".")));
+  }
+
+  proto::WriteRemoteRequest request;
+  *request.mutable_src_raiden_id() = src_raiden_id;
+  for (const auto& hash : block_hashes) {
+    request.add_block_hashes(hash);
+  }
+  for (int32_t host_id : src_host_block_ids) {
+    request.add_src_host_block_ids(host_id);
+  }
+  request.mutable_src_worker_endpoints()->Reserve(src_worker_endpoints.size());
+  for (const auto& group : src_worker_endpoints) {
+    *request.add_src_worker_endpoints() = group;
+  }
+  request.set_deadline_ms(deadline_ms);
+
+  auto [promise, future] = tsl::MakePromise<proto::WriteRemoteResponse>();
+  auto context = std::make_shared<grpc::ClientContext>();
+  auto response = std::make_shared<proto::WriteRemoteResponse>();
+
+  stub_->async()->WriteRemote(
+      context.get(), &request, response.get(),
+      [context, response,
+       promise = std::move(promise).ToShared()](grpc::Status status) mutable {
+        if (!status.ok()) {
+          promise->Set(
+              absl::Status(static_cast<absl::StatusCode>(status.error_code()),
+                           absl::StrCat("WriteRemote RPC failed: ",
+                                        status.error_message())));
+        } else {
+          promise->Set(std::move(*response));
+        }
+      });
+  return future;
+}
+
+tsl::Future<proto::PollWriteRemoteResponse> KVCacheStoreClient::PollWriteRemote(
+    uint64_t operation_id) {
+  if (operation_id == 0) {
+    return tsl::Future<proto::PollWriteRemoteResponse>(
+        absl::InvalidArgumentError(
+            "operation_id 0 is reserved and never identifies an operation."));
+  }
+
+  proto::PollWriteRemoteRequest request;
+  request.set_operation_id(operation_id);
+
+  auto [promise, future] = tsl::MakePromise<proto::PollWriteRemoteResponse>();
+  auto context = std::make_shared<grpc::ClientContext>();
+  auto response = std::make_shared<proto::PollWriteRemoteResponse>();
+
+  stub_->async()->PollWriteRemote(
+      context.get(), &request, response.get(),
+      [context, response,
+       promise = std::move(promise).ToShared()](grpc::Status status) mutable {
+        if (!status.ok()) {
+          promise->Set(
+              absl::Status(static_cast<absl::StatusCode>(status.error_code()),
+                           absl::StrCat("PollWriteRemote RPC failed: ",
+                                        status.error_message())));
         } else {
           promise->Set(std::move(*response));
         }

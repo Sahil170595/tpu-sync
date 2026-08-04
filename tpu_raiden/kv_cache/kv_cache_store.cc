@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <memory>
 #include <optional>
 #include <string>
@@ -25,7 +26,6 @@
 #include <utility>
 #include <vector>
 
-#include "absl/base/thread_annotations.h"
 #include "absl/cleanup/cleanup.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
@@ -34,6 +34,7 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/escaping.h"
+#include "absl/strings/numbers.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "absl/synchronization/mutex.h"
@@ -52,7 +53,6 @@
 #include "tpu_raiden/kv_cache/kv_cache_metadata.h"
 #include "tpu_raiden/kv_cache/kv_cache_store_backend.h"
 #include "tpu_raiden/kv_cache/kv_cache_store_backend_factory.h"
-#include "tpu_raiden/kv_cache/lru_cache.h"
 #include "tpu_raiden/kv_cache/raiden_id.h"
 #include "tpu_raiden/rpc/raiden_service.pb.h"
 
@@ -98,6 +98,28 @@ absl::Status ValidateConstructionRules(absl::string_view store_server_ip,
     return absl::InvalidArgumentError(
         "num_shards must be >= 1: every KVCacheStore has a RaidenController; "
         "the controller-less configuration is not supported.");
+  }
+  return absl::OkStatus();
+}
+
+// ValidateBackends checks that backends_ has at least a tier-0 backend and it
+// is not null. Catching this at construction guarantees that a store configured
+// with a registry is always registered, by preventing a backend-less store from
+// being built: previously such a store constructed, warned, and quietly
+// declined to serve or publish.
+//
+// Validated the way every other construction rule fails -- before any
+// resource exists, Status from Create() and abort from the raw constructors.
+absl::Status ValidateBackends(
+    const std::vector<std::shared_ptr<KVCacheStoreBackend>>& backends) {
+  if (backends.empty()) {
+    return absl::InvalidArgumentError(
+        "KVCacheStore requires at least one backend (tier 0, local host "
+        "DRAM).");
+  }
+  if (backends[0] == nullptr) {
+    return absl::InvalidArgumentError(
+        "KVCacheStore's tier-0 backend must not be null.");
   }
   return absl::OkStatus();
 }
@@ -149,8 +171,16 @@ absl::StatusOr<std::unique_ptr<KVCacheStore>> KVCacheStore::Create(
     ASSIGN_OR_RETURN(
         auto backend,
         KVCacheStoreBackendFactory::Instance().CreateBackend(effective_config));
+    // A custom registration may return OK with a null pointer; that would sail
+    // past ValidateBackends for any tier but 0, and crash later.
+    if (backend == nullptr) {
+      return absl::InvalidArgumentError(absl::StrCat(
+          "Backend factory returned a null backend for tier ", i, "."));
+    }
     backends.push_back(std::move(backend));
   }
+
+  RETURN_IF_ERROR(ValidateBackends(backends));
 
   RaidenId effective_raiden_id = !backend_configs[0].raiden_id.empty()
                                      ? backend_configs[0].raiden_id
@@ -203,6 +233,13 @@ KVCacheStore::KVCacheStore(
                                                  num_shards);
       !v.ok()) {
     LOG(FATAL) << "KVCacheStore construction validation failed: " << v.message()
+               << " Use KVCacheStore::Create() for a recoverable error.";
+  }
+  // Both public backend-taking constructors delegate here, so this is the one
+  // place that has to check. Create() checks separately, before constructing,
+  // so it can return the error instead of aborting.
+  if (absl::Status v = ValidateBackends(backends_); !v.ok()) {
+    LOG(FATAL) << "KVCacheStore construction rules violated: " << v.message()
                << " Use KVCacheStore::Create() for a recoverable error.";
   }
   // Created before SetRaidenController: publishing happens there, and needs it.
@@ -304,8 +341,14 @@ KVCacheStore::KVCacheStore(size_t capacity,
             ComposeControllerAddress(store_server_ip, raiden_controller_port));
   }
 
+  // registry_client_ is assigned a few lines above, and must be: a backend
+  // built without it publishes nothing and, more importantly, cannot RESOLVE a
+  // peer -- peer resolution runs through the BACKEND's registry client, not
+  // this store's. Leaving it null here gave a store that registered itself
+  // perfectly and could reach nobody. Do not move this above that assignment.
   backends_ = {std::make_shared<HostOffloadBackend>(
-      capacity, std::move(metadata), raiden_id_, raiden_controller_.get())};
+      capacity, std::move(metadata), raiden_id_, raiden_controller_.get(),
+      registry_client_)};
 
   if (raiden_controller_) {
     if (absl::Status s = SetRaidenController(raiden_controller_.get());
@@ -349,8 +392,12 @@ KVCacheStore::KVCacheStore(
         std::make_shared<global_registry::GlobalRegistryClient>(channel);
   }
 
+  // See the same call in the capacity constructor: the backend needs this
+  // store's registry client to resolve peers, and registry_client_ is assigned
+  // just above. Do not reorder.
   backends_ = {std::make_shared<HostOffloadBackend>(
-      capacity, std::move(metadata), raiden_id_, raiden_controller_.get())};
+      capacity, std::move(metadata), raiden_id_, raiden_controller_.get(),
+      registry_client_)};
 
   if (raiden_controller_) {
     if (absl::Status s = SetRaidenController(raiden_controller_.get());
@@ -405,13 +452,14 @@ absl::Status KVCacheStore::EnsureStoreServerAndRegister(
     }
   }
   if (store_server_ == nullptr) {
-    // backend() indexes backends_[0] without checking, and an empty or
-    // null-headed backends_ is reachable -- capacity() guards for exactly
-    // that. A service with no backend can answer nothing, so decline rather
-    // than stand up a server that fails every RPC.
+    // Unreachable: ValidateBackends rejects a store with no tier-0 backend at
+    // construction. Kept as a last line of defence, and as an ERROR rather
+    // than the warning-and-carry-on it used to be -- returning OK here left a
+    // store that has a registry configured but never publishes itself, which
+    // reads to every peer as "that node does not exist".
     if (backends_.empty() || backends_[0] == nullptr) {
-      LOG(WARNING) << "KVCacheStore has no tier-0 backend; not serving peers.";
-      return absl::OkStatus();
+      return absl::FailedPreconditionError(
+          "KVCacheStore has no tier-0 backend; cannot serve or publish.");
     }
     owned_store_server_ = KVCacheStoreServer::Create();
     store_server_ = owned_store_server_.get();
@@ -460,6 +508,21 @@ absl::Status KVCacheStore::EnsureStoreServerAndRegister(
   return absl::OkStatus();
 }
 
+void KVCacheStore::ShutdownBackendStoreServers(
+    KVCacheStoreServer* already_shut) {
+  for (auto& backend : backends_) {
+    if (backend == nullptr) {
+      continue;
+    }
+    KVCacheStoreServer* server = backend->store_server();
+    // Shutdown() is idempotent, but skipping the adopted server says why
+    // rather than leaving the reader to check.
+    if (server != nullptr && server != already_shut) {
+      server->Shutdown();
+    }
+  }
+}
+
 KVCacheStore::~KVCacheStore() {
   // Stop being discoverable, then stop serving, and do both BEFORE anything the
   // service dereferences is destroyed. `backends_` is declared before
@@ -483,8 +546,23 @@ KVCacheStore::~KVCacheStore() {
     // it can only answer RPCs with a dangling controller. The consequence is
     // that sharing one backend between two KVCacheStores is not supported: the
     // first store to be destroyed takes the shared server with it.
+    KVCacheStoreServer* already_shut = store_server_;
     store_server_->Shutdown();
     store_server_ = nullptr;
+
+    // Fall through to the sweep below with this one excluded.
+    ShutdownBackendStoreServers(already_shut);
+  } else {
+    // store_server_ is null whenever this store has no registry (see
+    // EnsureStoreServerAndRegister), but a backend's server can still be
+    // running: StartServer is public, and a caller may start one AFTER
+    // construction, which is too late for the adoption above to see it. That
+    // server holds OUR controller in a pointer it cannot re-seat, and
+    // raiden_controller_ is about to be destroyed, so it has to be stopped
+    // here -- in the destructor BODY, while the controller is still alive.
+    // Relying on ~HostOffloadBackend is not enough: backends_ holds
+    // shared_ptrs, so a caller keeping its own reference outlives this store.
+    ShutdownBackendStoreServers(/*already_shut=*/nullptr);
   }
 
   if (poller_thread_) {
@@ -495,7 +573,7 @@ KVCacheStore::~KVCacheStore() {
   }
   std::vector<tsl::Future<>> futures_to_await;
   {
-    absl::MutexLock lock(&mutex_);
+    absl::MutexLock lock(mutex_);
     for (auto& state : active_saves_) {
       futures_to_await.push_back(state.future);
     }
@@ -709,7 +787,7 @@ absl::Status KVCacheStore::Save(const std::vector<std::string>& block_hashes) {
   src_device_block_ids.reserve(block_hashes.size());
 
   {
-    absl::MutexLock lock(&mutex_);
+    absl::MutexLock lock(mutex_);
     auto lookup_or = backend()->Lookup(block_hashes);
     if (!lookup_or.ok()) return lookup_or.status();
     const auto& slices = lookup_or.value();
@@ -745,7 +823,7 @@ absl::Status KVCacheStore::Save(const std::vector<std::string>& block_hashes) {
 
   auto host_blocks_or = AllocateBlockIds(block_hashes.size());
   if (!host_blocks_or.ok()) {
-    absl::MutexLock lock(&mutex_);
+    absl::MutexLock lock(mutex_);
     for (const auto& hash : block_hashes) {
       saving_hashes_.erase(hash);
     }
@@ -771,7 +849,7 @@ absl::Status KVCacheStore::Save(const std::vector<std::string>& block_hashes) {
       /*copy_sizes=*/{});
 
   {
-    absl::MutexLock lock(&mutex_);
+    absl::MutexLock lock(mutex_);
     active_saves_.push_back(SaveState{
         .future = std::move(future),
         .block_hashes = block_hashes,
@@ -796,7 +874,7 @@ absl::Status KVCacheStore::Load(const std::vector<std::string>& block_hashes,
   src_host_block_ids.reserve(block_hashes.size());
 
   {
-    absl::MutexLock lock(&mutex_);
+    absl::MutexLock lock(mutex_);
     auto lookup_or = backend()->Lookup(block_hashes);
     if (!lookup_or.ok()) return lookup_or.status();
     const auto& slices = lookup_or.value();
@@ -849,7 +927,7 @@ absl::Status KVCacheStore::Load(const std::vector<std::string>& block_hashes,
       /*copy_sizes=*/{});
 
   {
-    absl::MutexLock lock(&mutex_);
+    absl::MutexLock lock(mutex_);
     active_loads_.push_back(LoadState{
         .future = std::move(future),
         .block_hashes = block_hashes,
@@ -875,7 +953,7 @@ void KVCacheStore::RegisterReadRemoteHooks() {
 
 absl::StatusOr<std::vector<int32_t>> KVCacheStore::ValidateAndPinHostBlocks(
     absl::Span<const std::string> block_hashes) {
-  absl::MutexLock lock(&mutex_);
+  absl::MutexLock lock(mutex_);
   auto lookup_or = backend()->Lookup(block_hashes);
   if (!lookup_or.ok()) return lookup_or.status();
   const auto& slices = lookup_or.value();
@@ -918,7 +996,7 @@ absl::Status KVCacheStore::ReadRemote(
   std::vector<std::string> successfully_marked_as_reading;
   successfully_marked_as_reading.reserve(block_hashes.size());
   auto cleanup = absl::MakeCleanup([this, &successfully_marked_as_reading]() {
-    absl::MutexLock lock(&mutex_);
+    absl::MutexLock lock(mutex_);
     for (const auto& hash : successfully_marked_as_reading) {
       reading_hashes_.erase(hash);
     }
@@ -948,7 +1026,7 @@ absl::Status KVCacheStore::ReadRemote(
   std::vector<RemoteReadGroup> groups;
 
   {
-    absl::MutexLock lock(&mutex_);
+    absl::MutexLock lock(mutex_);
     auto lookup_or = backend()->Lookup(block_hashes);
     if (!lookup_or.ok()) return lookup_or.status();
     const auto& slices = lookup_or.value();
@@ -1015,7 +1093,7 @@ absl::Status KVCacheStore::ReadRemote(
   }
 
   {
-    absl::MutexLock lock(&mutex_);
+    absl::MutexLock lock(mutex_);
     active_remote_reads_.emplace(std::move(combined_future),
                                  RemoteReadState{
                                      .block_hashes = block_hashes,
@@ -1032,7 +1110,7 @@ std::tuple<std::vector<std::string>, std::vector<std::string>,
            std::vector<std::string>>
 KVCacheStore::PollSaveStatus() {
   PollFuturesInternal();
-  absl::MutexLock lock(&mutex_);
+  absl::MutexLock lock(mutex_);
   std::vector<std::string> pending;
   for (const auto& state : active_saves_) {
     for (const auto& hash : state.block_hashes) {
@@ -1050,7 +1128,7 @@ std::tuple<std::vector<std::string>, std::vector<std::string>,
            std::vector<std::string>>
 KVCacheStore::PollLoadStatus() {
   PollFuturesInternal();
-  absl::MutexLock lock(&mutex_);
+  absl::MutexLock lock(mutex_);
   std::vector<std::string> pending;
   for (const auto& state : active_loads_) {
     for (const auto& hash : state.block_hashes) {
@@ -1068,7 +1146,7 @@ std::tuple<std::vector<std::string>, std::vector<std::string>,
            std::vector<std::string>>
 KVCacheStore::PollRemoteReadStatus() {
   PollFuturesInternal();
-  absl::MutexLock lock(&mutex_);
+  absl::MutexLock lock(mutex_);
   std::vector<std::string> pending;
   for (const auto& [fut, state] : active_remote_reads_) {
     for (const auto& hash : state.block_hashes) {
@@ -1100,7 +1178,7 @@ size_t KVCacheStore::Evict(const std::vector<std::string>& block_hashes) {
   }
   std::vector<int> host_ids_to_deallocate;
   {
-    absl::MutexLock l(&mutex_);
+    absl::MutexLock lock(&mutex_);
     host_ids_to_deallocate = backend()->Evict(block_hashes);
   }
 
@@ -1124,7 +1202,7 @@ size_t KVCacheStore::Evict(const std::vector<std::string>& block_hashes) {
 absl::StatusOr<std::vector<int>> KVCacheStore::AllocateBlockIds(int needed) {
   std::vector<std::string> hashes_to_deallocate;
   {
-    absl::MutexLock l(&mutex_);
+    absl::MutexLock lock(&mutex_);
     int free_count = raiden_controller_->block_manager()->num_free_blocks();
     int to_free = needed - free_count;
     if (to_free > 0) {
@@ -1156,6 +1234,302 @@ void KVCacheStore::DeallocateBlockIds(absl::Span<const int> block_ids) {
   }
 }
 
+// ===========================================================================
+// Remote write -- source side.
+// ===========================================================================
+
+namespace {
+
+// How long this source keeps its blocks intact and keeps asking. The
+// destination is asked for HOLD minus a margin, and clamps that to its own
+// cap, so the source always outlives the destination's verdict.
+constexpr absl::Duration kDefaultRemoteWriteHold = absl::Seconds(30);
+
+// Covers one-way RPC latency, clock skew between the two hosts, and scheduler
+// jitter -- none of which this design controls. Not a tuning knob: the two
+// timers live in different processes and are armed at different moments, so
+// without a gap the destination's deadline outlives the source's HOLD by the
+// time it took the request to arrive. In that window the source has unpinned
+// and reported failure while the destination can still commit, and globally
+// register, bytes read out of blocks the source may already have reused.
+constexpr absl::Duration kRemoteWriteMargin = absl::Seconds(5);
+
+absl::Duration RemoteWriteHold() {
+  const char* env = std::getenv("RAIDEN_REMOTE_WRITE_HOLD_S");
+  if (env == nullptr) {
+    return kDefaultRemoteWriteHold;
+  }
+  int seconds = 0;
+  if (!absl::SimpleAtoi(env, &seconds) || seconds <= 0) {
+    LOG(WARNING) << "Ignoring RAIDEN_REMOTE_WRITE_HOLD_S=\"" << env
+                 << "\": expected a positive number of seconds.";
+    return kDefaultRemoteWriteHold;
+  }
+  return absl::Seconds(seconds);
+}
+
+}  // namespace
+
+absl::Status KVCacheStore::WriteRemote(
+    const std::vector<std::string>& block_hashes,
+    const RaidenId& dst_raiden_id) {
+  if (block_hashes.empty()) {
+    return absl::OkStatus();
+  }
+  if (dst_raiden_id.empty()) {
+    return absl::InvalidArgumentError("WriteRemote requires a destination id");
+  }
+  if (dst_raiden_id == raiden_id_) {
+    return absl::InvalidArgumentError(
+        "WriteRemote destination is this store; there is nothing to transfer");
+  }
+
+  auto* backend = dynamic_cast<HostOffloadBackend*>(this->backend().get());
+  if (backend == nullptr) {
+    return absl::FailedPreconditionError(
+        "WriteRemote requires a HostOffloadBackend at tier 0");
+  }
+
+  // Everything before the RPC is undone by this if we do not get as far as
+  // recording the operation.
+  std::vector<std::string> marked;
+  std::vector<std::string> pinned;
+  auto rollback = absl::MakeCleanup([&]() {
+    if (!pinned.empty()) {
+      backend->Release(pinned);
+    }
+    if (!marked.empty()) {
+      absl::MutexLock lock(mutex_);
+      for (const auto& hash : marked) {
+        writing_hashes_.erase(hash);
+      }
+    }
+  });
+
+  std::vector<int32_t> src_host_block_ids;
+  {
+    absl::MutexLock lock(mutex_);
+    auto lookup_or = backend->Lookup(block_hashes);
+    if (!lookup_or.ok()) return lookup_or.status();
+    const auto& slices = lookup_or.value();
+    if (slices.size() < block_hashes.size()) {
+      return absl::NotFoundError(
+          absl::StrCat("Block hash not found: ", block_hashes[slices.size()]));
+    }
+    src_host_block_ids.reserve(slices.size());
+    for (size_t i = 0; i < slices.size(); ++i) {
+      const auto& [hash, slice] = slices[i];
+      if (slice.status != BlockStatus::HOST &&
+          slice.status != BlockStatus::HOST_AND_HBM) {
+        return absl::FailedPreconditionError(absl::StrCat(
+            "Block is not resident in host DRAM, so there is nothing to "
+            "offer: ",
+            absl::BytesToHexString(hash)));
+      }
+      if (!writing_hashes_.insert(hash).second) {
+        return absl::FailedPreconditionError(
+            absl::StrCat("Block is already being written remotely: ",
+                         absl::BytesToHexString(hash)));
+      }
+      marked.push_back(hash);
+      src_host_block_ids.push_back(slice.host_block_id);
+    }
+  }
+
+  // The INTERNAL pin, separate from whatever the caller holds. The block ids
+  // we are about to send are only authoritative for as long as this holds.
+  if (!backend->Pin(block_hashes)) {
+    return absl::ResourceExhaustedError(
+        "Failed to pin host blocks for a remote write");
+  }
+  pinned = block_hashes;
+
+  const absl::Duration hold = RemoteWriteHold();
+  if (hold <= kRemoteWriteMargin) {
+    return absl::FailedPreconditionError(absl::StrCat(
+        "RAIDEN_REMOTE_WRITE_HOLD_S (", absl::FormatDuration(hold),
+        ") must exceed the ", absl::FormatDuration(kRemoteWriteMargin),
+        " margin, or there is no deadline left to ask the destination for."));
+  }
+  // Armed HERE, with the pin, rather than after the ack: the pin has to be
+  // protected even if the RPC itself hangs. The cost of that ordering is that
+  // the margin must also cover the round trip.
+  const absl::Time hold_expiry = absl::Now() + hold;
+
+  ASSIGN_OR_RETURN(
+      HostOffloadBackend::RemoteWriteAck ack,
+      backend->BeginWriteRemote(dst_raiden_id, block_hashes, src_host_block_ids,
+                                hold - kRemoteWriteMargin));
+
+  if (ack.all_exist) {
+    // SUCCESS with nothing to wait for.
+    std::move(rollback).Cancel();
+    FinishRemoteWrite({.dst_raiden_id = dst_raiden_id,
+                       .block_hashes = block_hashes,
+                       .hold_expiry = hold_expiry},
+                      /*succeeded=*/true, {});
+    return absl::OkStatus();
+  }
+  if (!ack.existing_hashes.empty()) {
+    // FAILURE, and this store does not retry the remainder: the caller gets
+    // the list and decides.
+    std::move(rollback).Cancel();
+    FinishRemoteWrite({.dst_raiden_id = dst_raiden_id,
+                       .block_hashes = block_hashes,
+                       .hold_expiry = hold_expiry},
+                      /*succeeded=*/false, std::move(ack.existing_hashes));
+    return absl::OkStatus();
+  }
+
+  // Belt and braces. The destination clamps to its own cap, which is below the
+  // default HOLD, so this should be unreachable -- but the two values live in
+  // different processes and neither side can check the invariant alone. If it
+  // ever inverts, keep the pin until the granted deadline has elapsed rather
+  // than releasing it while the destination may still be pulling.
+  if (ack.granted_deadline >= hold) {
+    LOG(ERROR) << "Destination granted a deadline of " << ack.granted_deadline
+               << ", which is not shorter than this "
+               << "source's HOLD of " << hold
+               << ". Extending the hold rather than unpinning while the "
+                  "destination may still be reading.";
+  }
+
+  {
+    absl::MutexLock lock(mutex_);
+    active_remote_writes_.push_back(RemoteWriteState{
+        .dst_raiden_id = dst_raiden_id,
+        .operation_id = ack.operation_id,
+        .block_hashes = block_hashes,
+        .hold_expiry =
+            std::max(hold_expiry, absl::Now() + ack.granted_deadline),
+    });
+  }
+  std::move(rollback).Cancel();
+  return absl::OkStatus();
+}
+
+void KVCacheStore::FinishRemoteWrite(const RemoteWriteState& state,
+                                     bool succeeded,
+                                     std::vector<std::string> existing,
+                                     std::vector<std::string> unregistered) {
+  if (auto* backend = this->backend().get(); backend != nullptr) {
+    backend->Release(state.block_hashes);
+  }
+  absl::MutexLock lock(mutex_);
+  for (const auto& hash : state.block_hashes) {
+    writing_hashes_.erase(hash);
+    (succeeded ? done_remote_writes_ : failed_remote_writes_).push_back(hash);
+  }
+  for (auto& hash : existing) {
+    existing_remote_writes_.push_back(std::move(hash));
+  }
+  for (auto& hash : unregistered) {
+    unregistered_remote_writes_.push_back(std::move(hash));
+  }
+}
+
+void KVCacheStore::PollRemoteWritesInternal() {
+  std::vector<RemoteWriteState> still_active;
+  std::vector<RemoteWriteState> to_poll;
+  {
+    absl::MutexLock lock(mutex_);
+    to_poll.swap(active_remote_writes_);
+  }
+  if (to_poll.empty()) {
+    return;
+  }
+
+  auto* backend = dynamic_cast<HostOffloadBackend*>(this->backend().get());
+  const absl::Time now = absl::Now();
+  for (auto& state : to_poll) {
+    if (backend == nullptr) {
+      FinishRemoteWrite(state, /*succeeded=*/false, {});
+      continue;
+    }
+    auto status_or =
+        backend->PollWriteRemote(state.dst_raiden_id, state.operation_id);
+    if (!status_or.ok()) {
+      LOG(WARNING) << "Remote write " << state.operation_id
+                   << " could not be polled: " << status_or.status().message();
+      FinishRemoteWrite(state, /*succeeded=*/false, {});
+      continue;
+    }
+    switch (status_or->state) {
+      case HostOffloadBackend::RemoteWriteState::kPending:
+        if (now >= state.hold_expiry) {
+          // HOLD expired. Unlike the destination's deadline, which only
+          // decides a verdict, this releases the pin immediately -- the
+          // blocks become evictable while the destination may still be
+          // pulling from them. That window is safe only because the
+          // destination refuses to insert or register anything it could not
+          // claim inside its own deadline.
+          LOG(WARNING) << "Remote write " << state.operation_id
+                       << " did not finish within its hold; giving up and "
+                          "releasing the source pin.";
+          FinishRemoteWrite(state, /*succeeded=*/false, {});
+        } else {
+          still_active.push_back(std::move(state));
+        }
+        break;
+      case HostOffloadBackend::RemoteWriteState::kCommitted:
+      case HostOffloadBackend::RemoteWriteState::kAllExist:
+        FinishRemoteWrite(state, /*succeeded=*/true, {});
+        break;
+      case HostOffloadBackend::RemoteWriteState::kPartialExist:
+        FinishRemoteWrite(state, /*succeeded=*/false,
+                          std::move(status_or->existing_hashes));
+        break;
+      case HostOffloadBackend::RemoteWriteState::kStoredUnregistered:
+        // The transfer worked; only publication failed. Reported as failed
+        // because the safe default is to keep our own copy -- freeing it
+        // would move the block from findable-here to findable-nowhere. The
+        // caller gets the list and decides; this store does not decide for it.
+        LOG(WARNING) << "Remote write " << state.operation_id << " landed "
+                     << state.block_hashes.size()
+                     << " block(s) on the peer, but the peer could not publish "
+                        "them; no lookup will find them there.";
+        FinishRemoteWrite(state, /*succeeded=*/false, {},
+                          std::move(status_or->unregistered_hashes));
+        break;
+      case HostOffloadBackend::RemoteWriteState::kFailed:
+      case HostOffloadBackend::RemoteWriteState::kUnknown:
+        FinishRemoteWrite(state, /*succeeded=*/false, {});
+        break;
+    }
+  }
+
+  if (!still_active.empty()) {
+    absl::MutexLock lock(mutex_);
+    for (auto& state : still_active) {
+      active_remote_writes_.push_back(std::move(state));
+    }
+  }
+}
+
+std::tuple<std::vector<std::string>, std::vector<std::string>,
+           std::vector<std::string>, std::vector<std::string>,
+           std::vector<std::string>>
+KVCacheStore::PollRemoteWriteStatus() {
+  absl::MutexLock lock(mutex_);
+  std::vector<std::string> pending;
+  for (const auto& state : active_remote_writes_) {
+    pending.insert(pending.end(), state.block_hashes.begin(),
+                   state.block_hashes.end());
+  }
+  // Drained on read, like the save and load pollers: the consumer of these is
+  // in this process, so the store can hand the result over and forget it.
+  std::vector<std::string> done;
+  std::vector<std::string> failed;
+  std::vector<std::string> existing;
+  std::vector<std::string> unregistered;
+  done.swap(done_remote_writes_);
+  failed.swap(failed_remote_writes_);
+  existing.swap(existing_remote_writes_);
+  unregistered.swap(unregistered_remote_writes_);
+  return {std::move(done), std::move(failed), std::move(pending),
+          std::move(existing), std::move(unregistered)};
+}
+
 void KVCacheStore::PollerLoop() {
   while (!stop_poller_.load()) {
     PollFuturesInternal();
@@ -1166,7 +1540,7 @@ void KVCacheStore::PollerLoop() {
 void KVCacheStore::PollSavesInternal(std::vector<SaveState> ready_saves) {
   for (auto& state : ready_saves) {
     absl::Status status = state.future.Await();
-    absl::MutexLock lock(&mutex_);
+    absl::MutexLock lock(mutex_);
     if (status.ok()) {
       std::vector<global_registry::Registration> write_through_regs;
       write_through_regs.reserve(state.block_hashes.size());
@@ -1229,7 +1603,7 @@ void KVCacheStore::PollSavesInternal(std::vector<SaveState> ready_saves) {
 void KVCacheStore::PollLoadsInternal(std::vector<LoadState> ready_loads) {
   for (auto& state : ready_loads) {
     absl::Status status = state.future.Await();
-    absl::MutexLock lock(&mutex_);
+    absl::MutexLock lock(mutex_);
     if (status.ok()) {
       auto lookup_or = backend()->Lookup(state.block_hashes);
       if (lookup_or.ok()) {
@@ -1267,7 +1641,7 @@ void KVCacheStore::PollRemoteReadsInternal(
     std::vector<std::pair<tsl::Future<>, RemoteReadState>> ready_remote_reads) {
   for (auto& [future, state] : ready_remote_reads) {
     absl::Status status = future.Await();
-    absl::MutexLock lock(&mutex_);
+    absl::MutexLock lock(mutex_);
 
     // The batch commits as a UNIT: all hashes promoted, or none. Verify every
     // entry is still present and still pinned BEFORE promoting anything.
@@ -1376,7 +1750,7 @@ void KVCacheStore::PollFuturesInternal() {
   std::vector<std::pair<tsl::Future<>, RemoteReadState>> ready_remote_reads;
 
   {
-    absl::MutexLock lock(&mutex_);
+    absl::MutexLock lock(mutex_);
     auto it = active_saves_.begin();
     while (it != active_saves_.end()) {
       if (it->future.IsReady()) {
@@ -1411,6 +1785,9 @@ void KVCacheStore::PollFuturesInternal() {
   PollSavesInternal(std::move(ready_saves));
   PollLoadsInternal(std::move(ready_loads));
   PollRemoteReadsInternal(std::move(ready_remote_reads));
+  // Unlike the three above, a remote write has no local future to become
+  // ready: the work is happening on the destination, so this asks.
+  PollRemoteWritesInternal();
 }
 
 }  // namespace kv_cache

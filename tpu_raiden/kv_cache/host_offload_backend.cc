@@ -32,6 +32,7 @@
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "absl/synchronization/mutex.h"
+#include "absl/time/time.h"
 #include "absl/types/span.h"
 #include "grpcpp/create_channel.h"
 #include "grpcpp/security/credentials.h"
@@ -253,6 +254,11 @@ std::pair<bool, BlockSliceList> HostOffloadBackend::Insert(
             *existing = slices[i];
             SetMetadataEntry(hash, slices[i]);
           }
+          registrations.push_back({
+              .prefix_hash = hash,
+              .raiden_id = raiden_id_,
+              .block_id = slices[i].host_block_id,
+          });
         }
         continue;
       }
@@ -685,6 +691,246 @@ HostOffloadBackend::GetKVCacheStoreClient(const RaidenId& remote_id) {
   return client;
 }
 
+void HostOffloadBackend::InvalidateStoreClient(const RaidenId& remote_id) {
+  absl::MutexLock lock(mutex_);
+  store_clients_.erase(remote_id);
+}
+
+absl::StatusOr<HostOffloadBackend::RemoteWriteAck>
+HostOffloadBackend::BeginWriteRemote(
+    const RaidenId& dst_raiden_id, absl::Span<const std::string> block_hashes,
+    absl::Span<const int32_t> src_host_block_ids,
+    absl::Duration requested_deadline) {
+  if (block_hashes.empty()) {
+    return absl::InvalidArgumentError("WriteRemote requires at least one hash");
+  }
+  if (block_hashes.size() != src_host_block_ids.size()) {
+    return absl::InvalidArgumentError(
+        "src_host_block_ids must have one entry per block hash");
+  }
+
+  controller::RaidenController* ctrl = nullptr;
+  {
+    absl::MutexLock lock(mutex_);
+    ctrl = raiden_controller_;
+  }
+  if (ctrl == nullptr) {
+    return absl::FailedPreconditionError(
+        "RaidenController is null; cannot describe this node's data plane");
+  }
+
+  // This resolves the peer through the global registry, and its own
+  // FailedPrecondition ("No global registry client") IS the registry
+  // precondition for the whole feature -- there is no separate check.
+  ASSIGN_OR_RETURN(std::shared_ptr<KVCacheStoreClient> client,
+                   GetKVCacheStoreClient(dst_raiden_id));
+
+  auto response_or =
+      client
+          ->WriteRemote(ctrl->unit(), block_hashes, src_host_block_ids,
+                        BuildLocalWorkerEndpoints(ctrl),
+                        absl::ToInt64Milliseconds(requested_deadline))
+          .Await();
+  if (!response_or.ok()) {
+    // The peer may have restarted on a new port; drop the cached client so
+    // the next attempt re-resolves instead of redialling a dead one.
+    InvalidateStoreClient(dst_raiden_id);
+    return response_or.status();
+  }
+
+  RemoteWriteAck ack;
+  ack.operation_id = response_or->operation_id();
+  ack.granted_deadline = absl::Milliseconds(response_or->granted_deadline_ms());
+  switch (response_or->exist_state()) {
+    case proto::WRITE_ALL_EXIST:
+      ack.all_exist = true;
+      return ack;
+    case proto::WRITE_PARTIAL_EXIST:
+      ack.existing_hashes.assign(response_or->existing_hashes().begin(),
+                                 response_or->existing_hashes().end());
+      return ack;
+    default:
+      break;
+  }
+  if (ack.operation_id == 0) {
+    // Neither an existence answer nor an accepted operation: a
+    // default-initialised reply, which is a protocol error rather than a
+    // silent no-op.
+    return absl::InternalError(
+        "Destination accepted the offer but returned no operation id.");
+  }
+  return ack;
+}
+
+absl::StatusOr<HostOffloadBackend::RemoteWriteStatus>
+HostOffloadBackend::PollWriteRemote(const RaidenId& dst_raiden_id,
+                                    uint64_t operation_id) {
+  ASSIGN_OR_RETURN(std::shared_ptr<KVCacheStoreClient> client,
+                   GetKVCacheStoreClient(dst_raiden_id));
+
+  auto response_or = client->PollWriteRemote(operation_id).Await();
+  if (!response_or.ok()) {
+    InvalidateStoreClient(dst_raiden_id);
+    return response_or.status();
+  }
+
+  RemoteWriteStatus status;
+  switch (response_or->state()) {
+    case proto::PollWriteRemoteResponse::PENDING:
+      status.state = RemoteWriteState::kPending;
+      break;
+    case proto::PollWriteRemoteResponse::COMMITTED:
+      status.state = RemoteWriteState::kCommitted;
+      break;
+    case proto::PollWriteRemoteResponse::ALL_EXIST:
+      status.state = RemoteWriteState::kAllExist;
+      break;
+    case proto::PollWriteRemoteResponse::PARTIAL_EXIST:
+      status.state = RemoteWriteState::kPartialExist;
+      break;
+    case proto::PollWriteRemoteResponse::FAILED:
+      status.state = RemoteWriteState::kFailed;
+      break;
+    case proto::PollWriteRemoteResponse::STORED_UNREGISTERED:
+      status.state = RemoteWriteState::kStoredUnregistered;
+      break;
+    default:
+      status.state = RemoteWriteState::kUnknown;
+      break;
+  }
+  status.existing_hashes.assign(response_or->existing_hashes().begin(),
+                                response_or->existing_hashes().end());
+  status.unregistered_hashes.assign(response_or->unregistered_hashes().begin(),
+                                    response_or->unregistered_hashes().end());
+  return status;
+}
+
+std::vector<std::string> HostOffloadBackend::AlreadyPresentHostResident(
+    absl::Span<const std::string> block_hashes) const {
+  absl::MutexLock lock(mutex_);
+  std::vector<std::string> present;
+  for (const auto& hash : block_hashes) {
+    // PeekIncludingCandidates, not Peek: an eviction candidate still holds its
+    // host block, so calling it absent would let a duplicate insert through.
+    // Peek also promotes LRU order, which a question has no business doing.
+    const RaidenBlockID* entry = lru_cache_.PeekIncludingCandidates(hash);
+    if (entry != nullptr && (entry->status == BlockStatus::HOST ||
+                             entry->status == BlockStatus::HOST_AND_HBM)) {
+      present.push_back(hash);
+    }
+  }
+  return present;
+}
+
+bool HostOffloadBackend::InsertAllOrNothing(
+    absl::Span<const std::string> block_hashes,
+    absl::Span<const RaidenBlockID> slices) {
+  if (block_hashes.empty() || block_hashes.size() != slices.size()) {
+    return false;
+  }
+  absl::MutexLock lock(mutex_);
+
+  // Phase 1: validate the WHOLE batch before touching anything. Three things
+  // this has to get right that a plain Insert does not:
+  //
+  //   * PeekIncludingCandidates, not Contains. Contains reports false for an
+  //     eviction candidate, but a candidate is still HOST with its block
+  //     still allocated, so Contains would let a duplicate through.
+  //   * available_space(), not capacity(). available_space() subtracts the
+  //     pinned entries; capacity() ignores them, so a cache full of pinned
+  //     entries looks roomy.
+  //   * Do not trust the precheck alone. Put has silent do-nothing paths --
+  //     with everything pinned, its internal evict finds no victim and it
+  //     inserts nothing -- which would commit some hashes, drop others, and
+  //     report success for all.
+  for (const auto& hash : block_hashes) {
+    if (lru_cache_.PeekIncludingCandidates(hash) != nullptr) {
+      return false;
+    }
+  }
+  if (block_hashes.size() > lru_cache_.available_space()) {
+    return false;
+  }
+
+  // Phase 2: insert. Phase 1 rejected duplicates, so no Put can rebind an
+  // existing hash in place and orphan its old host block. The check below is
+  // what keeps that true if Phase 1 ever changes.
+  for (size_t i = 0; i < block_hashes.size(); ++i) {
+    const std::string& hash = block_hashes[i];
+    std::optional<std::pair<std::string, RaidenBlockID>> evicted =
+        lru_cache_.Put(hash, slices[i]);
+    if (lru_cache_.Peek(hash) == nullptr) {
+      LOG(ERROR) << "InsertAllOrNothing: LRUCache::Put inserted nothing for a "
+                    "validated hash; rolling the batch back";
+      for (size_t j = 0; j < i; ++j) {
+        lru_cache_.Erase(block_hashes[j]);
+      }
+      return false;
+    }
+    SetMetadataEntry(hash, slices[i]);
+    // An eviction here only demotes an entry to the candidate list; its host
+    // block stays allocated, so there is nothing to free.
+    (void)evicted;
+  }
+  return true;
+}
+
+void HostOffloadBackend::RollbackInsert(
+    absl::Span<const std::string> block_hashes,
+    absl::Span<const int32_t> host_block_ids) {
+  controller::RaidenController* ctrl = nullptr;
+  {
+    absl::MutexLock lock(mutex_);
+    for (const auto& hash : block_hashes) {
+      if (const RaidenBlockID* entry =
+              lru_cache_.PeekIncludingCandidates(hash)) {
+        ClearMetadataEntry(*entry);
+      }
+      lru_cache_.Erase(hash);
+    }
+    ctrl = raiden_controller_;
+  }
+  // Erasing an entry does NOT return its block to the pool. Without this a
+  // failed registration leaks every landing block it touched.
+  if (ctrl != nullptr && !host_block_ids.empty()) {
+    (void)ctrl->DeallocateBlockIds(
+        std::vector<int>(host_block_ids.begin(), host_block_ids.end()));
+  }
+}
+
+absl::Status HostOffloadBackend::RegisterBlocksSync(
+    absl::Span<const std::string> block_hashes,
+    absl::Span<const int32_t> host_block_ids) {
+  if (block_hashes.size() != host_block_ids.size()) {
+    return absl::InvalidArgumentError(absl::StrCat(
+        "Mismatched block_hashes count (", block_hashes.size(),
+        ") vs host_block_ids count (", host_block_ids.size(), ")."));
+  }
+  std::shared_ptr<global_registry::GlobalRegistryClient> client;
+  RaidenId local_id;
+  {
+    absl::MutexLock lock(mutex_);
+    client = registry_client_;
+    local_id = raiden_id_;
+  }
+  if (client == nullptr) {
+    // No registry configured, so there is nothing to advertise and no way for
+    // these blocks to end up unreachable-but-believed-reachable. Success.
+    return absl::OkStatus();
+  }
+
+  std::vector<global_registry::Registration> registrations;
+  registrations.reserve(block_hashes.size());
+  for (size_t i = 0; i < block_hashes.size(); ++i) {
+    registrations.push_back({
+        .prefix_hash = block_hashes[i],
+        .raiden_id = local_id,
+        .block_id = host_block_ids[i],
+    });
+  }
+  return client->Register(registrations);
+}
+
 tsl::Future<> HostOffloadBackend::Load(
     const RaidenId& remote_id, absl::Span<const std::string> block_hashes,
     absl::Span<const int32_t> device_block_ids) {
@@ -733,7 +979,7 @@ tsl::Future<> HostOffloadBackend::Load(
       client_worker_endpoints);
 
   fetch_future.OnReady(
-      [this, dst_host_block_ids,
+      [this, remote_id, dst_host_block_ids,
        dev_ids_vec = std::vector<int32_t>(device_block_ids.begin(),
                                           device_block_ids.end()),
        load_promise = std::move(load_promise)](
@@ -747,6 +993,9 @@ tsl::Future<> HostOffloadBackend::Load(
           if (ctrl_cb) {
             (void)ctrl_cb->DeallocateBlockIds(dst_host_block_ids);
           }
+          // The peer may have restarted on a new port; drop the cached client
+          // so the next attempt re-resolves instead of redialling a dead one.
+          InvalidateStoreClient(remote_id);
           load_promise.Set(response_or.status());
           return;
         }

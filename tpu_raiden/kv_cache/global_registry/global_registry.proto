@@ -77,6 +77,12 @@ message KVBlockMetadata {
 }
 
 message RegisterEntry {
+  // `bytes`, not `string`: a prefix hash is a raw digest and is essentially
+  // never valid UTF-8. proto3 validates `string` on PARSE, so a real hash
+  // serializes fine at the sender and then fails to decode at the server,
+  // which surfaces as "the registry is broken" rather than "we sent bad
+  // data". Both types are length-delimited on the wire, so this is
+  // compatible with binaries built before the fix.
   bytes prefix_hash = 1;
   KVBlockMetadata metadata = 2;
   // Time-to-live for this registration in seconds. If positive, the entry will
@@ -113,6 +119,7 @@ message LookupRequest {
   // typically computed cumulatively based on the previous prefix hash, forming
   // a dependency chain. The lookup executes sequentially and terminates at the
   // first miss.
+  // `bytes` for the reason given on RegisterEntry.prefix_hash.
   repeated bytes prefix_hashes = 1;
 }
 
@@ -132,6 +139,7 @@ message LookupResponse {
 }
 
 message UnregisterRequest {
+  // `bytes` for the reason given on RegisterEntry.prefix_hash.
   repeated bytes prefix_hashes = 1;
   tpu_raiden.rpc.RaidenIdProto raiden_id = 2;
 }
@@ -148,6 +156,7 @@ message PullOwnedRequest {
 
 // A single active registration owned by the requested RaidenId.
 message PullOwnedEntry {
+  // `bytes` for the reason given on RegisterEntry.prefix_hash.
   bytes prefix_hash = 1;
   // Identifier for the cache block on the owner's host. See
   // KVBlockMetadata.block_id.

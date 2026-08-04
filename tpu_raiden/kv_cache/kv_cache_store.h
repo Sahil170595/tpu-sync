@@ -72,9 +72,10 @@ class KVCacheStore {
   // and the bound port is spliced into the advertised address. Note that the IP
   // address of the RaidenController reuses `store_server_ip`.
   //
-  // Leaving `store_server_ip` empty preserves the previous behaviour: bind the
-  // wildcard interface and publish nothing, so the store is not discoverable by
-  // peers.
+  // `store_server_ip` is MANDATORY and must not be a wildcard: `Create()`
+  // rejects an empty or wildcard value, and the raw constructors abort on it.
+  // Whether this store is discoverable is decided by the registry, not by this
+  // field -- with no `global_registry_address` no server is started at all.
 
   // Safe factory method to create KVCacheStore from a single BackendConfig.
   static absl::StatusOr<std::unique_ptr<KVCacheStore>> Create(
@@ -248,8 +249,9 @@ class KVCacheStore {
   std::string raiden_controller_address() const;
 
   // "host:port" of this store's KVCacheStoreService, as published to the
-  // global registry. Empty when no `store_server_ip` was supplied, which is
-  // also exactly when this store is not discoverable by peers.
+  // global registry. Empty when this store has no registry configured, since
+  // that is exactly when no server is started -- not when `store_server_ip`
+  // was omitted, which is now a construction error.
   std::string store_server_address() const { return store_server_address_; }
 
   // The store server this node serves peers from, or nullptr if it has none.
@@ -323,6 +325,47 @@ class KVCacheStore {
   std::tuple<std::vector<std::string>, std::vector<std::string>,
              std::vector<std::string>>
   PollRemoteReadStatus();
+
+  // Offers `block_hashes` to a peer, which takes its own copy. The use case is
+  // proactive eviction: a node under memory pressure hands cold blocks to a
+  // peer and then frees them locally.
+  //
+  // Returns as soon as the destination has ACCEPTED (or refused); poll with
+  // PollRemoteWriteStatus(). The blocks stay pinned internally until the
+  // operation goes terminal or HOLD expires, whichever comes first -- the
+  // caller's own pin is separate and the caller releases it itself.
+  //
+  // Requires a global registry at both ends: that is how the destination is
+  // resolved, and how the blocks become reachable once they land.
+  //
+  // IMPORTANT: the destination allocates landing blocks from FREE blocks only
+  // and never evicts to make room, so a peer with a warm cache refuses every
+  // offer with RESOURCE_EXHAUSTED. Destination-side eviction is separate,
+  // unimplemented work.
+  absl::Status WriteRemote(const std::vector<std::string>& block_hashes,
+                           const RaidenId& dst_raiden_id);
+
+  // Polls all active/inflight WriteRemote operations.
+  //
+  // Returns {done, failed, pending, existing, unregistered}. The last two are
+  // annotations on failures, not separate outcomes -- a hash in either also
+  // appears in `failed` -- and they exist because this store never decides on
+  // the caller's behalf:
+  //
+  //   existing:     the destination already held these, so it refused the
+  //                 batch. Reissuing with the remainder is the caller's call.
+  //   unregistered: the destination HAS these -- the transfer succeeded -- but
+  //                 could not publish them, so no peer can find them. Reported
+  //                 as failed because the safe default is for the caller to
+  //                 keep its own copy. A caller that only needed the peer to
+  //                 have the bytes may treat it as success; one that was about
+  //                 to free its copy must not.
+  //
+  // Terminal results are drained on read, as with PollSaveStatus.
+  std::tuple<std::vector<std::string>, std::vector<std::string>,
+             std::vector<std::string>, std::vector<std::string>,
+             std::vector<std::string>>
+  PollRemoteWriteStatus();
 
   // Rebuilds this store's LRU cache after an engine restart from the
   // crash-persistent KVCacheMetadata table in local shared memory, without
@@ -417,13 +460,20 @@ class KVCacheStore {
   absl::Status EnsureStoreServerAndRegister(
       tpu_raiden::controller::RaidenController* controller);
 
+  // Shuts down every server hosted by one of backends_, skipping
+  // `already_shut` (the adopted server, when this store had one). Called from
+  // the destructor body, where raiden_controller_ is still alive: a running
+  // service holds it in a pointer it cannot re-seat.
+  void ShutdownBackendStoreServers(KVCacheStoreServer* already_shut);
+
   mutable absl::Mutex mutex_;
   std::vector<std::shared_ptr<KVCacheStoreBackend>> backends_;
   std::shared_ptr<global_registry::GlobalRegistryClient> registry_client_;
   RaidenId raiden_id_;
   std::unique_ptr<tpu_raiden::controller::RaidenController> raiden_controller_;
 
-  // The IP peers reach this node on; empty means "not discoverable".
+  // The IP peers reach this node on. Never empty and never a wildcard --
+  // construction rejects both.
   std::string store_server_ip_;
   // Advertised "host:port" of store_server_, empty until it is started.
   std::string store_server_address_;
@@ -435,10 +485,27 @@ class KVCacheStore {
   // True once this store published itself, so teardown knows to unpublish.
   bool registered_in_global_registry_ = false;
 
+  struct RemoteWriteState {
+    RaidenId dst_raiden_id;
+    uint64_t operation_id = 0;
+    std::vector<std::string> block_hashes;
+    // When this source stops protecting the blocks and gives up, whatever the
+    // destination is doing. Must outlive the deadline the destination granted,
+    // or this store would unpin while the destination could still legitimately
+    // commit bytes read out of blocks it has released.
+    absl::Time hold_expiry;
+  };
+
   std::vector<SaveState> active_saves_ ABSL_GUARDED_BY(mutex_);
   std::vector<LoadState> active_loads_ ABSL_GUARDED_BY(mutex_);
   absl::flat_hash_map<tsl::Future<>, RemoteReadState, FutureHash, FutureEqual>
       active_remote_reads_ ABSL_GUARDED_BY(mutex_);
+
+  std::vector<RemoteWriteState> active_remote_writes_ ABSL_GUARDED_BY(mutex_);
+  std::vector<std::string> done_remote_writes_ ABSL_GUARDED_BY(mutex_);
+  std::vector<std::string> failed_remote_writes_ ABSL_GUARDED_BY(mutex_);
+  std::vector<std::string> existing_remote_writes_ ABSL_GUARDED_BY(mutex_);
+  std::vector<std::string> unregistered_remote_writes_ ABSL_GUARDED_BY(mutex_);
 
   std::vector<std::string> done_saves_ ABSL_GUARDED_BY(mutex_);
   std::vector<std::string> failed_saves_ ABSL_GUARDED_BY(mutex_);
@@ -450,6 +517,7 @@ class KVCacheStore {
   absl::flat_hash_set<std::string> saving_hashes_ ABSL_GUARDED_BY(mutex_);
   absl::flat_hash_set<std::string> loading_hashes_ ABSL_GUARDED_BY(mutex_);
   absl::flat_hash_set<std::string> reading_hashes_ ABSL_GUARDED_BY(mutex_);
+  absl::flat_hash_set<std::string> writing_hashes_ ABSL_GUARDED_BY(mutex_);
 
   std::unique_ptr<std::thread> poller_thread_;
   std::unique_ptr<tpu_raiden::NumaThreadPool> write_through_pool_;
@@ -457,6 +525,18 @@ class KVCacheStore {
 
   absl::StatusOr<std::vector<int>> AllocateBlockIds(int needed);
   void DeallocateBlockIds(absl::Span<const int> block_ids);
+
+  // Asks the destination what became of each accepted offer, and gives up on
+  // any whose HOLD has expired. Runs on the store's own poller, at the same
+  // cadence as the save/load pollers, so remote writes do not introduce a
+  // second one.
+  void PollRemoteWritesInternal();
+
+  // Releases this store's internal pin and clears writing_hashes_. Called once
+  // per operation, whichever way it ends.
+  void FinishRemoteWrite(const RemoteWriteState& state, bool succeeded,
+                         std::vector<std::string> existing,
+                         std::vector<std::string> unregistered = {});
 
   void PollerLoop();
   void PollSavesInternal(std::vector<SaveState> ready_saves);

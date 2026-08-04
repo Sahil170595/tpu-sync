@@ -18,20 +18,23 @@
 #include <chrono>  // NOLINT(build/c++11)
 #include <csignal>
 #include <cstddef>
-#include <cstdlib>
 #include <cstdint>
+#include <cstdlib>
 #include <memory>
 #include <optional>
 #include <string>
 #include <thread>  // NOLINT(build/c++11)
+#include <tuple>
 #include <utility>
 #include <vector>
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
+#include "absl/base/thread_annotations.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
+#include "absl/synchronization/mutex.h"
 #include "absl/synchronization/notification.h"
 #include "absl/time/clock.h"
 #include "absl/time/time.h"
@@ -58,9 +61,11 @@
 #include "tpu_raiden/kv_cache/host_offload_backend.h"
 #include "tpu_raiden/kv_cache/kv_cache_metadata.h"
 #include "tpu_raiden/kv_cache/kv_cache_store_backend.h"
+#include "tpu_raiden/kv_cache/kv_cache_store_backend_factory.h"
 #include "tpu_raiden/kv_cache/kv_cache_store_client.h"
 #include "tpu_raiden/kv_cache/lru_cache.h"
 #include "tpu_raiden/kv_cache/raiden_id.h"
+#include "tpu_raiden/proto/kv_cache_store_service.grpc.pb.h"
 
 #ifndef _WIN32
 int ignore_sigpipe = []() {
@@ -154,7 +159,7 @@ TEST(KVCacheStoreTest, BasicTests) {
   // 3. Delete
   controller.Delete(hashes, slices);
   EXPECT_TRUE(
-      controller.Insert(hashes, slices, true).first);  // Succesful again
+      controller.Insert(hashes, slices, true).first);  // Successful again
 }
 
 TEST(KVCacheStoreTest, PinAndRelease) {
@@ -1112,8 +1117,8 @@ class KVCacheStoreEmbeddedControllerTest : public ::testing::Test {
     // The DESTINATION worker executes the copy now (the read is a pull), so it
     // needs a transfer manager. Scripting it to succeed is what lets the
     // commit-side logic run at all on CPU, where a real transfer cannot.
-    dst_transfer_mock_ =
-        std::make_unique<::tpu_raiden::controller::ShardAwareMockTransferManager>();
+    dst_transfer_mock_ = std::make_unique<
+        ::tpu_raiden::controller::ShardAwareMockTransferManager>();
     test_server_->service->SetTransferManager(
         ::tpu_raiden::KVManagerHolder(dst_transfer_mock_.get()));
     unit_.set_job_name("test_job");
@@ -1974,7 +1979,6 @@ TEST_F(KVCacheStoreEmbeddedControllerTest, ReadRemoteSuccess) {
   };
   register_src_worker("worker_0", "src_worker_0_addr", "src_worker_0_transfer");
 
-
   // Every read is now validated at the source by construction -- there is no
   // longer any RPC that transfers without verifying and pinning first. Grant
   // the lease and echo back authoritative ids.
@@ -2619,7 +2623,8 @@ TEST_F(KVCacheStoreEmbeddedControllerTest, ReadRemoteMultipleSources) {
   registry_server->Shutdown();
 }
 
-TEST_F(KVCacheStoreEmbeddedControllerTest, SaveSetsMetadataEntriesOnCompletion) {
+TEST_F(KVCacheStoreEmbeddedControllerTest,
+       SaveSetsMetadataEntriesOnCompletion) {
   ::tpu_raiden::controller::MockTransferManager mock_mgr;
   test_server_->service->SetTransferManager(
       ::tpu_raiden::KVManagerHolder(&mock_mgr));
@@ -2923,10 +2928,10 @@ TEST(KVCacheStoreTest, RecoverFromLocalManifestPreconditions) {
                                /*global_registry_address=*/"", rid,
                                *metadata_or,
                                /*store_server_ip=*/"127.0.0.1");
-  ASSERT_TRUE(store_non_empty
-                  .Insert({"hash_a"}, {RaidenBlockID(rid, 0, BlockStatus::HOST)},
-                          true)
-                  .first);
+  ASSERT_TRUE(
+      store_non_empty
+          .Insert({"hash_a"}, {RaidenBlockID(rid, 0, BlockStatus::HOST)}, true)
+          .first);
   EXPECT_EQ(store_non_empty.RecoverFromLocalManifest().status().code(),
             absl::StatusCode::kFailedPrecondition);
 
@@ -3206,8 +3211,7 @@ TEST_F(StoreDiscoveryTest, AdoptsAndPublishesTheBackendsServer) {
   ASSERT_TRUE(store_or.ok()) << store_or.status().ToString();
   auto& store = **store_or;
 
-  auto* pooling =
-      dynamic_cast<HostOffloadBackend*>(store.backends()[1].get());
+  auto* pooling = dynamic_cast<HostOffloadBackend*>(store.backends()[1].get());
   ASSERT_NE(pooling, nullptr);
 
   // Exactly one server, created and published by the store.
@@ -3226,9 +3230,9 @@ TEST_F(StoreDiscoveryTest, AdoptsAndPublishesTheBackendsServer) {
 TEST_F(StoreDiscoveryTest, AdoptsTheBackendsServerRatherThanOwningASecond) {
   RaidenId rid{"disco_job_adopt", "0", "kv_cache", 0};
 
-  // Nothing starts a backend's server implicitly: the only way a backend
-  // can already host one by the time the
-  // store wires up is a caller starting it explicitly beforehand, as here.
+  // Nothing starts a backend's server implicitly: the only way a backend can
+  // already host one by the time the store wires up is a caller starting it
+  // explicitly beforehand, as here.
   // The bootstrap controller only needs to be non-null for StartServer to
   // succeed; the store below wires its own controller in afterward.
   auto bootstrap_controller = MakeRecoveryController(rid, /*num_blocks=*/16);
@@ -3262,7 +3266,6 @@ TEST_F(StoreDiscoveryTest, ControllerAddressComposedFromIpAndPort) {
   // Port 0 means "gRPC picks"; the advertised address carries the real port.
   EXPECT_THAT(store.raiden_controller_address(), Not(EndsWith(":0")));
 }
-
 
 // A tier-0 backend whose Lookup parks, so a peer's Fetch can be held inside the
 // store's own service while the store is being destroyed.
@@ -3332,23 +3335,598 @@ TEST_F(StoreDiscoveryTest, TeardownDrainsAnInFlightPeerRpc) {
   (void)fetch_future.Await();  // whatever it reports, it must not crash
 }
 
-
-// A store with no backend must decline to serve rather than index an empty
-// backends_ vector: backend() does not bounds-check, and capacity() guards for
-// exactly this case, so the empty vector is reachable.
-TEST_F(StoreDiscoveryTest, NoBackendDoesNotServeOrCrash) {
+// Constructing a store with no tier-0 backend (or a null tier-0 pointer) is
+// now a construction-rule violation. Catching it at construction guarantees
+// that a store configured with a registry is always registered by preventing
+// the un-registered state from being constructed.
+TEST_F(StoreDiscoveryTest, NoBackendIsAConstructionRuleViolation) {
   RaidenId rid{"disco_job_nobackend", "0", "kv_cache", 0};
-  KVCacheStore store(std::vector<std::shared_ptr<KVCacheStoreBackend>>{}, rid,
-                     /*num_shards=*/1, /*shard_size_bytes=*/512,
-                     /*raiden_orchestrator_address=*/"",
-                     /*store_server_ip=*/"127.0.0.1",
-                     /*raiden_controller_port=*/0, registry_address_);
+  EXPECT_DEATH(
+      {
+        KVCacheStore store(std::vector<std::shared_ptr<KVCacheStoreBackend>>{},
+                           rid,
+                           /*num_shards=*/1, /*shard_size_bytes=*/512,
+                           /*raiden_orchestrator_address=*/"",
+                           /*store_server_ip=*/"127.0.0.1",
+                           /*raiden_controller_port=*/0, registry_address_);
+      },
+      "requires at least one backend");
 
-  EXPECT_EQ(store.store_server(), nullptr);
-  EXPECT_TRUE(store.store_server_address().empty());
-  EXPECT_TRUE(absl::IsNotFound(client_->ResolveStore(rid).status()));
+  EXPECT_DEATH(
+      {
+        KVCacheStore store(
+            std::vector<std::shared_ptr<KVCacheStoreBackend>>{nullptr}, rid,
+            /*num_shards=*/1, /*shard_size_bytes=*/512,
+            /*raiden_orchestrator_address=*/"",
+            /*store_server_ip=*/"127.0.0.1",
+            /*raiden_controller_port=*/0, registry_address_);
+      },
+      "tier-0 backend must not be null");
+
+  EXPECT_FALSE(KVCacheStore::Create(std::vector<BackendConfig>{},
+                                    /*capacity=*/16, registry_address_, rid,
+                                    /*num_shards=*/1, /*shard_size_bytes=*/512,
+                                    /*raiden_orchestrator_address=*/"",
+                                    /*store_server_ip=*/"127.0.0.1",
+                                    /*raiden_controller_port=*/0)
+                   .ok());
 }
 
+// Giving those two constructors a real registry client is a behaviour change,
+// not just a repair: their backends now take part in the global tier. Pinned
+// here so it stays a decision on the record rather than something a later
+// reader "fixes" back.
+TEST_F(StoreDiscoveryTest, CapacityConstructedStoreJoinsTheGlobalTier) {
+  RaidenId rid{"disco_job_globaltier", "0", "kv_cache", 0};
+  KVCacheStore store(/*capacity=*/16, registry_address_, rid, /*num_shards=*/1,
+                     /*shard_size_bytes=*/512,
+                     /*raiden_orchestrator_address=*/"",
+                     /*store_server_ip=*/"127.0.0.1",
+                     /*raiden_controller_port=*/0);
+
+  auto* backend = dynamic_cast<HostOffloadBackend*>(store.backend().get());
+  ASSERT_NE(backend, nullptr);
+
+  // Insert registers globally (InsertAndLock deliberately does not).
+  backend->Insert({"tiered_hash"}, {RaidenBlockID(rid, 3, BlockStatus::HOST)},
+                  /*on_host=*/true);
+  auto looked_up = client_->Lookup({"tiered_hash"});
+  ASSERT_TRUE(looked_up.ok()) << looked_up.status().ToString();
+  ASSERT_EQ(looked_up->size(), 1);
+  EXPECT_EQ((*looked_up)[0].block_id(), 3);
+
+  // A local miss consults tier 1 and comes back with the owning peer.
+  RaidenId peer{"some_peer", "0", "kv_cache", 0};
+  ASSERT_TRUE(client_->Register({{"peer_hash", peer, 9}}).ok());
+  LookupOptions global;
+  global.max_tier = -1;
+  auto result = backend->Lookup({"peer_hash"}, global);
+  ASSERT_TRUE(result.ok()) << result.status().ToString();
+  ASSERT_EQ(result->size(), 1);
+  EXPECT_EQ((*result)[0].second.raiden_id, peer);
+  EXPECT_EQ((*result)[0].second.status, BlockStatus::REMOTE);
+}
+
+// A backend's server can be started AFTER the store was constructed -- which
+// is too late for the store's adoption pass to have seen it -- and with no
+// registry the store never adopts one at all. That server holds the store's
+// RaidenController in a pointer it cannot re-seat, so leaving it running past
+// the store's destructor gives a live service dereferencing a freed
+// controller. Waiting for ~HostOffloadBackend is not enough: backends_ holds
+// shared_ptrs, so a caller that keeps its own reference outlives the store,
+// which is exactly what this test does.
+//
+// GetGrpcPort() going to 0 is Shutdown()'s observable effect, so this fails
+// deterministically without a sanitizer.
+TEST_F(StoreDiscoveryTest, DestructorShutsDownABackendStartedServer) {
+  RaidenId rid{"disco_job_h1", "0", "kv_cache", 0};
+  std::shared_ptr<KVCacheStoreBackend> backend_ref;
+  {
+    KVCacheStore store(/*capacity=*/16, /*global_registry_address=*/"", rid,
+                       /*num_shards=*/1, /*shard_size_bytes=*/512,
+                       /*raiden_orchestrator_address=*/"",
+                       /*store_server_ip=*/"127.0.0.1",
+                       /*raiden_controller_port=*/0);
+    // No registry, so the store owns and adopts nothing.
+    ASSERT_EQ(store.store_server(), nullptr);
+
+    backend_ref = store.backend();
+    auto* backend = dynamic_cast<HostOffloadBackend*>(backend_ref.get());
+    ASSERT_NE(backend, nullptr);
+    ASSERT_TRUE(backend->StartServer("127.0.0.1").ok());
+    ASSERT_NE(backend->store_server(), nullptr);
+    ASSERT_GT(backend->store_server()->GetGrpcPort(), 0);
+  }
+
+  auto* backend = dynamic_cast<HostOffloadBackend*>(backend_ref.get());
+  ASSERT_NE(backend->store_server(), nullptr);
+  EXPECT_EQ(backend->store_server()->GetGrpcPort(), 0)
+      << "the store's destructor left a backend-hosted server running, still "
+         "holding the controller it just destroyed";
+}
+
+// Same sweep, but with a registry, so the store DID adopt the backend's
+// server. Covers the de-duplication: the adopted server is shut once, not
+// twice.
+TEST_F(StoreDiscoveryTest, DestructorSweepSkipsTheAdoptedServer) {
+  RaidenId rid{"disco_job_h1_adopt", "0", "kv_cache", 0};
+  auto bootstrap_controller = MakeRecoveryController(rid, /*num_blocks=*/16);
+  auto backend = std::make_shared<HostOffloadBackend>(
+      /*capacity=*/16, std::nullopt, rid, bootstrap_controller.get());
+  ASSERT_TRUE(backend->StartServer("127.0.0.1").ok());
+  ASSERT_GT(backend->store_server()->GetGrpcPort(), 0);
+
+  {
+    KVCacheStore store(
+        std::vector<std::shared_ptr<KVCacheStoreBackend>>{backend}, rid,
+        /*num_shards=*/1, /*shard_size_bytes=*/512,
+        /*raiden_orchestrator_address=*/"",
+        /*store_server_ip=*/"127.0.0.1",
+        /*raiden_controller_port=*/0, registry_address_);
+    ASSERT_EQ(store.store_server(), backend->store_server());
+  }
+
+  EXPECT_EQ(backend->store_server()->GetGrpcPort(), 0);
+}
+
+// store_clients_ caches one client per peer and nothing ever erased it, so a
+// peer that restarted on a new port stayed undialable for the life of THIS
+// process -- even after the registry had healed. The invalidation call was
+// lost when GlobalMemoryPoolingBackend was folded into HostOffloadBackend.
+//
+// The two failures are deliberately different so the assertion has teeth:
+// dialling a closed port is UNAVAILABLE, while reaching a real peer that does
+// not hold the hash is NOT_FOUND. Without invalidation the second Load
+// redials the dead address and stays UNAVAILABLE.
+TEST_F(StoreDiscoveryTest, FailedLoadDropsTheCachedPeerClient) {
+  RaidenId rid{"disco_job_invalidate", "0", "kv_cache", 0};
+  RaidenId peer_rid{"disco_job_invalidate_peer", "0", "kv_cache", 0};
+
+  KVCacheStore store(/*capacity=*/16, registry_address_, rid, /*num_shards=*/1,
+                     /*shard_size_bytes=*/512,
+                     /*raiden_orchestrator_address=*/"",
+                     /*store_server_ip=*/"127.0.0.1",
+                     /*raiden_controller_port=*/0);
+  auto* backend = dynamic_cast<HostOffloadBackend*>(store.backend().get());
+  ASSERT_NE(backend, nullptr);
+
+  // Port 1 is reserved and never listening, so this connect always fails.
+  ASSERT_TRUE(client_
+                  ->RegisterStore(peer_rid, "127.0.0.1:1",
+                                  /*controller_address=*/"")
+                  .ok());
+  auto first = backend->Load(peer_rid, {"h"}).Await();
+  ASSERT_FALSE(first.ok());
+  ASSERT_TRUE(absl::IsUnavailable(first)) << first.ToString();
+
+  // The peer comes back on a real port and republishes, replacing its entry.
+  KVCacheStore peer(/*capacity=*/16, registry_address_, peer_rid,
+                    /*num_shards=*/1, /*shard_size_bytes=*/512,
+                    /*raiden_orchestrator_address=*/"",
+                    /*store_server_ip=*/"127.0.0.1",
+                    /*raiden_controller_port=*/0);
+
+  ASSERT_FALSE(peer.store_server_address().empty());
+
+  auto second = backend->Load(peer_rid, {"h"}).Await();
+  EXPECT_TRUE(absl::IsNotFound(second))
+      << "expected the restarted peer to answer; got " << second.ToString()
+      << " -- the cached client still points at the address it had";
+}
+
+// ===========================================================================
+// Remote write -- source side.
+// ===========================================================================
+
+// A destination that says whatever the test tells it to.
+//
+// The source's job is to turn each terminal verdict into the right thing for
+// its caller, and that is worth testing on its own. Driving a real destination
+// into a given verdict means arranging the destination's internal state --
+// which tests the destination, and reaches the source's handling only by
+// implication. STORED_UNREGISTERED is the clearest case: producing it for real
+// needs a registry that fails at one exact moment mid-transfer.
+class FakeDestinationService : public proto::KVCacheStoreService::Service {
+ public:
+  static constexpr uint64_t kOperationId = 4242;
+
+  ::grpc::Status WriteRemote(::grpc::ServerContext* /*context*/,
+                             const proto::WriteRemoteRequest* request,
+                             proto::WriteRemoteResponse* response) override {
+    absl::MutexLock lock(&mutex_);
+    ++write_calls_;
+    requested_deadline_ms_ = request->deadline_ms();
+    response->set_operation_id(kOperationId);
+    response->set_exist_state(proto::WRITE_EXIST_STATE_UNSPECIFIED);
+    response->set_granted_deadline_ms(request->deadline_ms());
+    return ::grpc::Status::OK;
+  }
+
+  ::grpc::Status PollWriteRemote(
+      ::grpc::ServerContext* /*context*/,
+      const proto::PollWriteRemoteRequest* /*request*/,
+      proto::PollWriteRemoteResponse* response) override {
+    absl::MutexLock lock(&mutex_);
+    ++poll_calls_;
+    *response = poll_response_;
+    return ::grpc::Status::OK;
+  }
+
+  void SetPollResponse(proto::PollWriteRemoteResponse response) {
+    absl::MutexLock lock(&mutex_);
+    poll_response_ = std::move(response);
+  }
+
+  int write_calls() const {
+    absl::MutexLock lock(&mutex_);
+    return write_calls_;
+  }
+  int64_t requested_deadline_ms() const {
+    absl::MutexLock lock(&mutex_);
+    return requested_deadline_ms_;
+  }
+
+ private:
+  mutable absl::Mutex mutex_;
+  proto::PollWriteRemoteResponse poll_response_ ABSL_GUARDED_BY(mutex_);
+  int write_calls_ ABSL_GUARDED_BY(mutex_) = 0;
+  int poll_calls_ ABSL_GUARDED_BY(mutex_) = 0;
+  int64_t requested_deadline_ms_ ABSL_GUARDED_BY(mutex_) = 0;
+};
+
+class RemoteWriteSourceTest : public StoreDiscoveryTest {
+ protected:
+  static constexpr int kCapacity = 8;
+
+  std::unique_ptr<KVCacheStore> MakeStore(const RaidenId& id,
+                                          bool with_registry = true) {
+    return std::make_unique<KVCacheStore>(
+        /*capacity=*/kCapacity,
+        with_registry ? registry_address_ : std::string(), id,
+        /*num_shards=*/1, /*shard_size_bytes=*/1024,
+        /*raiden_orchestrator_address=*/"",
+        /*store_server_ip=*/"127.0.0.1",
+        /*raiden_controller_port=*/0);
+  }
+
+  // A source with no registered workers has no data plane to be pulled from,
+  // and the destination refuses such an offer -- correctly, but it means every
+  // case below needs one. The worker is real (registration allocates buffers
+  // on it) but nothing here drives a transfer to completion through it.
+  void RegisterWorker(KVCacheStore& store) {
+    worker_server_ = ::tpu_raiden::controller::CreateTestWorkerServer();
+    transfer_mock_ = std::make_unique<
+        ::tpu_raiden::controller::ShardAwareMockTransferManager>();
+    worker_server_->service->SetTransferManager(
+        ::tpu_raiden::KVManagerHolder(transfer_mock_.get()));
+
+    ::tpu_raiden::core::controller::RaidenControllerClient client(
+        store.raiden_controller_address());
+    auto status =
+        client.RegisterWorker("worker_0", worker_server_->server_address,
+                              {{worker_server_->server_address, {}}});
+    ASSERT_TRUE(status.ok()) << status.message();
+  }
+
+  // Puts `hashes` in `store` as host-resident, which is the precondition for
+  // offering them.
+  static void Populate(KVCacheStore& store, const RaidenId& id,
+                       const std::vector<std::string>& hashes) {
+    std::vector<RaidenBlockID> slices;
+    for (size_t i = 0; i < hashes.size(); ++i) {
+      slices.push_back(
+          RaidenBlockID(id, static_cast<int>(i), BlockStatus::HOST));
+    }
+    ASSERT_TRUE(store.InsertAndLock(hashes, slices, /*on_host=*/true));
+  }
+
+  // Drives the store's poller until the write leaves the pending set.
+  // Returns {done, failed, existing, unregistered}.
+  std::tuple<std::vector<std::string>, std::vector<std::string>,
+             std::vector<std::string>, std::vector<std::string>>
+  AwaitWriteSettled(KVCacheStore& store) {
+    for (int i = 0; i < 300; ++i) {
+      auto [done, failed, pending, existing, unregistered] =
+          store.PollRemoteWriteStatus();
+      if (pending.empty() && (!done.empty() || !failed.empty())) {
+        return {done, failed, existing, unregistered};
+      }
+      absl::SleepFor(absl::Milliseconds(10));
+    }
+    return {{}, {}, {}, {}};
+  }
+
+  // Stands the fake up and publishes it under `dst` so the source resolves it
+  // through the registry exactly as it would a real peer.
+  void StartFakeDestination(const RaidenId& dst) {
+    grpc::ServerBuilder builder;
+    int port = 0;
+    builder.AddListeningPort("127.0.0.1:0", grpc::InsecureServerCredentials(),
+                             &port);
+    builder.RegisterService(&fake_destination_);
+    fake_destination_server_ = builder.BuildAndStart();
+    ASSERT_NE(fake_destination_server_, nullptr);
+    ASSERT_TRUE(client_
+                    ->RegisterStore(dst, "127.0.0.1:" + std::to_string(port),
+                                    /*controller_address=*/"")
+                    .ok());
+  }
+
+  void TearDown() override {
+    if (fake_destination_server_) fake_destination_server_->Shutdown();
+    StoreDiscoveryTest::TearDown();
+  }
+
+  FakeDestinationService fake_destination_;
+  std::unique_ptr<grpc::Server> fake_destination_server_;
+  std::unique_ptr<::tpu_raiden::controller::TestWorkerServer> worker_server_;
+  std::unique_ptr<::tpu_raiden::controller::ShardAwareMockTransferManager>
+      transfer_mock_;
+};
+
+// The registry precondition, reported by the one component that knows: the
+// backend, which is what resolves peers.
+TEST_F(RemoteWriteSourceTest, RefusesWithoutAGlobalRegistry) {
+  RaidenId src{"rw_src_noreg", "0", "kv", 0};
+  auto store = MakeStore(src, /*with_registry=*/false);
+  Populate(*store, src, {"a"});
+
+  auto status = store->WriteRemote({"a"}, RaidenId{"rw_dst", "0", "kv", 0});
+  EXPECT_TRUE(absl::IsFailedPrecondition(status)) << status.ToString();
+  EXPECT_THAT(status.message(), ::testing::HasSubstr("registry"));
+}
+
+// A missing registration means gone, not still-starting: every store that
+// exists with a registry is registered before its constructor returns. So
+// this fails fast rather than retrying.
+TEST_F(RemoteWriteSourceTest, AnUnresolvableDestinationFailsImmediately) {
+  RaidenId src{"rw_src_unresolvable", "0", "kv", 0};
+  auto store = MakeStore(src);
+  Populate(*store, src, {"a"});
+
+  auto status = store->WriteRemote({"a"}, RaidenId{"nobody", "0", "kv", 0});
+  EXPECT_TRUE(absl::IsNotFound(status)) << status.ToString();
+
+  auto [done, failed, pending, existing, unregistered] =
+      store->PollRemoteWriteStatus();
+  EXPECT_TRUE(pending.empty()) << "a rejected offer must not stay active";
+}
+
+TEST_F(RemoteWriteSourceTest, RefusesToOfferBlocksItDoesNotHold) {
+  RaidenId src{"rw_src_missing", "0", "kv", 0};
+  auto store = MakeStore(src);
+
+  auto status = store->WriteRemote({"absent"}, RaidenId{"d", "0", "kv", 0});
+  EXPECT_TRUE(absl::IsNotFound(status)) << status.ToString();
+}
+
+TEST_F(RemoteWriteSourceTest, RefusesToOfferToItself) {
+  RaidenId src{"rw_src_self", "0", "kv", 0};
+  auto store = MakeStore(src);
+  Populate(*store, src, {"a"});
+
+  EXPECT_TRUE(absl::IsInvalidArgument(store->WriteRemote({"a"}, src)));
+}
+
+// The destination already had everything. A SUCCESS that moves no bytes and
+// never creates an operation to poll.
+TEST_F(RemoteWriteSourceTest, AllExistSettlesDoneWithoutATransfer) {
+  RaidenId src{"rw_src_allexist", "0", "kv", 0};
+  RaidenId dst{"rw_dst_allexist", "0", "kv", 0};
+  auto src_store = MakeStore(src);
+  auto dst_store = MakeStore(dst);
+  RegisterWorker(*src_store);
+  Populate(*src_store, src, {"a", "b"});
+  ASSERT_TRUE(dst_store->backend()->InsertAllOrNothing(
+      {"a", "b"}, {RaidenBlockID(dst, 5, BlockStatus::HOST),
+                   RaidenBlockID(dst, 6, BlockStatus::HOST)}));
+
+  ASSERT_TRUE(src_store->WriteRemote({"a", "b"}, dst).ok());
+
+  auto [done, failed, pending, existing, unregistered] =
+      src_store->PollRemoteWriteStatus();
+  EXPECT_THAT(done, ::testing::UnorderedElementsAre("a", "b"));
+  EXPECT_TRUE(failed.empty());
+  EXPECT_TRUE(pending.empty());
+  EXPECT_TRUE(existing.empty());
+}
+
+// The destination held a strict subset. This is a FAILURE, the list reaches
+// the caller, and the store does NOT reissue with the difference -- that is
+// the caller's decision, and it needs the list to make it.
+TEST_F(RemoteWriteSourceTest, PartialExistIsReportedAndNotRetried) {
+  RaidenId src{"rw_src_partial", "0", "kv", 0};
+  RaidenId dst{"rw_dst_partial", "0", "kv", 0};
+  auto src_store = MakeStore(src);
+  auto dst_store = MakeStore(dst);
+  RegisterWorker(*src_store);
+  Populate(*src_store, src, {"a", "b"});
+  ASSERT_TRUE(dst_store->backend()->InsertAllOrNothing(
+      {"a"}, {RaidenBlockID(dst, 5, BlockStatus::HOST)}));
+
+  ASSERT_TRUE(src_store->WriteRemote({"a", "b"}, dst).ok());
+
+  auto [done, failed, pending, existing, unregistered] =
+      src_store->PollRemoteWriteStatus();
+  EXPECT_TRUE(done.empty());
+  EXPECT_THAT(failed, ::testing::UnorderedElementsAre("a", "b"));
+  EXPECT_TRUE(pending.empty());
+  EXPECT_THAT(existing, ::testing::UnorderedElementsAre("a"));
+
+  // No hidden second offer: the destination still holds only what it had.
+  EXPECT_EQ(dst_store->backend()->GetSize(), 1);
+}
+
+// The full source loop: offer, get an operation id back, poll it to a verdict
+// through the store's own poller, and release the internal pin. The transfer
+// itself fails here (this destination has no workers registered), which is
+// the outcome under test -- what matters is that the source reaches a
+// terminal answer and lets go.
+TEST_F(RemoteWriteSourceTest, AnAcceptedOfferIsPolledToATerminalVerdict) {
+  RaidenId src{"rw_src_accept", "0", "kv", 0};
+  RaidenId dst{"rw_dst_accept", "0", "kv", 0};
+  auto src_store = MakeStore(src);
+  auto dst_store = MakeStore(dst);
+  RegisterWorker(*src_store);
+  Populate(*src_store, src, {"a", "b"});
+
+  ASSERT_TRUE(src_store->WriteRemote({"a", "b"}, dst).ok());
+
+  auto [done, failed, existing, unregistered] = AwaitWriteSettled(*src_store);
+  EXPECT_TRUE(done.empty());
+  EXPECT_THAT(failed, ::testing::UnorderedElementsAre("a", "b"));
+
+  // The internal pin is gone and the hashes are no longer marked as writing,
+  // so the same blocks can be offered again.
+  EXPECT_TRUE(src_store->WriteRemote({"a", "b"}, dst).ok())
+      << "the first operation never released its claim on these hashes";
+  AwaitWriteSettled(*src_store);
+}
+
+// Two offers of the same hash at once would send two sets of authoritative
+// block ids for one pin.
+TEST_F(RemoteWriteSourceTest, RefusesASecondConcurrentOfferOfTheSameHash) {
+  RaidenId src{"rw_src_concurrent", "0", "kv", 0};
+  RaidenId dst{"rw_dst_concurrent", "0", "kv", 0};
+  auto src_store = MakeStore(src);
+  auto dst_store = MakeStore(dst);
+  RegisterWorker(*src_store);
+  Populate(*src_store, src, {"a"});
+
+  ASSERT_TRUE(src_store->WriteRemote({"a"}, dst).ok());
+  auto second = src_store->WriteRemote({"a"}, dst);
+  EXPECT_TRUE(absl::IsFailedPrecondition(second)) << second.ToString();
+  AwaitWriteSettled(*src_store);
+}
+
+// The verdict this whole state exists for: the peer HAS the bytes but could
+// not publish them.
+//
+// The source must not report it as done -- done is what tells a caller it may
+// drop its own copy, and dropping it here moves the block from findable-here
+// to findable-nowhere. It must report failed AND hand over the list, so a
+// caller that only needed the peer to hold the bytes can decide otherwise.
+TEST_F(RemoteWriteSourceTest, StoredUnregisteredIsFailedAndNamesTheBlocks) {
+  RaidenId src{"rw_src_unreg", "0", "kv", 0};
+  RaidenId dst{"rw_dst_unreg", "0", "kv", 0};
+  auto src_store = MakeStore(src);
+  Populate(*src_store, src, {"a", "b"});
+  StartFakeDestination(dst);
+
+  proto::PollWriteRemoteResponse verdict;
+  verdict.set_state(proto::PollWriteRemoteResponse::STORED_UNREGISTERED);
+  verdict.add_unregistered_hashes("a");
+  verdict.add_unregistered_hashes("b");
+  fake_destination_.SetPollResponse(verdict);
+
+  ASSERT_TRUE(src_store->WriteRemote({"a", "b"}, dst).ok());
+  auto [done, failed, existing, unregistered] = AwaitWriteSettled(*src_store);
+
+  EXPECT_TRUE(done.empty())
+      << "reporting this as done would let a caller free its only findable "
+         "copy";
+  EXPECT_THAT(failed, ::testing::UnorderedElementsAre("a", "b"));
+  EXPECT_THAT(unregistered, ::testing::UnorderedElementsAre("a", "b"));
+  EXPECT_TRUE(existing.empty());
+
+  // The internal pin is released either way, so the caller can act on the
+  // list -- including by offering the same blocks somewhere else.
+  EXPECT_TRUE(src_store->WriteRemote({"a", "b"}, dst).ok());
+  AwaitWriteSettled(*src_store);
+}
+
+// The ordinary success, driven through the same seam so the two are directly
+// comparable: same offer, different verdict, opposite bucket.
+TEST_F(RemoteWriteSourceTest, CommittedIsReportedAsDone) {
+  RaidenId src{"rw_src_committed", "0", "kv", 0};
+  RaidenId dst{"rw_dst_committed", "0", "kv", 0};
+  auto src_store = MakeStore(src);
+  Populate(*src_store, src, {"a", "b"});
+  StartFakeDestination(dst);
+
+  proto::PollWriteRemoteResponse verdict;
+  verdict.set_state(proto::PollWriteRemoteResponse::COMMITTED);
+  verdict.add_committed_hashes("a");
+  verdict.add_committed_hashes("b");
+  fake_destination_.SetPollResponse(verdict);
+
+  ASSERT_TRUE(src_store->WriteRemote({"a", "b"}, dst).ok());
+  auto [done, failed, existing, unregistered] = AwaitWriteSettled(*src_store);
+
+  EXPECT_THAT(done, ::testing::UnorderedElementsAre("a", "b"));
+  EXPECT_TRUE(failed.empty());
+  EXPECT_TRUE(unregistered.empty());
+  EXPECT_TRUE(existing.empty());
+}
+
+// Aged out, or the destination restarted. Indistinguishable from "never
+// happened", so it must land as a plain failure with no annotations -- in
+// particular it must NOT be mistaken for the stored-but-unpublished case,
+// where the peer really does hold the data.
+TEST_F(RemoteWriteSourceTest, UnknownIsReportedAsAPlainFailure) {
+  RaidenId src{"rw_src_unknown", "0", "kv", 0};
+  RaidenId dst{"rw_dst_unknown", "0", "kv", 0};
+  auto src_store = MakeStore(src);
+  Populate(*src_store, src, {"a"});
+  StartFakeDestination(dst);
+
+  proto::PollWriteRemoteResponse verdict;
+  verdict.set_state(proto::PollWriteRemoteResponse::UNKNOWN);
+  fake_destination_.SetPollResponse(verdict);
+
+  ASSERT_TRUE(src_store->WriteRemote({"a"}, dst).ok());
+  auto [done, failed, existing, unregistered] = AwaitWriteSettled(*src_store);
+
+  EXPECT_TRUE(done.empty());
+  EXPECT_THAT(failed, ::testing::UnorderedElementsAre("a"));
+  EXPECT_TRUE(unregistered.empty());
+}
+
+// The deadline the source asks for is HOLD minus the margin, so the
+// destination's grant can never outlive the source's pin. Checked here because
+// the fake records what actually arrived on the wire.
+TEST_F(RemoteWriteSourceTest, TheOfferAsksForLessThanTheSourceWillHold) {
+  RaidenId src{"rw_src_deadline", "0", "kv", 0};
+  RaidenId dst{"rw_dst_deadline", "0", "kv", 0};
+  auto src_store = MakeStore(src);
+  Populate(*src_store, src, {"a"});
+  StartFakeDestination(dst);
+
+  proto::PollWriteRemoteResponse verdict;
+  verdict.set_state(proto::PollWriteRemoteResponse::COMMITTED);
+  verdict.add_committed_hashes("a");
+  fake_destination_.SetPollResponse(verdict);
+
+  ASSERT_TRUE(src_store->WriteRemote({"a"}, dst).ok());
+  AwaitWriteSettled(*src_store);
+
+  EXPECT_EQ(fake_destination_.write_calls(), 1);
+  // Default HOLD is 30s and the margin 5s.
+  EXPECT_EQ(fake_destination_.requested_deadline_ms(),
+            absl::ToInt64Milliseconds(absl::Seconds(25)));
+}
+
+// A destination that vanished after registering. The source must get a prompt
+// error rather than waiting, and must drop the cached client so a restarted
+// peer is reachable.
+TEST_F(RemoteWriteSourceTest, AStaleButRegisteredDestinationFailsPromptly) {
+  RaidenId src{"rw_src_stale", "0", "kv", 0};
+  RaidenId dst{"rw_dst_stale", "0", "kv", 0};
+  auto src_store = MakeStore(src);
+  RegisterWorker(*src_store);
+  Populate(*src_store, src, {"a"});
+
+  {
+    auto dst_store = MakeStore(dst);
+    ASSERT_FALSE(dst_store->store_server_address().empty());
+  }
+  // The registration outlives the store: store entries never expire, and
+  // nothing unpublishes on the way out except the store itself, which has
+  // already gone.
+  auto status = src_store->WriteRemote({"a"}, dst);
+  EXPECT_FALSE(status.ok())
+      << "offering to a dead peer should fail rather than hang";
+}
 
 // ---------------------------------------------------------------------------
 // Construction rules (kv_cache_store_construction_rules.md): Create() rejects
@@ -3363,17 +3941,16 @@ BackendConfig MakeHostBackendConfig() {
   return config;
 }
 
-TEST(KVCacheStoreConstructionTest, CreateRejectsEmptyStoreServerIp) {
+TEST(KVCacheStoreConstructionRulesTest, CreateRejectsEmptyStoreServerIp) {
   auto store_or = KVCacheStore::Create(
       MakeHostBackendConfig(), /*capacity=*/4,
       /*global_registry_address=*/"", RaidenId{}, /*num_shards=*/1,
       /*shard_size_bytes=*/512, /*raiden_orchestrator_address=*/"",
       /*store_server_ip=*/"");
-  EXPECT_TRUE(absl::IsInvalidArgument(store_or.status()))
-      << store_or.status();
+  EXPECT_TRUE(absl::IsInvalidArgument(store_or.status())) << store_or.status();
 }
 
-TEST(KVCacheStoreConstructionTest, CreateRejectsWildcardStoreServerIp) {
+TEST(KVCacheStoreConstructionRulesTest, CreateRejectsWildcardStoreServerIp) {
   for (const char* wildcard : {"[::]", "0.0.0.0", "::"}) {
     auto store_or = KVCacheStore::Create(
         MakeHostBackendConfig(), /*capacity=*/4,
@@ -3385,17 +3962,16 @@ TEST(KVCacheStoreConstructionTest, CreateRejectsWildcardStoreServerIp) {
   }
 }
 
-TEST(KVCacheStoreConstructionTest, CreateRejectsZeroShards) {
+TEST(KVCacheStoreConstructionRulesTest, CreateRejectsZeroShards) {
   auto store_or = KVCacheStore::Create(
       MakeHostBackendConfig(), /*capacity=*/4,
       /*global_registry_address=*/"", RaidenId{}, /*num_shards=*/0,
       /*shard_size_bytes=*/512, /*raiden_orchestrator_address=*/"",
       /*store_server_ip=*/"127.0.0.1");
-  EXPECT_TRUE(absl::IsInvalidArgument(store_or.status()))
-      << store_or.status();
+  EXPECT_TRUE(absl::IsInvalidArgument(store_or.status())) << store_or.status();
 }
 
-TEST(KVCacheStoreConstructionDeathTest, CapacityCtorDiesOnEmptyIp) {
+TEST(KVCacheStoreConstructionRulesDeathTest, CapacityCtorDiesOnEmptyIp) {
   GTEST_FLAG_SET(death_test_style, "threadsafe");
   EXPECT_DEATH(
       KVCacheStore store(/*capacity=*/4, /*global_registry_address=*/"",
@@ -3406,7 +3982,7 @@ TEST(KVCacheStoreConstructionDeathTest, CapacityCtorDiesOnEmptyIp) {
       "construction validation failed");
 }
 
-TEST(KVCacheStoreConstructionDeathTest, CapacityCtorDiesOnZeroShards) {
+TEST(KVCacheStoreConstructionRulesDeathTest, CapacityCtorDiesOnZeroShards) {
   GTEST_FLAG_SET(death_test_style, "threadsafe");
   EXPECT_DEATH(
       KVCacheStore store(/*capacity=*/4, /*global_registry_address=*/"",
@@ -3425,7 +4001,7 @@ TEST(KVCacheStoreConstructionDeathTest, CapacityCtorDiesOnZeroShards) {
 // calls internally already wired the controller (and FATALed on failure)
 // before Create() got a chance to do its own recoverable wiring, making
 // Create()'s Status-return dead code for every RegisterStore failure.
-TEST(KVCacheStoreConstructionTest, CreateFailsWhenRegistryPublishFails) {
+TEST(KVCacheStoreConstructionRulesTest, CreateFailsWhenRegistryPublishFails) {
   auto service = std::make_unique<global_registry::GlobalRegistryServiceImpl>();
   grpc::ServerBuilder builder;
   int port = 0;

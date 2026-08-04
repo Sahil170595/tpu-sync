@@ -17,6 +17,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -363,6 +364,7 @@ TEST(HostOffloadBackendTest, EndToEndFetchRPC) {
   dst_config.type = "HostOffloadBackend";
   dst_config.capacity = 100;
   dst_config.global_registry_address = reg_address;
+  dst_config.raiden_id = dst_raiden_id;
   auto backend_or = HostOffloadBackend::Create(dst_config, &dst_controller);
   ASSERT_OK(backend_or.status());
   auto backend = std::dynamic_pointer_cast<HostOffloadBackend>(*backend_or);
@@ -584,6 +586,185 @@ TEST(HostOffloadBackendTest, StoreServerOverride) {
   ASSERT_TRUE(backend->StartServer("127.0.0.1").ok());
   EXPECT_NE(backend->store_server(), nullptr);
   backend->store_server()->Shutdown();
+}
+
+// --- Remote write backend primitives ---------------------------------------
+
+namespace {
+
+rpc::RaidenIdProto ToProto(const RaidenId& id) {
+  rpc::RaidenIdProto proto;
+  proto.set_job_name(id.job_name);
+  proto.set_job_replica_id(id.job_replica_id);
+  proto.set_data_name(id.data_name);
+  proto.set_data_replica_idx(id.data_replica_idx);
+  return proto;
+}
+
+}  // namespace
+
+// Lookup cannot answer this question: it stops at the first miss, so a
+// scattered subset is unrepresentable in its result.
+TEST(HostOffloadBackendWriteRemoteTest, AlreadyPresentReportsAScatteredSubset) {
+  HostOffloadBackend backend(/*capacity=*/8);
+  RaidenId id{"job", "0", "data", 0};
+  backend.Insert({"a", "c"},
+                 {RaidenBlockID(id, 1, BlockStatus::HOST),
+                  RaidenBlockID(id, 3, BlockStatus::HOST)},
+                 /*on_host=*/true);
+
+  EXPECT_THAT(backend.AlreadyPresentHostResident({"a", "b", "c"}),
+              UnorderedElementsAre("a", "c"));
+  EXPECT_TRUE(backend.AlreadyPresentHostResident({"b"}).empty());
+}
+
+// A block that is registered elsewhere but not resident here is not something
+// this node can serve, so it must not count as present.
+TEST(HostOffloadBackendWriteRemoteTest, AlreadyPresentIgnoresNonHostBlocks) {
+  HostOffloadBackend backend(/*capacity=*/8);
+  RaidenId id{"job", "0", "data", 0};
+  backend.Insert({"remote"}, {RaidenBlockID(id, 1, BlockStatus::REMOTE)},
+                 /*on_host=*/true);
+
+  EXPECT_TRUE(backend.AlreadyPresentHostResident({"remote"}).empty());
+}
+
+TEST(HostOffloadBackendWriteRemoteTest,
+     InsertAllOrNothingInsertsTheWholeBatch) {
+  HostOffloadBackend backend(/*capacity=*/8);
+  RaidenId id{"job", "0", "data", 0};
+
+  EXPECT_TRUE(backend.InsertAllOrNothing(
+      {"a", "b"}, {RaidenBlockID(id, 1, BlockStatus::HOST),
+                   RaidenBlockID(id, 2, BlockStatus::HOST)}));
+  EXPECT_EQ(backend.GetSize(), 2);
+  EXPECT_THAT(backend.AlreadyPresentHostResident({"a", "b"}),
+              UnorderedElementsAre("a", "b"));
+}
+
+// The whole point of the primitive: one duplicate refuses the batch. Insert()
+// would instead rebind the duplicate in place and report partial success,
+// which for a remote write orphans the old host block and lets the source
+// free blocks the destination does not have.
+TEST(HostOffloadBackendWriteRemoteTest, InsertAllOrNothingRefusesADuplicate) {
+  HostOffloadBackend backend(/*capacity=*/8);
+  RaidenId id{"job", "0", "data", 0};
+  backend.Insert({"a"}, {RaidenBlockID(id, 1, BlockStatus::HOST)},
+                 /*on_host=*/true);
+
+  EXPECT_FALSE(backend.InsertAllOrNothing(
+      {"b", "a"}, {RaidenBlockID(id, 2, BlockStatus::HOST),
+                   RaidenBlockID(id, 3, BlockStatus::HOST)}));
+  // "b" must not have landed: nothing, not almost-everything.
+  EXPECT_TRUE(backend.AlreadyPresentHostResident({"b"}).empty());
+  EXPECT_EQ(backend.GetSize(), 1);
+}
+
+// available_space(), not capacity(): pinned entries cannot be evicted to make
+// room, so a cache full of them has no space no matter how large it is.
+TEST(HostOffloadBackendWriteRemoteTest, InsertAllOrNothingRespectsPinnedSpace) {
+  HostOffloadBackend backend(/*capacity=*/2);
+  RaidenId id{"job", "0", "data", 0};
+  ASSERT_TRUE(backend.InsertAndLock({"pinned_a", "pinned_b"},
+                                    {RaidenBlockID(id, 1, BlockStatus::HOST),
+                                     RaidenBlockID(id, 2, BlockStatus::HOST)},
+                                    /*on_host=*/true));
+
+  EXPECT_FALSE(backend.InsertAllOrNothing(
+      {"c"}, {RaidenBlockID(id, 3, BlockStatus::HOST)}));
+}
+
+// The assertion that matters for E1: a failed registration must leave the LRU
+// empty AND the blocks back in the pool. Erasing an entry does not return its
+// block, so a rollback that only erased would leak one block per attempt.
+TEST(HostOffloadBackendWriteRemoteTest, RollbackInsertErasesAndFreesBlocks) {
+  RaidenId id{"job", "0", "data", 0};
+  controller::RaidenController controller(ToProto(id), /*num_blocks=*/4,
+                                          /*num_shards=*/1,
+                                          /*shard_size_bytes=*/1024);
+  HostOffloadBackend backend(/*capacity=*/8, std::nullopt, id, &controller);
+
+  auto ids_or = controller.AllocateBlockIds(4);
+  ASSERT_TRUE(ids_or.ok()) << ids_or.status().ToString();
+  std::vector<int32_t> ids(ids_or->begin(), ids_or->end());
+  // The pool is now empty, which is what makes the free observable.
+  EXPECT_FALSE(controller.AllocateBlockIds(1).ok());
+
+  std::vector<std::string> hashes = {"a", "b", "c", "d"};
+  std::vector<RaidenBlockID> slices;
+  for (int32_t block_id : ids) {
+    slices.push_back(RaidenBlockID(id, block_id, BlockStatus::HOST));
+  }
+  ASSERT_TRUE(backend.InsertAllOrNothing(hashes, slices));
+
+  backend.RollbackInsert(hashes, ids);
+
+  EXPECT_TRUE(backend.AlreadyPresentHostResident(hashes).empty());
+  EXPECT_EQ(backend.GetSize(), 0);
+  auto reallocated = controller.AllocateBlockIds(4);
+  EXPECT_TRUE(reallocated.ok())
+      << "rollback erased the entries but never returned their blocks: "
+      << reallocated.status().ToString();
+}
+
+// With no registry there is nothing to advertise, and no way for the blocks to
+// be believed reachable when they are not -- so this is success, not an error
+// that would fail every write on a registry-less node.
+TEST(HostOffloadBackendWriteRemoteTest,
+     RegisterBlocksSyncIsOkWithoutARegistry) {
+  HostOffloadBackend backend(/*capacity=*/8);
+  EXPECT_TRUE(backend.RegisterBlocksSync({"a"}, {1}).ok());
+}
+
+TEST(HostOffloadBackendWriteRemoteTest,
+     RegisterBlocksSyncPublishesToTheRegistry) {
+  global_registry::GlobalRegistryServiceImpl service;
+  grpc::ServerBuilder builder;
+  int port = 0;
+  builder.AddListeningPort("localhost:0", grpc::InsecureServerCredentials(),
+                           &port);
+  builder.RegisterService(&service);
+  auto server = builder.BuildAndStart();
+  const std::string address = "localhost:" + std::to_string(port);
+  auto channel =
+      grpc::CreateChannel(address, grpc::InsecureChannelCredentials());
+  global_registry::GlobalRegistryClient client(channel);
+
+  RaidenId id{"job_regsync", "0", "data", 0};
+  HostOffloadBackend backend(
+      /*capacity=*/8, std::nullopt, id, /*raiden_controller=*/nullptr,
+      std::make_shared<global_registry::GlobalRegistryClient>(channel));
+
+  ASSERT_TRUE(backend.RegisterBlocksSync({"a", "b"}, {7, 8}).ok());
+
+  auto looked_up = client.Lookup({"a", "b"});
+  ASSERT_TRUE(looked_up.ok()) << looked_up.status().ToString();
+  ASSERT_EQ(looked_up->size(), 2);
+  EXPECT_EQ((*looked_up)[0].block_id(), 7);
+  EXPECT_EQ((*looked_up)[1].block_id(), 8);
+
+  server->Shutdown();
+}
+
+// Unlike Insert's inline Register, which logs and swallows. COMMITTED is only
+// allowed to mean "globally reachable", so this failure has to be visible.
+TEST(HostOffloadBackendWriteRemoteTest, RegisterBlocksSyncReportsFailure) {
+  RaidenId id{"job_regfail", "0", "data", 0};
+  // Port 1 is reserved and never listening.
+  auto channel =
+      grpc::CreateChannel("127.0.0.1:1", grpc::InsecureChannelCredentials());
+  HostOffloadBackend backend(
+      /*capacity=*/8, std::nullopt, id, /*raiden_controller=*/nullptr,
+      std::make_shared<global_registry::GlobalRegistryClient>(channel));
+
+  EXPECT_FALSE(backend.RegisterBlocksSync({"a"}, {1}).ok());
+}
+
+TEST(HostOffloadBackendWriteRemoteTest,
+     RegisterBlocksSyncRejectsMismatchedSizes) {
+  HostOffloadBackend backend(/*capacity=*/8);
+  EXPECT_TRUE(
+      absl::IsInvalidArgument(backend.RegisterBlocksSync({"a", "b"}, {1})));
 }
 
 }  // namespace

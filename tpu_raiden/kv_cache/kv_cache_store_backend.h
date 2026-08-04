@@ -16,11 +16,12 @@
 #define THIRD_PARTY_TPU_RAIDEN_KV_CACHE_KV_CACHE_STORE_BACKEND_H_
 
 #include <cstddef>
-#include <memory>
+#include <cstdint>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
@@ -173,6 +174,64 @@ class KVCacheStoreBackend {
   // Retrieves eviction candidate keys from the backend (for
   // testing/diagnostics).
   virtual std::vector<std::string> GetEvictCandidateKeys() const { return {}; }
+
+  // The peer-facing KVCacheStoreService server this backend hosts, if any.
+  // Returning non-null tells the owning KVCacheStore to publish THIS server
+  // --- Remote write (WriteRemote) ------------------------------------------
+  //
+  // These four exist because a WriteRemote handler holds only this interface,
+  // and because each needs to happen under ONE acquisition of the backend's
+  // lock. Composing them at the service out of Lookup/Insert/Delete would
+  // check and then act with the lock dropped in between, which is exactly the
+  // window a concurrent writer needs.
+  //
+  // The defaults are all refusals, so a backend that does not implement them
+  // makes WriteRemote fail rather than half-succeed.
+
+  // Which of `block_hashes` this backend already holds in host DRAM.
+  //
+  // Not Lookup(): Lookup stops at the first miss (it answers a prefix
+  // question) so it cannot report a scattered subset, and it promotes LRU
+  // order as a side effect. This has to see eviction CANDIDATES too -- a
+  // candidate still has its host block, so treating it as absent would let a
+  // duplicate through.
+  virtual std::vector<std::string> AlreadyPresentHostResident(
+      absl::Span<const std::string> block_hashes) const {
+    return {};
+  }
+
+  // Inserts every hash or none, returning false if any part fails.
+  //
+  // Not Insert(): Insert rebinds a hash that is already present, which for a
+  // remote write would orphan the old host block, and it reports partial
+  // success, which would let the source free blocks the destination does not
+  // have.
+  virtual bool InsertAllOrNothing(absl::Span<const std::string> block_hashes,
+                                  absl::Span<const RaidenBlockID> slices) {
+    return false;
+  }
+
+  // Undoes an InsertAllOrNothing: erases the entries, clears their metadata,
+  // AND returns the host blocks to the pool.
+  //
+  // Not Delete(): Delete silently skips pinned hashes and issues its own
+  // Unregister. A rollback that skipped a pinned entry would leave an LRU
+  // entry pointing at a block this then frees.
+  virtual void RollbackInsert(absl::Span<const std::string> block_hashes,
+                              absl::Span<const int32_t> host_block_ids) {}
+
+  // Publishes `block_hashes` to the global registry and reports whether that
+  // succeeded.
+  //
+  // Not Insert()'s inline Register: that one logs and swallows the failure. A
+  // remote write may only report COMMITTED once the blocks are globally
+  // reachable, or the source frees its copy of blocks no lookup can find.
+  virtual absl::Status RegisterBlocksSync(
+      absl::Span<const std::string> block_hashes,
+      absl::Span<const int32_t> host_block_ids) {
+    return absl::UnimplementedError(
+        "Backend does not implement RegisterBlocksSync.");
+  }
 
   // The peer-facing KVCacheStoreService server this backend hosts, if any.
   // Returning non-null tells the owning KVCacheStore to publish THIS server

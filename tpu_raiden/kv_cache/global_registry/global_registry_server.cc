@@ -24,6 +24,7 @@
 #include <vector>
 
 #include "absl/container/flat_hash_map.h"
+#include "absl/strings/escaping.h"
 #include "absl/strings/str_cat.h"
 #include "absl/synchronization/mutex.h"
 #include "absl/time/clock.h"
@@ -225,7 +226,8 @@ grpc::Status GlobalRegistryServiceImpl::Unregister(
 
     if (entries.size() == orig_size) {
       overall_success = false;
-      errors.push_back(absl::StrCat(hash, ": raiden_id mismatch or not found"));
+      errors.push_back(absl::StrCat(absl::BytesToHexString(hash),
+                                    ": raiden_id mismatch or not found"));
     } else {
       EraseFromOwnerIndex(raiden_id, hash);
     }

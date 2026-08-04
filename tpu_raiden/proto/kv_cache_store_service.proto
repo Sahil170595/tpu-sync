@@ -31,7 +31,9 @@ service KVCacheStoreService {
 // Request to fetch one or more KV cache blocks by hash.
 message FetchRequest {
   // Required: Sequence of block hashes to retrieve from the remote server.
-  repeated string block_hashes = 1;
+  // Raw hash bytes (not UTF-8): proto3 string fields are UTF-8-verified on
+  // the wire, which real (binary) block hashes fail.
+  repeated bytes block_hashes = 1;
 
   // Optional: Physical device block IDs on the destination TPU.
   // - If NON-EMPTY: Target memory is device buffer (HBM). Must match
@@ -49,16 +51,17 @@ message FetchRequest {
 
   // Data-plane transfer endpoints of the CLIENT (the node the bytes are
   // written into), one group per worker, tagged with node_id.
-  repeated tpu_raiden.proto.RaidenWorkerEndpointsProto client_worker_endpoints = 5;
+  repeated tpu_raiden.proto.RaidenWorkerEndpointsProto client_worker_endpoints =
+      5;
 }
 
 // Response describing the outcome of a fetch request.
 message FetchResponse {
   // List of block hashes that were successfully fetched into the target buffer.
-  repeated string done_block_hashes = 1;
+  repeated bytes done_block_hashes = 1;
 
   // List of block hashes that failed to be fetched.
-  repeated string failed_block_hashes = 2;
+  repeated bytes failed_block_hashes = 2;
 
   // Error status code or message for detailed reporting.
   string error_message = 3;

@@ -129,6 +129,45 @@ TEST_F(GlobalRegistryTest, BasicRegisterAndLookup) {
   EXPECT_EQ(meta.block_id(), block);
 }
 
+TEST_F(GlobalRegistryTest, BinaryHashRegisterAndLookup) {
+  std::string hash("\x93\xff\x00\xa1\xfe\x80zz\x01\xc3\xbf\xed", 12);
+  RaidenId host = {"job1", "replica1", "data1", 0};
+
+  auto status = client_->Register({{hash, host, 7}});
+  EXPECT_TRUE(status.ok()) << status.ToString();
+
+  auto lookup_res = client_->Lookup({hash});
+  ASSERT_TRUE(lookup_res.ok()) << lookup_res.status().ToString();
+  ASSERT_EQ(lookup_res->size(), 1);
+  EXPECT_EQ((*lookup_res)[0].raiden_id().job_name(), host.job_name);
+  EXPECT_EQ((*lookup_res)[0].block_id(), 7);
+
+  auto owned = PullOwned(host);
+  ASSERT_EQ(owned.size(), 1);
+  EXPECT_EQ(owned[0].prefix_hash(), hash);
+
+  auto unreg = client_->Unregister({hash}, host);
+  EXPECT_TRUE(unreg.ok()) << unreg.ToString();
+  auto after = client_->Lookup({hash});
+  ASSERT_TRUE(after.ok());
+  EXPECT_TRUE(after->empty());
+}
+
+TEST_F(GlobalRegistryTest, BinaryHashUnregisterMismatchReportsHexError) {
+  std::string hash("\xde\xad\xbe\xef\xff\x00\xc3\x28", 8);
+  RaidenId owner = {"job1", "replica1", "data1", 0};
+  RaidenId other = {"job2", "replica2", "data2", 1};
+
+  ASSERT_TRUE(client_->Register({{hash, owner, 3}}).ok());
+
+  absl::Status unreg = client_->Unregister({hash}, other);
+  EXPECT_EQ(unreg.code(), absl::StatusCode::kFailedPrecondition)
+      << unreg.ToString();
+  EXPECT_NE(std::string(unreg.message()).find("deadbeefff00c328"),
+            std::string::npos)
+      << unreg.message();
+}
+
 TEST_F(GlobalRegistryTest, MultiRegistrationAndRoundRobinLookup) {
   std::string hash = "hash1";
   RaidenId host1 = {"job1", "replica1", "data1", 0};

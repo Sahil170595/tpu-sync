@@ -437,7 +437,14 @@ class KVCacheStoreE2ETest(parameterized.TestCase):
       # Wait for listeners to start
       time.sleep(1)
 
-      hashes = [f"{tag}_h0".encode(), f"{tag}_h1".encode()]
+      # Raw non-UTF-8 bytes on purpose: production hashes are binary
+      # digests, and the registry round-trip must survive them (the proto
+      # hash fields are `bytes`; as `string` they were UTF-8-verified on
+      # the wire and cross-store sharing silently found nothing).
+      hashes = [
+          b"\x93\xff\x00" + f"{tag}_h0".encode(),
+          b"\x93\xff\x00" + f"{tag}_h1".encode(),
+      ]
 
       # 4. Job A inserts HBM status and calls Save
       slices_a = [
@@ -729,7 +736,14 @@ class KVCacheStoreE2ETest(parameterized.TestCase):
 
     try:
       time.sleep(1)
-      hashes = [f"{tag}_h0".encode(), f"{tag}_h1".encode()]
+      # Raw non-UTF-8 bytes on purpose: production hashes are binary
+      # digests, and the registry round-trip must survive them (the proto
+      # hash fields are `bytes`; as `string` they were UTF-8-verified on
+      # the wire and cross-store sharing silently found nothing).
+      hashes = [
+          b"\x93\xff\x00" + f"{tag}_h0".encode(),
+          b"\x93\xff\x00" + f"{tag}_h1".encode(),
+      ]
       slices_a = [
           kv_cache_store.RaidenBlockID(
               rid_a,

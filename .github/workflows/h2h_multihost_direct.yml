@@ -1,0 +1,71 @@
+# Copyright 2026 Google LLC.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+
+name: H2H Cross-Host Distribution (direct runner)
+
+on:
+  workflow_dispatch:
+    inputs:
+      iters:
+        description: "Timed iterations per config = raw samples per config"
+        default: "500"
+      timeout_s:
+        description: "Per-process hard timeout, seconds"
+        default: "2400"
+
+permissions:
+  contents: read
+
+jobs:
+  h2h_dist:
+    name: H2H cross-host sample collection (direct)
+    runs-on: linux-x86-ct5lp-4tpu-x4
+    timeout-minutes: 180
+    container:
+      image: us-central1-docker.pkg.dev/wyzhang-dev/quickstart-docker-repo/ml-build:939285342
+    env:
+      WORKLOAD_ARTIFACTS_DIR: ${{ github.workspace }}/h2h_artifacts
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Identify this host
+        id: rank
+        run: |
+          HN="$(hostname)"
+          RANK="${HN##*-}"
+          [[ "$RANK" =~ ^[0-9]+$ ]] || RANK="unknown"
+          echo "rank=$RANK" >> "$GITHUB_OUTPUT"
+          echo "this host is rank $RANK ($HN)"
+          mkdir -p "$WORKLOAD_ARTIFACTS_DIR"
+
+      - name: Collect H2H samples
+        run: |
+          bazel run -c opt --config=oss --config=ci \
+            //tpu_raiden/benchmarks:h2h_cpp_gate -- \
+            --multihost \
+            --analyze \
+            --iters=${{ inputs.iters }} \
+            --timeout_s=${{ inputs.timeout_s }} \
+            --dump=h2h_cpp_samples.csv \
+            2>&1 | tee "$WORKLOAD_ARTIFACTS_DIR/h2h_dist.log"
+
+      - name: Upload samples + log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: h2h-dist-rank-${{ steps.rank.outputs.rank }}
+          path: ${{ github.workspace }}/h2h_artifacts/
+          if-no-files-found: warn

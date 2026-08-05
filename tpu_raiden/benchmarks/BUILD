@@ -36,6 +36,7 @@ py_library(
     visibility = ["//visibility:public"],
     deps = [
         "//tpu_raiden/frameworks/jax:_tpu_raiden_jax",
+        "//tpu_raiden/frameworks/jax:jax_test_utils",
         "@jax//jax",
         "@pypi//libtpu",
         "@pypi//numpy",

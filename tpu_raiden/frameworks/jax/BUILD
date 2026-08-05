@@ -81,10 +81,9 @@ cc_library(
         "@xla//xla:shape_util",
         "@xla//xla/pjrt:pjrt_client",
         "@xla//xla/pjrt:pjrt_layout",
+        "@xla//xla/pjrt:raw_buffer",
         "@xla//xla/python:nb_numpy",
         "@xla//xla/python:types",
-        "@xla//xla/python/ifrt",
-        "@xla//xla/python/pjrt_ifrt",
     ],
 )
 
@@ -430,7 +429,6 @@ cc_library(
     name = "raw_transfer_jax",
     srcs = ["raw_transfer.cc"],
     hdrs = [
-        "jax_utils.h",
         "raw_transfer_internal.h",
     ],
     copts = [
@@ -440,6 +438,7 @@ cc_library(
     ],
     features = ["-use_header_modules"],
     deps = [
+        ":jax_utils",
         ":mock_nanobind",
         "//tpu_raiden/core:raw_transfer_core",
         "//tpu_raiden/core:raw_transfer_impl",
@@ -449,14 +448,15 @@ cc_library(
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:string_view",
         "@com_google_absl//absl/types:span",
-        "@jax//jaxlib:py_client",
         "@nanobind",
         "@rules_python//python/cc:current_py_cc_headers",
+        "@xla//xla:shape_util",
         "@xla//xla/pjrt:pjrt_client",
+        "@xla//xla/pjrt:pjrt_layout",
         "@xla//xla/pjrt:status_casters",
         "@xla//xla/pjrt/c:pjrt_c_api_raw_buffer_external",  # buildcleaner: keep
-        "@xla//xla/python/ifrt",
-        "@xla//xla/python/pjrt_ifrt",
+        "@xla//xla/python:nb_numpy",
+        "@xla//xla/python:types",
     ],
 )
 
@@ -483,12 +483,11 @@ cc_library(
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:string_view",
         "@com_google_absl//absl/types:span",
-        "@xla//xla/pjrt:pjrt_client",
+        "@xla//xla:shape_util",
+        "@xla//xla/pjrt:pjrt_layout",
+        "@xla//xla/pjrt:raw_buffer",
         "@xla//xla/pjrt:status_casters",
         "@xla//xla/pjrt/c:pjrt_c_api_raw_buffer_external",  # buildcleaner: keep
-        "@xla//xla/python/ifrt",
-        "@xla//xla/python/pjrt_ifrt",
-        "@xla//xla/tsl/concurrency:ref_count",
     ],
 )
 
@@ -500,8 +499,10 @@ cc_test(
     deps = [
         ":raw_transfer_jax_mock",
         "//tpu_raiden/core:raw_transfer_core",
+        "@com_google_absl//absl/log:check",
         "@xla//xla/pjrt:common_pjrt_client",
         "@xla//xla/pjrt:pjrt_client",
+        "@xla//xla/pjrt:raw_buffer",
         "@xla//xla/pjrt/plugin/xla_cpu:xla_cpu_pjrt_client",
         "@xla//xla/stream_executor/host:host_platform",
         "@xla//xla/tsl/platform:statusor",
@@ -518,7 +519,6 @@ py_test(
     main = "kv_cache_manager_test.py",
     tags = [
         "cpu:4",
-        "notap",
     ],
     deps = [
         ":_tpu_raiden_jax",
@@ -581,7 +581,6 @@ py_test(
     main = "raw_transfer_perf_test.py",
     tags = [
         "cpu:8",
-        "notap",
         "requires-accel-hbm",
         "requires-ghostlite:8",
         "requires-net:external",
@@ -604,7 +603,6 @@ py_test(
     main = "raw_transfer_perf_test.py",
     tags = [
         "cpu:8",
-        "notap",
         "requires-accel-hbm",
         "requires-ghostfish:4",
         "requires-net:external",
@@ -627,7 +625,6 @@ py_test(
     main = "raw_transfer_test.py",
     tags = [
         "cpu:8",
-        "notap",
         "requires-accel-hbm",
         "requires-ghostlite:8",
         "requires-net:external",
@@ -648,7 +645,6 @@ py_test(
     main = "raw_transfer_test.py",
     tags = [
         "cpu:8",
-        "notap",
         "requires-accel-hbm",
         "requires-ghostfish:4",
         "requires-net:external",
@@ -707,7 +703,7 @@ cc_test(
         "-fexceptions",
     ],
     features = ["-use_header_modules"],
-    tags = ["notap"],
+    tags = [],
     deps = [
         ":kv_cache_manager_core_lib",
         "//tpu_raiden/core:kv_cache_manager_with_transfer",

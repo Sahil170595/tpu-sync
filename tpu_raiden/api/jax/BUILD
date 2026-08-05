@@ -42,7 +42,6 @@ py_test(
     ],
     tags = [
         "manual",
-        "notap",
     ],
     deps = [
         ":kv_cache_store",
@@ -85,7 +84,7 @@ py_library(
 py_test(
     name = "weight_synchronizer_test",
     srcs = ["weight_synchronizer_test.py"],
-    tags = ["notap"],
+    tags = [],
     deps = [
         ":weight_synchronizer_jax_py",
         "//tpu_raiden/rpc:raiden_service_py_pb2",

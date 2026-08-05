@@ -22,8 +22,11 @@
 #include <utility>
 #include <vector>
 
+#include "absl/log/check.h"
+#include "xla/pjrt/abstract_tracked_device_buffer.h"
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/pjrt/plugin/xla_cpu/xla_cpu_pjrt_client.h"
+#include "xla/pjrt/raw_buffer.h"
 #include "xla/tsl/platform/statusor.h"
 #include "xla/tsl/platform/test.h"
 #include "tpu_raiden/core/raw_transfer_core.h"
@@ -63,7 +66,38 @@ nb::object CreateMockDeviceArray(xla::PjRtBuffer* pjrt_buffer) {
   nb::object arr;
   nb::list shards;
   nb::object shard;
-  nb::object shard_data(reinterpret_cast<void*>(pjrt_buffer));
+  nb::object shard_data;
+
+  xla::PjRtRawBufferInterface* raw_buf = nullptr;
+  auto* common_buf = dynamic_cast<xla::CommonPjRtBuffer*>(pjrt_buffer);
+  if (common_buf) {
+    auto hold = common_buf->GetBufferWithHold(
+        xla::CommonPjRtBuffer::ScopedHold::kUsage);
+    if (hold.ok()) {
+      raw_buf = hold.buffer()->raw_buffer().get();
+    }
+  }
+
+  // We must have a valid raw buffer for this test path.
+  CHECK_NE(raw_buf, nullptr) << "Failed to get raw buffer from pjrt_buffer";
+
+  nb::object unsafe_raw_buffer_fn;
+  unsafe_raw_buffer_fn.set_callable([raw_buf]() {
+    nb::object raw_buf_obj(0);  // Dummy value to not be None
+    raw_buf_obj.set_attr("ptr", nb::object(reinterpret_cast<size_t>(raw_buf)));
+    return raw_buf_obj;
+  });
+  shard_data.set_attr("unsafe_raw_buffer", unsafe_raw_buffer_fn);
+
+  nb::list shape_list;
+  for (int64_t dim : pjrt_buffer->on_device_shape().dimensions()) {
+    shape_list.add_element(nb::object(dim));
+  }
+  shard_data.set_attr("shape", shape_list);
+
+  shard_data.set_attr("dtype", nb::object());
+  shard_data.set_attr("_pjrt_layout", nb::object());
+  shard_data.set_attr("ptr", nb::object(reinterpret_cast<size_t>(pjrt_buffer)));
 
   shard.set_attr("data", shard_data);
   shards.add_element(shard);

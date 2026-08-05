@@ -1,0 +1,210 @@
+// Copyright 2026 Google LLC.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+#include "tpu_raiden/store_node/kv_cache_host_store_node.h"
+
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <exception>
+#include <memory>
+#include <string>
+#include <utility>
+
+#include "absl/log/log.h"
+#include "absl/memory/memory.h"
+#include "absl/random/random.h"
+#include "absl/status/status.h"
+#include "absl/status/statusor.h"
+#include "absl/strings/match.h"
+#include "absl/strings/str_cat.h"
+#include "absl/strings/string_view.h"
+#include "absl/time/clock.h"
+#include "absl/time/time.h"
+#include "tpu_raiden/core/controller/controller_client.h"
+#include "tpu_raiden/core/controller/worker_service_server.h"
+#include "tpu_raiden/core/kv_cache_manager_with_transfer.h"
+#include "tpu_raiden/core/kv_manager_holder.h"
+#include "tpu_raiden/core/status_macros.h"
+#include "tpu_raiden/kv_cache/kv_cache_store.h"
+#include "tpu_raiden/store_node/kv_transfer_spec_source.h"
+
+namespace tpu_raiden {
+namespace store_node {
+namespace {
+
+absl::Status ValidateOptions(const KVCacheHostStoreNode::Options& options) {
+  if (options.raiden_id.empty()) {
+    return absl::InvalidArgumentError("options.raiden_id must be set");
+  }
+  if (options.store_server_ip.empty()) {
+    return absl::InvalidArgumentError(
+        "options.store_server_ip must be set: a host store node exists to be "
+        "reached by peers, so it always binds and advertises a concrete IP");
+  }
+  if (options.dram_budget_bytes == 0) {
+    return absl::InvalidArgumentError("options.dram_budget_bytes must be set");
+  }
+  return absl::OkStatus();
+}
+
+std::string ComposeEndpoint(absl::string_view ip, int port) {
+  return absl::StrContains(ip, ":") ? absl::StrCat("[", ip, "]:", port)
+                                    : absl::StrCat(ip, ":", port);
+}
+
+// Transfer worker pairing id of this node's single worker. A peer pairs
+// each of its workers with the worker here that has the same node_id so this
+// value must mirror the peer's and is deliberately not configurable. The
+// full worker topology to mirror (one worker per serving-host transfer
+// rank, same node_ids) will come with the published KVTransferSpec; the
+// node will then run one manager/worker per entry and this constant goes
+// away. Until then a single worker under node_id 0 matches a
+// single-transfer-rank serving host.
+constexpr int64_t kNodeId = 0;
+
+}  // namespace
+
+absl::StatusOr<KVTransferSpec> KVCacheHostStoreNode::WaitForSpec(
+    KVTransferSpecSource& source, const Options& options) {
+  absl::BitGen gen;
+  absl::Duration interval = options.spec_poll_initial;
+  const absl::Time deadline = absl::Now() + options.spec_wait_timeout;
+  while (true) {
+    absl::StatusOr<KVTransferSpec> spec = source.Get();
+    if (spec.ok()) {
+      RETURN_IF_ERROR(ValidateSpec(*spec));
+      return spec;
+    }
+    if (!absl::IsNotFound(spec.status()) &&
+        !absl::IsUnavailable(spec.status())) {
+      return spec.status();
+    }
+    if (absl::Now() >= deadline) {
+      return absl::DeadlineExceededError(
+          absl::StrCat("KV transfer spec not published within ",
+                       absl::FormatDuration(options.spec_wait_timeout),
+                       "; last source status: ", spec.status().ToString()));
+    }
+    absl::SleepFor(interval * absl::Uniform(gen, 0.5, 1.5));
+    interval = std::min(interval * 2, options.spec_poll_max);
+  }
+}
+
+absl::StatusOr<size_t> KVCacheHostStoreNode::NumBlocksForBudget(
+    size_t dram_budget_bytes, const KVTransferSpec& spec) {
+  RETURN_IF_ERROR(ValidateSpec(spec));
+  const size_t block_bytes =
+      spec.num_layers * spec.num_shards * spec.slice_byte_size;
+  if (dram_budget_bytes < block_bytes) {
+    return absl::InvalidArgumentError(absl::StrCat(
+        "dram_budget_bytes=", dram_budget_bytes,
+        " does not cover a single block of ", block_bytes,
+        " bytes (num_layers=", spec.num_layers, " x num_shards=",
+        spec.num_shards, " x slice_byte_size=", spec.slice_byte_size, ")"));
+  }
+  return dram_budget_bytes / block_bytes;
+}
+
+absl::StatusOr<std::unique_ptr<KVCacheHostStoreNode>>
+KVCacheHostStoreNode::Create(const Options& options,
+                             KVTransferSpecSource* kv_transfer_spec_source) {
+  RETURN_IF_ERROR(ValidateOptions(options));
+  if (kv_transfer_spec_source == nullptr) {
+    return absl::InvalidArgumentError(
+        "kv_transfer_spec_source must not be null");
+  }
+
+  // Phase A: the only input the node cannot know on its own.
+  ASSIGN_OR_RETURN(const KVTransferSpec spec,
+                   WaitForSpec(*kv_transfer_spec_source, options));
+  ASSIGN_OR_RETURN(const size_t num_host_blocks,
+                   NumBlocksForBudget(options.dram_budget_bytes, spec));
+
+  // Phase B: the same assembly a serving host runs, CPU-backed.
+  std::unique_ptr<KVCacheManagerWithTransfer> manager;
+  std::unique_ptr<kv_cache::KVCacheStore> store;
+  try {
+    // 1. The pool. The CPU-only constructor allocates and zeroes the full
+    // num_host_blocks x num_layers x num_shards x slice_byte_size pool here,
+    // so the memory cost is paid at boot, never on a request path. A
+    // follow-up change will build one KVCacheManagerWithTransfer per entry
+    // of the worker topology the serving hosts publish in the global
+    // registry, replacing this single instance (see kNodeId above).
+    // local_control_port=-1: the slot protocol is engine-to-engine
+    // coordination and has no role on a host store node.
+    manager = std::make_unique<KVCacheManagerWithTransfer>(
+        spec.num_layers, spec.num_shards, spec.slice_byte_size,
+        /*local_port=*/0,
+        /*host_blocks_to_allocate=*/num_host_blocks, options.parallelism,
+        kNodeId, /*local_control_port=*/-1);
+
+    // 2. Everything above the pool: the RaidenController coordination plane
+    // (num_blocks sized to the capacity, so incoming writes can allocate
+    // block ids through AllocateBlockIds), the LRU cache, and the
+    // peer-facing store server. The constructor publishes the node to the
+    // global registry (RegisterStore) once the store server is bound, so
+    // registration happens exactly when the advertised address is live.
+    // With no global registry configured KVCacheStore stands up no store
+    // server at all (the registry decides whether the peer plane exists).
+    store = std::make_unique<kv_cache::KVCacheStore>(
+        /*capacity=*/num_host_blocks, options.global_registry_address,
+        options.raiden_id, static_cast<int>(spec.num_shards),
+        static_cast<int64_t>(spec.slice_byte_size),
+        options.raiden_orchestrator_address, options.store_server_ip,
+        options.raiden_controller_port);
+  } catch (const std::exception& e) {
+    return absl::UnavailableError(
+        absl::StrCat("host store node assembly failed: ", e.what()));
+  }
+
+  // 3. Make the manager reachable from the controller. StartServer must
+  // precede RegisterWorker: registration needs the worker's live control
+  // endpoint. Registration goes through the controller's own RPC, the same
+  // path a serving host's worker takes.
+  auto worker_server = controller::WorkerServiceServer::Create();
+  RETURN_IF_ERROR(worker_server->StartServer(
+      /*host_allocator=*/nullptr, KVManagerHolder(manager.get()),
+      /*port=*/0));
+  const std::string worker_endpoint = ComposeEndpoint(
+      options.store_server_ip, worker_server->GetRaidenWorkerPort());
+  core::controller::RaidenControllerClient controller_client(
+      store->raiden_controller_address());
+  absl::Status registered = controller_client.RegisterWorker(
+      "worker_0", worker_endpoint, manager->get_local_data_endpoints(),
+      kNodeId);
+  if (!registered.ok()) {
+    // Without a worker the node can neither receive nor serve bytes, so fail
+    // the whole boot rather than come up half-alive.
+    return absl::Status(
+        registered.code(),
+        absl::StrCat("host store node worker registration failed: ",
+                     registered.message()));
+  }
+
+  auto node = absl::WrapUnique(
+      new KVCacheHostStoreNode(spec, num_host_blocks, std::move(manager),
+                               std::move(worker_server), std::move(store)));
+  LOG(INFO) << "KVCacheHostStoreNode up: " << node->num_host_blocks()
+            << " host blocks (num_layers=" << spec.num_layers
+            << " num_shards=" << spec.num_shards
+            << " slice_byte_size=" << spec.slice_byte_size << "), store server "
+            << node->store_server_address() << ", controller "
+            << node->raiden_controller_address() << ", worker "
+            << worker_endpoint;
+  return node;
+}
+
+}  // namespace store_node
+}  // namespace tpu_raiden

@@ -1,0 +1,263 @@
+// Copyright 2026 Google LLC.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+#include "tpu_raiden/store_node/kv_cache_host_store_node.h"
+
+#include <cstddef>
+#include <cstdlib>
+#include <memory>
+
+#include <gmock/gmock.h>
+#include <gtest/gtest.h>
+#include "absl/status/status.h"
+#include "absl/status/statusor.h"
+#include "absl/strings/str_cat.h"
+#include "absl/time/time.h"
+#include "grpcpp/create_channel.h"
+#include "grpcpp/security/credentials.h"
+#include "grpcpp/security/server_credentials.h"
+#include "grpcpp/server.h"
+#include "grpcpp/server_builder.h"
+#include "tpu_raiden/kv_cache/raiden_id.h"
+#include "tpu_raiden/store_node/kv_transfer_spec_source.h"
+#include "tpu_raiden/kv_cache/global_registry/global_registry_client.h"
+#include "tpu_raiden/kv_cache/global_registry/global_registry_server.h"
+
+namespace tpu_raiden {
+namespace store_node {
+namespace {
+
+using ::testing::HasSubstr;
+
+// Yields `status` until `failures` calls have been made, then the spec.
+class FlakyKVTransferSpecSource : public KVTransferSpecSource {
+ public:
+  FlakyKVTransferSpecSource(KVTransferSpec spec, int failures,
+                            absl::Status status)
+      : spec_(spec), failures_(failures), status_(status) {}
+
+  absl::StatusOr<KVTransferSpec> Get() override {
+    ++calls_;
+    if (calls_ <= failures_) {
+      return status_;
+    }
+    return spec_;
+  }
+
+  int calls() const { return calls_; }
+
+ private:
+  KVTransferSpec spec_;
+  int failures_;
+  absl::Status status_;
+  int calls_ = 0;
+};
+
+KVTransferSpec TestSpec() { return KVTransferSpec{2, 1, 256}; }
+
+KVCacheHostStoreNode::Options FastPollOptions() {
+  KVCacheHostStoreNode::Options options;
+  options.spec_poll_initial = absl::Milliseconds(1);
+  options.spec_poll_max = absl::Milliseconds(4);
+  return options;
+}
+
+TEST(ValidateSpecTest, RejectsAnyZeroField) {
+  EXPECT_TRUE(ValidateSpec(TestSpec()).ok());
+  EXPECT_TRUE(absl::IsInvalidArgument(ValidateSpec(KVTransferSpec{0, 1, 256})));
+  EXPECT_TRUE(absl::IsInvalidArgument(ValidateSpec(KVTransferSpec{2, 0, 256})));
+  EXPECT_TRUE(absl::IsInvalidArgument(ValidateSpec(KVTransferSpec{2, 1, 0})));
+}
+
+TEST(WaitForSpecTest, RetriesNotFoundUntilPublished) {
+  FlakyKVTransferSpecSource source(TestSpec(), /*failures=*/3,
+                                   absl::NotFoundError("not published"));
+  absl::StatusOr<KVTransferSpec> spec =
+      KVCacheHostStoreNode::WaitForSpec(source, FastPollOptions());
+  ASSERT_TRUE(spec.ok()) << spec.status();
+  EXPECT_EQ(spec->slice_byte_size, TestSpec().slice_byte_size);
+  EXPECT_EQ(source.calls(), 4);
+}
+
+TEST(WaitForSpecTest, RetriesUnavailable) {
+  FlakyKVTransferSpecSource source(TestSpec(), /*failures=*/2,
+                                   absl::UnavailableError("registry not up"));
+  absl::StatusOr<KVTransferSpec> spec =
+      KVCacheHostStoreNode::WaitForSpec(source, FastPollOptions());
+  ASSERT_TRUE(spec.ok()) << spec.status();
+  EXPECT_EQ(source.calls(), 3);
+}
+
+TEST(WaitForSpecTest, PropagatesFatalErrorWithoutRetry) {
+  FlakyKVTransferSpecSource source(TestSpec(), /*failures=*/100,
+                                   absl::InternalError("corrupt registry"));
+  absl::StatusOr<KVTransferSpec> spec =
+      KVCacheHostStoreNode::WaitForSpec(source, FastPollOptions());
+  EXPECT_TRUE(absl::IsInternal(spec.status()));
+  EXPECT_EQ(source.calls(), 1);
+}
+
+TEST(WaitForSpecTest, RejectsInvalidPublishedSpec) {
+  FlakyKVTransferSpecSource source(KVTransferSpec{0, 0, 0}, /*failures=*/0,
+                                   absl::OkStatus());
+  absl::StatusOr<KVTransferSpec> spec =
+      KVCacheHostStoreNode::WaitForSpec(source, FastPollOptions());
+  EXPECT_TRUE(absl::IsInvalidArgument(spec.status()));
+}
+
+TEST(WaitForSpecTest, TimesOut) {
+  FlakyKVTransferSpecSource source(TestSpec(), /*failures=*/1000000,
+                                   absl::NotFoundError("not published"));
+  KVCacheHostStoreNode::Options options = FastPollOptions();
+  options.spec_wait_timeout = absl::Milliseconds(30);
+  absl::StatusOr<KVTransferSpec> spec =
+      KVCacheHostStoreNode::WaitForSpec(source, options);
+  EXPECT_TRUE(absl::IsDeadlineExceeded(spec.status()));
+  EXPECT_GT(source.calls(), 1);
+}
+
+TEST(NumBlocksForBudgetTest, FloorsToWholeBlocks) {
+  // One block of TestSpec() is 2 * 1 * 256 = 512 bytes.
+  absl::StatusOr<size_t> blocks =
+      KVCacheHostStoreNode::NumBlocksForBudget(4096, TestSpec());
+  ASSERT_TRUE(blocks.ok()) << blocks.status();
+  EXPECT_EQ(*blocks, 8u);
+  blocks = KVCacheHostStoreNode::NumBlocksForBudget(4095, TestSpec());
+  ASSERT_TRUE(blocks.ok()) << blocks.status();
+  EXPECT_EQ(*blocks, 7u);
+}
+
+TEST(NumBlocksForBudgetTest, RejectsBudgetBelowOneBlock) {
+  absl::StatusOr<size_t> blocks =
+      KVCacheHostStoreNode::NumBlocksForBudget(511, TestSpec());
+  EXPECT_TRUE(absl::IsInvalidArgument(blocks.status()));
+  EXPECT_THAT(blocks.status().message(), HasSubstr("single block"));
+}
+
+// Boot tests stand up real (loopback) gRPC servers; the env var isolates
+// each node's controller/worker servers from the process-wide singletons so
+// tests do not leak servers into each other.
+class KVCacheHostStoreNodeBootTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    setenv("RAIDEN_DISABLE_SINGLETON_WORKER", "1", /*overwrite=*/1);
+  }
+  void TearDown() override { unsetenv("RAIDEN_DISABLE_SINGLETON_WORKER"); }
+
+  KVCacheHostStoreNode::Options BootOptions() {
+    KVCacheHostStoreNode::Options options = FastPollOptions();
+    options.raiden_id =
+        kv_cache::RaidenId{"store_node_test", "0", "kv_pool", 0};
+    options.store_server_ip = "localhost";
+    options.dram_budget_bytes = 8 * 512;  // 8 blocks of TestSpec().
+    return options;
+  }
+};
+
+TEST_F(KVCacheHostStoreNodeBootTest, RequiresStoreServerIp) {
+  KVCacheHostStoreNode::Options options = BootOptions();
+  options.store_server_ip.clear();
+  StaticKVTransferSpecSource source(TestSpec());
+  absl::StatusOr<std::unique_ptr<KVCacheHostStoreNode>> node =
+      KVCacheHostStoreNode::Create(options, &source);
+  EXPECT_TRUE(absl::IsInvalidArgument(node.status()));
+  EXPECT_THAT(node.status().message(), HasSubstr("store_server_ip"));
+}
+
+TEST_F(KVCacheHostStoreNodeBootTest, RequiresKVTransferSpecSource) {
+  absl::StatusOr<std::unique_ptr<KVCacheHostStoreNode>> node =
+      KVCacheHostStoreNode::Create(BootOptions(), nullptr);
+  EXPECT_TRUE(absl::IsInvalidArgument(node.status()));
+}
+
+TEST_F(KVCacheHostStoreNodeBootTest, BootsWithoutRegistryButServesNoPeers) {
+  StaticKVTransferSpecSource source(TestSpec());
+  absl::StatusOr<std::unique_ptr<KVCacheHostStoreNode>> node =
+      KVCacheHostStoreNode::Create(BootOptions(), &source);
+  ASSERT_TRUE(node.ok()) << node.status();
+
+  // The budget became whole blocks of the received spec.
+  EXPECT_EQ((*node)->num_host_blocks(), 8u);
+  EXPECT_EQ((*node)->spec().num_layers, TestSpec().num_layers);
+
+  // KVCacheStore's construction rules make the global registry decide
+  // whether the peer-facing plane exists: no registry, no store server.
+  EXPECT_EQ((*node)->store()->store_server(), nullptr);
+  EXPECT_EQ((*node)->store_server_address(), "");
+
+  // The controller is live and knows exactly our one worker, registered
+  // under node_id 0 -- the pairing id the serving hosts' single worker
+  // uses, mirrored rather than configured.
+  auto workers = (*node)
+                     ->store()
+                     ->raiden_controller()
+                     ->worker_registry()
+                     ->GetRegisteredWorkers();
+  ASSERT_EQ(workers.size(), 1u);
+  EXPECT_EQ(workers[0].node_id, 0);
+
+  // The manager opened its raw-transfer data endpoint.
+  EXPECT_FALSE((*node)->manager()->get_local_endpoints().empty());
+}
+
+TEST_F(KVCacheHostStoreNodeBootTest, BootsServesAndPublishesWithRegistry) {
+  // A live in-process global registry, the same pattern
+  // kv_cache_store_test.cc uses.
+  auto service =
+      std::make_unique<kv_cache::global_registry::GlobalRegistryServiceImpl>();
+  grpc::ServerBuilder builder;
+  int port = 0;
+  builder.AddListeningPort("localhost:0", grpc::InsecureServerCredentials(),
+                           &port);
+  builder.RegisterService(service.get());
+  std::unique_ptr<grpc::Server> registry_server = builder.BuildAndStart();
+  ASSERT_NE(registry_server, nullptr);
+  ASSERT_NE(port, 0);
+
+  KVCacheHostStoreNode::Options options = BootOptions();
+  options.global_registry_address = absl::StrCat("localhost:", port);
+
+  StaticKVTransferSpecSource source(TestSpec());
+  absl::StatusOr<std::unique_ptr<KVCacheHostStoreNode>> node =
+      KVCacheHostStoreNode::Create(options, &source);
+  ASSERT_TRUE(node.ok()) << node.status();
+
+  // The peer-facing store server is bound and advertised.
+  EXPECT_THAT((*node)->store_server_address(), HasSubstr("localhost:"));
+  EXPECT_NE((*node)->store()->store_server(), nullptr);
+
+  // And the node published itself: the registry resolves our RaidenId to
+  // the advertised store address.
+  auto channel = grpc::CreateChannel(options.global_registry_address,
+                                     grpc::InsecureChannelCredentials());
+  kv_cache::global_registry::GlobalRegistryClient registry_client(channel);
+  auto store_info = registry_client.ResolveStore(options.raiden_id);
+  ASSERT_TRUE(store_info.ok()) << store_info.status();
+  EXPECT_EQ(store_info->store_server_address(),
+            (*node)->store_server_address());
+}
+
+TEST_F(KVCacheHostStoreNodeBootTest, WaitsOutLateSpecThenBoots) {
+  FlakyKVTransferSpecSource source(TestSpec(), /*failures=*/2,
+                                   absl::NotFoundError("not published"));
+  absl::StatusOr<std::unique_ptr<KVCacheHostStoreNode>> node =
+      KVCacheHostStoreNode::Create(BootOptions(), &source);
+  ASSERT_TRUE(node.ok()) << node.status();
+  EXPECT_EQ(source.calls(), 3);
+  EXPECT_EQ((*node)->num_host_blocks(), 8u);
+}
+
+}  // namespace
+}  // namespace store_node
+}  // namespace tpu_raiden

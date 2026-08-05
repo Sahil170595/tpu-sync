@@ -104,7 +104,6 @@ cc_library(
         ":jax_utils",
         "@nanobind",
         "@xla//xla/pjrt:pjrt_client",
-        "@xla//xla/python/ifrt",
     ],
 )
 
@@ -522,6 +521,7 @@ py_test(
     ],
     deps = [
         ":_tpu_raiden_jax",
+        ":jax_test_utils",
         "@com_google_absl_py//absl/flags",
         "@com_google_absl_py//absl/testing:absltest",
         "@com_google_absl_py//absl/testing:parameterized",

@@ -20,7 +20,10 @@ py_library(
     name = "kv_cache_manager_jax_py",
     srcs = ["kv_cache_manager.py"],
     visibility = ["//visibility:public"],
-    deps = ["//tpu_raiden/frameworks/jax:_tpu_raiden_jax"],
+    deps = [
+        "//tpu_raiden/frameworks/jax:_tpu_raiden_jax",
+        "//tpu_raiden/frameworks/jax:jax_test_utils",
+    ],
 )
 
 py_library(
@@ -30,6 +33,7 @@ py_library(
     deps = [
         "//tpu_raiden/api:common",
         "//tpu_raiden/frameworks/jax:_tpu_raiden_jax",
+        "//tpu_raiden/frameworks/jax:jax_test_utils",
     ],
 )
 
@@ -74,10 +78,13 @@ py_test(
 
 py_library(
     name = "weight_synchronizer_jax_py",
-    srcs = ["weight_synchronizer.py"],
+    srcs = [
+        "weight_synchronizer.py",
+    ],
     visibility = ["//visibility:public"],
     deps = [
         "//tpu_raiden/frameworks/jax:_tpu_raiden_jax",
+        "//tpu_raiden/frameworks/jax:jax_test_utils",
     ],
 )
 
@@ -87,6 +94,7 @@ py_test(
     tags = [],
     deps = [
         ":weight_synchronizer_jax_py",
+        "//tpu_raiden/frameworks/jax:jax_test_utils",
         "//tpu_raiden/rpc:raiden_service_py_pb2",
         "@com_google_absl_py//absl/testing:absltest",
         "@jax//jax",

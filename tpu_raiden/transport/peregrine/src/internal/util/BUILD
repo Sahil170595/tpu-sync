@@ -38,6 +38,33 @@ cc_test(
 )
 
 cc_library(
+    name = "test_iov",
+    testonly = True,
+    srcs = ["test_iov.cc"],
+    hdrs = ["test_iov.h"],
+    deps = [
+        ":util",
+        "//tpu_raiden/transport/peregrine/src/internal/base:types",
+        "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/log:check",
+        "@com_google_absl//absl/types:span",
+    ],
+)
+
+cc_test(
+    name = "test_iov_test",
+    srcs = ["test_iov_test.cc"],
+    deps = [
+        ":test_iov",
+        "//tpu_raiden/transport/peregrine/src/internal/base:types",
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/log:check",
+        "@com_google_absl//absl/types:span",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+cc_library(
     name = "test_util",
     testonly = True,
     srcs = ["test_util.cc"],

@@ -20,8 +20,8 @@
 #include <cstddef>
 #include <string>
 #include <type_traits>
+#include <utility>
 
-#include "absl/log/check.h"
 #include "absl/types/span.h"
 #include "tpu_raiden/transport/peregrine/src/internal/base/types.h"
 
@@ -38,10 +38,14 @@ constexpr bool IsPowerOfTwo(T n) {
 inline constexpr IoVec kEoF = {};
 static_assert(kEoF.iov_base == nullptr && kEoF.iov_len == 0);
 
+// Returns the `IoVec`'s buffer pointer and length as a pair.
+inline std::pair<Byte*, size_t> BufLen(const IoVec& iov) {
+  return {reinterpret_cast<Byte*>(iov.iov_base), iov.iov_len};
+}
+
 // Returns true iff the `IoVec` is valid.
 inline bool IsValid(const IoVec& v) {
-  DCHECK_GE(v.iov_len, 0);
-  return v.iov_len == 0 || v.iov_base != nullptr;
+  return v.iov_base != nullptr && v.iov_len > 0;
 }
 
 // Returns true iff all the `iovecs` are valid.

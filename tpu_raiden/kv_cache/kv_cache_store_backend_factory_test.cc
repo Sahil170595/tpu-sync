@@ -14,6 +14,7 @@
 
 #include "tpu_raiden/kv_cache/kv_cache_store_backend_factory.h"
 
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
@@ -21,6 +22,7 @@
 #include <gtest/gtest.h>
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "xla/tsl/concurrency/future.h"
 #include "tpu_raiden/kv_cache/host_offload_backend.h"
 #include "tpu_raiden/kv_cache/kv_cache_store.h"
 #include "tpu_raiden/kv_cache/kv_cache_store_backend.h"
@@ -36,6 +38,11 @@ class CustomTestBackend : public KVCacheStoreBackend {
   absl::StatusOr<BlockSliceList> Lookup(absl::Span<const std::string>,
                                         const LookupOptions&) override {
     return BlockSliceList{};
+  }
+  tsl::Future<> Load(const RaidenId& remote_id,
+                     absl::Span<const std::string> block_hashes,
+                     absl::Span<const int32_t> device_block_ids = {}) override {
+    return tsl::Future<>(absl::UnimplementedError("Load is not supported."));
   }
   std::pair<bool, BlockSliceList> Insert(absl::Span<const std::string>,
                                          absl::Span<const RaidenBlockID>,

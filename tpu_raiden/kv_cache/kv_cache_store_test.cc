@@ -1165,6 +1165,65 @@ class KVCacheStoreEmbeddedControllerTest : public ::testing::Test {
   std::string orchestrator_address_;
 };
 
+TEST_F(KVCacheStoreEmbeddedControllerTest, SaveReusesFreedBlocksAfterEvict) {
+  // Evicted host blocks return to the free pool even when the directory has
+  // nothing left to evict: a full evict empties the directory and deallocates
+  // every block, and the save below must be served from those.
+  ::tpu_raiden::controller::MockTransferManager mock_mgr;
+  test_server_->service->SetTransferManager(
+      ::tpu_raiden::KVManagerHolder(&mock_mgr));
+
+  // A two-block pool, so the first save exhausts it.
+  auto controller =
+      std::make_unique<::tpu_raiden::controller::RaidenController>(
+          unit_, 2, 1, 512, orchestrator_address_, "");
+  RegisterAndInitWorker(*controller, "worker_0", test_server_->server_address);
+  auto* controller_ptr = controller.get();
+
+  RaidenId rid{"test_job", "0", "test_cache", 0};
+  KVCacheStore store(2, std::move(controller), "", rid, std::nullopt,
+                     /*store_server_ip=*/"127.0.0.1");
+
+  auto save_and_wait =
+      [&store](const std::vector<std::string>& hashes) -> absl::Status {
+    absl::Status status = store.Save(hashes);
+    if (!status.ok()) return status;
+    while (true) {
+      auto [done, failed, pending] = store.PollSaveStatus();
+      if (!failed.empty()) return absl::InternalError("async save failed");
+      if (!done.empty()) return absl::OkStatus();
+      absl::SleepFor(absl::Milliseconds(10));
+    }
+  };
+
+  std::vector<std::string> first = {"hash_1", "hash_2"};
+  std::vector<RaidenBlockID> first_slices = {
+      RaidenBlockID(rid, -1, 0, BlockStatus::HBM),
+      RaidenBlockID(rid, -1, 1, BlockStatus::HBM)};
+  ASSERT_TRUE(store.Insert(first, first_slices, false).first);
+  ASSERT_TRUE(store.Pin(first));
+  ASSERT_TRUE(save_and_wait(first).ok());
+  EXPECT_EQ(controller_ptr->block_manager()->num_locked_blocks(), 2);
+
+  // Evict everything: the directory goes empty and both host blocks are
+  // deallocated back to the free pool.
+  store.Release(first);
+  ASSERT_EQ(KVCacheStoreTest::Evict(store, first), 2);
+  EXPECT_EQ(controller_ptr->block_manager()->num_free_blocks(), 2);
+  EXPECT_EQ(controller_ptr->block_manager()->num_locked_blocks(), 0);
+
+  // The directory is empty and hash_3 gets pinned, so nothing is evictable:
+  // the host block for this save has to come from the freed pool.
+  std::vector<std::string> second = {"hash_3"};
+  std::vector<RaidenBlockID> second_slices = {
+      RaidenBlockID(rid, -1, 0, BlockStatus::HBM)};
+  ASSERT_TRUE(store.Insert(second, second_slices, false).first);
+  ASSERT_TRUE(store.Pin(second));
+  absl::Status status = save_and_wait(second);
+  EXPECT_TRUE(status.ok()) << status.message();
+  EXPECT_EQ(controller_ptr->block_manager()->num_locked_blocks(), 1);
+}
+
 TEST_F(KVCacheStoreEmbeddedControllerTest, SaveSuccess) {
   ::tpu_raiden::controller::MockTransferManager mock_mgr;
   test_server_->service->SetTransferManager(

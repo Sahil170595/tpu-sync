@@ -195,6 +195,49 @@ TEST(LogicalBlockManagerTest, AllocateTargetValidatesAtomically) {
   EXPECT_EQ(manager.num_allocated_blocks(), 1);
 }
 
+TEST(LogicalBlockManagerTest, DeallocateReturnsBlocksToFreePool) {
+  LogicalBlockManager manager(4);
+  ASSERT_TRUE(manager.Allocate(2, /*lock=*/true).ok());
+  ASSERT_TRUE(manager.Allocate(1, /*lock=*/false).ok());
+  EXPECT_EQ(manager.num_free_blocks(), 1);
+
+  // Deallocation works on locked and unlocked blocks alike.
+  ASSERT_TRUE(manager.Deallocate({0, 2}).ok());
+  EXPECT_EQ(manager.num_free_blocks(), 3);
+  EXPECT_EQ(manager.num_allocated_blocks(), 1);
+  EXPECT_EQ(manager.num_locked_blocks(), 1);
+  EXPECT_FALSE(manager.IsAllocated(0));
+  EXPECT_FALSE(manager.IsLocked(0));
+  EXPECT_FALSE(manager.IsAllocated(2));
+
+  // Deallocated blocks are free again for both allocation paths.
+  ASSERT_TRUE(manager.AllocateTarget({0}).ok());
+  auto blocks_or = manager.Allocate(1);
+  ASSERT_TRUE(blocks_or.ok());
+  EXPECT_THAT(*blocks_or, ElementsAre(2));
+}
+
+TEST(LogicalBlockManagerTest, DeallocateValidatesAtomically) {
+  LogicalBlockManager manager(3);
+  ASSERT_TRUE(manager.Allocate(1, /*lock=*/true).ok());  // Block 0.
+
+  // Out of range.
+  EXPECT_EQ(manager.Deallocate({0, 3}).code(),
+            absl::StatusCode::kInvalidArgument);
+  // Not allocated.
+  EXPECT_EQ(manager.Deallocate({0, 1}).code(),
+            absl::StatusCode::kInvalidArgument);
+
+  // Failed calls must not have modified any state.
+  EXPECT_TRUE(manager.IsAllocated(0));
+  EXPECT_TRUE(manager.IsLocked(0));
+
+  ASSERT_TRUE(manager.Deallocate({0}).ok());
+  // Double deallocation fails.
+  EXPECT_EQ(manager.Deallocate({0}).code(),
+            absl::StatusCode::kInvalidArgument);
+}
+
 TEST(LogicalBlockManagerTest, TargetAllocatedBlocksReusableAfterUnlock) {
   LogicalBlockManager manager(3);
   ASSERT_TRUE(manager.AllocateTarget({0, 1, 2}).ok());

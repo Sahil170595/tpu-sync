@@ -106,8 +106,8 @@ class RaidenController {
   // returns the corresponding Buffers. No gRPC call is made.
   absl::StatusOr<std::vector<Buffer>> AllocateBuffers(int num_blocks);
 
-  // Unlocks the specified Buffers in the local logical block manager so
-  // they can be reused. No gRPC call is made.
+  // Deallocates the specified Buffers in the local logical block manager,
+  // returning their blocks to the free pool. No gRPC call is made.
   absl::Status DeallocateBuffers(absl::Span<const Buffer> buffers);
 
   // Legacy API (Physical/BufferProto Mode):
@@ -121,8 +121,8 @@ class RaidenController {
   absl::StatusOr<std::vector<int>> AllocateBlockIds(int num_blocks);
 
   // New API (Logical/Block ID Mode):
-  // Unlocks/deallocates the given logical block IDs in the block manager.
-  // No RPC is performed.
+  // Deallocates the given logical block IDs in the block manager, returning
+  // them to the free pool. No RPC is performed.
   absl::Status DeallocateBlockIds(absl::Span<const int> block_ids);
 
   // New API (Logical/Block ID Mode):

@@ -159,6 +159,27 @@ absl::Status LogicalBlockManager::Unlock(absl::Span<const int> block_ids) {
   return absl::OkStatus();
 }
 
+absl::Status LogicalBlockManager::Deallocate(absl::Span<const int> block_ids) {
+  // First validate all blocks.
+  for (int block_id : block_ids) {
+    if (block_id < 0 || block_id >= total_blocks_) {
+      return absl::InvalidArgumentError(
+          absl::StrCat("Invalid block ID: ", block_id));
+    }
+    if (!blocks_[block_id].is_allocated) {
+      return absl::InvalidArgumentError(
+          absl::StrCat("Cannot deallocate unallocated block ID: ", block_id));
+    }
+  }
+
+  // Perform state update.
+  for (int block_id : block_ids) {
+    blocks_[block_id].is_allocated = false;
+    blocks_[block_id].is_locked = false;
+  }
+  return absl::OkStatus();
+}
+
 absl::Status LogicalBlockManager::AccessBlock(int block_id) {
   if (block_id < 0 || block_id >= total_blocks_) {
     return absl::InvalidArgumentError(

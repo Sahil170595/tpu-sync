@@ -55,8 +55,15 @@ class LogicalBlockManager {
   absl::Status AllocateTarget(absl::Span<const int> block_ids);
 
   // Unlocks the specified blocks, making them eligible for LRU eviction if
-  // future allocation requests require blocks.
+  // future allocation requests require blocks. The blocks stay allocated and
+  // their contents remain addressable until evicted.
   absl::Status Unlock(absl::Span<const int> block_ids);
+
+  // Deallocates the specified blocks, returning them to the free pool. Their
+  // contents must no longer be referenced. All IDs must be in range and
+  // currently allocated (locked or not); on any violation an error is
+  // returned and no state is modified.
+  absl::Status Deallocate(absl::Span<const int> block_ids);
 
   // Updates the access time (logical counter) for the specified block, marking
   // it as the most recently used.

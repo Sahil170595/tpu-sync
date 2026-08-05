@@ -439,7 +439,7 @@ absl::Status RaidenController::Deallocate(
     block_ids.push_back(sharded_buf.index());
   }
   absl::MutexLock lock(mutex_);
-  return block_manager_->Unlock(block_ids);
+  return block_manager_->Deallocate(block_ids);
 }
 
 absl::StatusOr<std::vector<int>> RaidenController::AllocateBlockIds(
@@ -451,7 +451,7 @@ absl::StatusOr<std::vector<int>> RaidenController::AllocateBlockIds(
 absl::Status RaidenController::DeallocateBlockIds(
     absl::Span<const int> block_ids) {
   absl::MutexLock lock(mutex_);
-  return block_manager_->Unlock(block_ids);
+  return block_manager_->Deallocate(block_ids);
 }
 
 absl::Status RaidenController::AllocateTargetBlockIds(

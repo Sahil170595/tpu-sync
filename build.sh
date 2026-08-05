@@ -277,9 +277,17 @@ if [ "$BUILD_TORCH" = true ]; then
   # duplicate AllocatorFactory registration that a global libpywrap preload
   # would trigger. torch_tpu must already be imported (libpywrap loaded) when
   # the extension imports, so no RUNPATH is required.
+  # torch_tpu ships libpywrap as a per-torch-version glue whose SONAME embeds
+  # the torch release it was built for (glue_<v>/libpywrap_<v>_common.so), so
+  # the NEEDED entry must name the glue matching the torch this build compiled
+  # against — the loader satisfies it from the copy torch_tpu has already
+  # loaded. torch_tpu builds that predate the per-version glue layout export
+  # the unversioned name instead; RAIDEN_PYWRAP_SONAME overrides for those.
+  TORCH_GLUE_SUFFIX=$(python3 -c 'import torch, re; v = re.match(r"(\d+)\.(\d+)\.(\d+)", torch.__version__); print(f"{v.group(1)}_{v.group(2)}_{v.group(3)}")')
+  PYWRAP_SONAME="${RAIDEN_PYWRAP_SONAME:-libpywrap_${TORCH_GLUE_SUFFIX}_common.so}"
   if command -v patchelf > /dev/null; then
-    patchelf --add-needed libpywrap_torch_tpu_common.so "${TORCH_SO}"
-    echo "patchelf: added NEEDED libpywrap_torch_tpu_common.so to torch extension"
+    patchelf --add-needed "${PYWRAP_SONAME}" "${TORCH_SO}"
+    echo "patchelf: added NEEDED ${PYWRAP_SONAME} to torch extension"
   else
     echo "ERROR: patchelf not found! The PyTorch extension requires patchelf" \
          "to inject NEEDED libpywrap_torch_tpu_common.so so symbols resolve in local" \

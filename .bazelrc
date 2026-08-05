@@ -12,3 +12,8 @@ build:ci --remote_cache=grpcs://remotebuildexecution.googleapis.com
 build:ci --remote_instance_name=projects/ml-oss-rbe-testing/instances/default_instance
 build:ci --remote_default_exec_properties=cache-silo-key=tpu_raiden_v1
 build:ci --remote_local_fallback
+
+# All C++ compiles at C++20, matching the -std=c++20 the torch extension
+# targets set per-target and the flags kokoro presubmit passes globally.
+build --cxxopt=-std=c++20
+build --host_cxxopt=-std=c++20

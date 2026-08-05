@@ -51,9 +51,12 @@ TORCH_REQ = select({
 })
 
 # Runtime deps that live on a public index. torch_tpu is intentionally omitted
-# (private Artifact Registry) — see pyproject.toml.
+# (private Artifact Registry) — see pyproject.toml. libtpu appears only in the
+# JAX wheel, in jax/jaxlib lockstep. The torch wheel declares NO libtpu: the
+# torch extension loads TPU support through torch_tpu (which vendors its own
+# libtpu), so a raiden-side pin can only conflict with the consuming
+# environment's libtpu choice.
 COMMON_REQUIRES = [
-    "libtpu==0.0.42.1",
     "tpu-info==0.7.1",
     "numpy",
     "absl-py",
@@ -67,6 +70,7 @@ COMMON_REQUIRES = [
 JAX_REQUIRES = COMMON_REQUIRES + [
     "jax==0.10.2",
     "jaxlib==0.10.2",
+    "libtpu==0.0.42.1",
 ]
 
 TORCH_REQUIRES = COMMON_REQUIRES + TORCH_REQ

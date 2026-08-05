@@ -29,11 +29,11 @@
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
 #include "absl/status/status.h"
-#include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "absl/synchronization/mutex.h"
 #include "tpu_raiden/transport/lib/chunk.h"
+#include "tpu_raiden/transport/lib/conn/pool.h"
 
 namespace tpu_raiden::transport::lib {
 
@@ -115,12 +115,6 @@ class RawBufferTransport {
   }
 
  protected:
-  absl::StatusOr<int> BorrowConnection(absl::string_view peer,
-                                       absl::string_view local_ip = "");
-  void ReturnConnection(bool ok, int fd, absl::string_view peer,
-                        absl::string_view local_ip = "");
-  void ClosePooledConnections();
-
   void ConnectionWorker(int client_fd);
   void ListenerLoop();
 
@@ -139,9 +133,7 @@ class RawBufferTransport {
 
   // The conn_pool_ owns the sockets that connect to peers. in comparison, the
   // active_client_fds above are those sockets accepted from peers.
-  absl::Mutex pool_mu_;
-  absl::flat_hash_map<std::string, std::vector<int>> conn_pool_
-      ABSL_GUARDED_BY(pool_mu_);
+  ConnPool conn_pool_;
 
   absl::Mutex raw_progress_mu_;
   absl::flat_hash_map<uint64_t, RawProgress> raw_progress_

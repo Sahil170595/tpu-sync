@@ -36,7 +36,7 @@ cc_library(
     deps = [
         ":chunk",
         "//tpu_raiden/core:status_macros",
-        "//tpu_raiden/transport/lib/socket:util",
+        "//tpu_raiden/transport/lib/conn:pool",
         "//tpu_raiden/transport/peregrine/src/api:socket_util",
         "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/cleanup",
@@ -45,7 +45,6 @@ cc_library(
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/status",
-        "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/synchronization",
     ],
@@ -61,6 +60,7 @@ cc_test(
     features = ["-use_header_modules"],
     deps = [
         ":raw_buffer_transport",
+        "//tpu_raiden/transport/lib/conn:pool",
         "//tpu_raiden/transport/peregrine/src/util",
         "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/log:check",

@@ -226,5 +226,114 @@ TEST(TilingUtilsTest, Bf16SubTiling) {
   }
 }
 
+TEST(TilingUtilsTest, Standard3D) {
+  // 3D matrix of shape 2x8x8, element type float (4 bytes).
+  // Layout has minor_to_major={2, 1, 0} (standard row-major), and tiling with
+  // tile dimensions 4x4.
+  const int64_t D0 = 2;
+  const int64_t H = 8;
+  const int64_t W = 8;
+  const int64_t tH = 4;
+  const int64_t tW = 4;
+
+  xla::Shape shape = xla::ShapeUtil::MakeShapeWithDenseLayout(
+      xla::PrimitiveType::F32, {D0, H, W}, {2, 1, 0}, {xla::Tile({tH, tW})});
+
+  const int64_t num_elements = D0 * H * W;
+  std::vector<float> src_linear(num_elements);
+  for (int i = 0; i < num_elements; ++i) {
+    src_linear[i] = static_cast<float>(i);
+  }
+
+  const int64_t tiled_size_bytes = num_elements * sizeof(float);
+  std::vector<uint8_t> dst_tiled(tiled_size_bytes);
+
+  absl::Status tile_status =
+      TileBuffer(reinterpret_cast<const uint8_t*>(src_linear.data()),
+                 dst_tiled.data(), shape, shape.layout());
+  EXPECT_TRUE(tile_status.ok()) << tile_status.ToString();
+
+  // Verify tiled structure.
+  // Block 0 (d0=0) covers indices 0-63.
+  // Block 1 (d0=1) covers indices 64-127.
+  // Within Block 1, the 2D matrix is 8x8 tiled with 4x4.
+  // Let's check d0=1, row 0, col 4: linear index is 1*64 + 0*8 + 4 = 68. Value
+  // is 68.0. Physically, Block 1 starts at 64 * 4 = 256 bytes. Within Block 1,
+  // row 0, col 4 is in Tile(0,1), offset 0. Tile(0,1) index is 1. Offset within
+  // Block 1: 1 * 16 * 4 = 64 bytes. Total physical offset: 256 + 64 = 320 bytes
+  // (index 80 in float array).
+  float* dst_tiled_float = reinterpret_cast<float*>(dst_tiled.data());
+  EXPECT_EQ(dst_tiled_float[80], 68.0f);
+
+  // Detile back.
+  std::vector<float> dst_linear(num_elements, 0.0f);
+  absl::Status detile_status = DetileBuffer(
+      dst_tiled.data(), reinterpret_cast<uint8_t*>(dst_linear.data()), shape,
+      shape.layout());
+  EXPECT_TRUE(detile_status.ok()) << detile_status.ToString();
+
+  for (int i = 0; i < num_elements; ++i) {
+    EXPECT_EQ(dst_linear[i], src_linear[i]) << "Mismatch at index " << i;
+  }
+}
+
+TEST(TilingUtilsTest, Standard4D) {
+  // 4D matrix of shape 2x3x8x8, element type float (4 bytes).
+  // Layout has minor_to_major={3, 2, 1, 0} (standard row-major), and tiling
+  // with tile dimensions 4x4.
+  const int64_t D0 = 2;
+  const int64_t D1 = 3;
+  const int64_t H = 8;
+  const int64_t W = 8;
+  const int64_t tH = 4;
+  const int64_t tW = 4;
+
+  xla::Shape shape = xla::ShapeUtil::MakeShapeWithDenseLayout(
+      xla::PrimitiveType::F32, {D0, D1, H, W}, {3, 2, 1, 0},
+      {xla::Tile({tH, tW})});
+
+  const int64_t num_elements = D0 * D1 * H * W;
+  std::vector<float> src_linear(num_elements);
+  for (int i = 0; i < num_elements; ++i) {
+    src_linear[i] = static_cast<float>(i);
+  }
+
+  const int64_t tiled_size_bytes = num_elements * sizeof(float);
+  std::vector<uint8_t> dst_tiled(tiled_size_bytes);
+
+  absl::Status tile_status =
+      TileBuffer(reinterpret_cast<const uint8_t*>(src_linear.data()),
+                 dst_tiled.data(), shape, shape.layout());
+  EXPECT_TRUE(tile_status.ok()) << tile_status.ToString();
+
+  // Verify tiled structure.
+  // We have D0 * D1 = 6 batches.
+  // Each batch is 8x8 tiled with 4x4.
+  // Let's check d0=1, d1=1, row 0, col 4:
+  // Linear index: d0*(D1*H*W) + d1*(H*W) + row*W + col
+  // = 1*(3*8*8) + 1*(8*8) + 0*8 + 4
+  // = 192 + 64 + 4 = 260. Value is 260.0.
+  // Physically, each batch has size H * W * sizeof(float) = 64 * 4 = 256 bytes.
+  // Batch index is d0 * D1 + d1 = 1 * 3 + 1 = 4.
+  // Batch offset: 4 * 256 = 1024 bytes.
+  // Within batch 4, row 0, col 4 is in Tile(0,1), offset 0.
+  // Tile(0,1) index is 1.
+  // Offset within batch: 1 * 16 * 4 = 64 bytes.
+  // Total physical offset: 1024 + 64 = 1088 bytes (index 272 in float array).
+  float* dst_tiled_float = reinterpret_cast<float*>(dst_tiled.data());
+  EXPECT_EQ(dst_tiled_float[272], 260.0f);
+
+  // Detile back.
+  std::vector<float> dst_linear(num_elements, 0.0f);
+  absl::Status detile_status = DetileBuffer(
+      dst_tiled.data(), reinterpret_cast<uint8_t*>(dst_linear.data()), shape,
+      shape.layout());
+  EXPECT_TRUE(detile_status.ok()) << detile_status.ToString();
+
+  for (int i = 0; i < num_elements; ++i) {
+    EXPECT_EQ(dst_linear[i], src_linear[i]) << "Mismatch at index " << i;
+  }
+}
+
 }  // namespace
 }  // namespace tpu_raiden::weight_sync

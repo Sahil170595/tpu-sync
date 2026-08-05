@@ -589,14 +589,25 @@ absl::Status RawBufferTransport::PushBuffers(
   std::vector<BatchInfo> batches;
   for (size_t i = 0; i < sorted_tasks.size();) {
     std::string peer = sorted_tasks[i].peer;
-    size_t start = i;
-    size_t count = 0;
-    while (i < sorted_tasks.size() && sorted_tasks[i].peer == peer &&
-           count < IOV_MAX) {
-      count++;
+    size_t peer_start = i;
+    size_t peer_task_count = 0;
+    while (i < sorted_tasks.size() && sorted_tasks[i].peer == peer) {
+      peer_task_count++;
       i++;
     }
-    batches.push_back({peer, start, count});
+
+    const size_t effective_parallelism = std::max(1, parallelism);
+    const size_t target_batch_size =
+        (peer_task_count + effective_parallelism - 1) / effective_parallelism;
+    const size_t batch_size =
+        std::clamp(target_batch_size, size_t{1}, static_cast<size_t>(IOV_MAX));
+
+    size_t tasks_added = 0;
+    while (tasks_added < peer_task_count) {
+      size_t count = std::min(batch_size, peer_task_count - tasks_added);
+      batches.push_back({peer, peer_start + tasks_added, count});
+      tasks_added += count;
+    }
   }
 
   if (batches.empty()) {

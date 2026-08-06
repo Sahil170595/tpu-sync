@@ -174,7 +174,7 @@ absl::StatusOr<BlockSliceList> HostOffloadBackend::Lookup(
   BlockSliceList results;
   results.reserve(block_hashes.size());
 
-  // Tier 0: Check Local Host LRU Cache
+  // Check Local Host LRU Cache
   {
     absl::MutexLock lock(mutex_);
     for (const auto& hash : block_hashes) {
@@ -186,11 +186,11 @@ absl::StatusOr<BlockSliceList> HostOffloadBackend::Lookup(
     }
   }
 
-  if (results.size() == block_hashes.size() || options.max_tier == 0) {
+  if (results.size() == block_hashes.size() || !options.enable_global) {
     return results;
   }
 
-  // Tier 1: Check Global Registry for remaining missing hashes
+  // Check Global Registry for remaining missing hashes
   std::shared_ptr<global_registry::GlobalRegistryClient> client;
   RaidenId local_id;
   {

@@ -324,7 +324,7 @@ TEST(KVCacheStoreTest, GlobalLookupFallback) {
 
   // Case 1: Full local hit, no global hit
   {
-    auto lookup_res = store.Lookup({"local_only_hash"}, /*enable_global=*/true);
+    auto lookup_res = store.Lookup({"local_only_hash"});
     ASSERT_TRUE(lookup_res.ok());
     ASSERT_EQ(lookup_res->size(), 1);
     EXPECT_EQ((*lookup_res)[0].first, "local_only_hash");
@@ -335,7 +335,7 @@ TEST(KVCacheStoreTest, GlobalLookupFallback) {
   // Case 2: Both local and global has the same hit, but we return local hit
   // results
   {
-    auto lookup_res = store.Lookup({"shared_hash"}, /*enable_global=*/true);
+    auto lookup_res = store.Lookup({"shared_hash"});
     ASSERT_TRUE(lookup_res.ok());
     ASSERT_EQ(lookup_res->size(), 1);
     EXPECT_EQ((*lookup_res)[0].first, "shared_hash");
@@ -346,8 +346,7 @@ TEST(KVCacheStoreTest, GlobalLookupFallback) {
 
   // Case 3: No local hit, only global hits
   {
-    auto lookup_res = store.Lookup({"global_hash_1", "global_hash_2"},
-                                   /*enable_global=*/true);
+    auto lookup_res = store.Lookup({"global_hash_1", "global_hash_2"});
     ASSERT_TRUE(lookup_res.ok());
     ASSERT_EQ(lookup_res->size(), 2);
 
@@ -378,8 +377,7 @@ TEST(KVCacheStoreTest, GlobalLookupFallback) {
   // It should return both local and global
   {
     auto lookup_res =
-        store.Lookup({"local_only_hash", "global_hash_1", "global_hash_2"},
-                     /*enable_global=*/true);
+        store.Lookup({"local_only_hash", "global_hash_1", "global_hash_2"});
     ASSERT_TRUE(lookup_res.ok());
     ASSERT_EQ(lookup_res->size(), 3);
 
@@ -401,8 +399,7 @@ TEST(KVCacheStoreTest, GlobalLookupFallback) {
   // It should stop at the first miss in registry
   {
     auto lookup_res = store.Lookup(
-        {"local_only_hash", "global_hash_1", "missing_hash", "global_hash_2"},
-        /*enable_global=*/true);
+        {"local_only_hash", "global_hash_1", "missing_hash", "global_hash_2"});
     ASSERT_TRUE(lookup_res.ok());
     ASSERT_EQ(lookup_res->size(), 2);  // local_only_hash, global_hash_1
     EXPECT_EQ((*lookup_res)[0].first, "local_only_hash");
@@ -495,8 +492,7 @@ TEST(KVCacheStoreTest, GlobalLookupRegistryDown) {
   // Lookup with enable_global = true.
   // It should NOT fail even though Lookup RPCs to the registry fail. It
   // should return the local hit.
-  auto lookup_res = store.Lookup({"local_hash", "missing_hash"},
-                                 /*enable_global=*/true);
+  auto lookup_res = store.Lookup({"local_hash", "missing_hash"});
   ASSERT_TRUE(lookup_res.ok());
   EXPECT_EQ(lookup_res->size(), 1);
   EXPECT_EQ((*lookup_res)[0].first, "local_hash");
@@ -666,7 +662,7 @@ TEST(KVCacheStoreTest, LookupCapLimitWithGlobal) {
   // Lookup 3 hashes, but capacity is 2. It should only return 2.
   std::vector<std::string> lookup_hashes = {"global_hash_1", "global_hash_2",
                                             "global_hash_3"};
-  auto lookup_res = store.Lookup(lookup_hashes, /*enable_global=*/true);
+  auto lookup_res = store.Lookup(lookup_hashes);
   ASSERT_TRUE(lookup_res.ok());
   EXPECT_EQ(lookup_res->size(), 2);
   EXPECT_EQ((*lookup_res)[0].first, "global_hash_1");
@@ -719,7 +715,7 @@ TEST(KVCacheStoreTest, LookupCapLimitMixed) {
   // global).
   std::vector<std::string> lookup_hashes = {"local_hash_1", "global_hash_2",
                                             "global_hash_3"};
-  auto lookup_res = store.Lookup(lookup_hashes, /*enable_global=*/true);
+  auto lookup_res = store.Lookup(lookup_hashes);
   ASSERT_TRUE(lookup_res.ok());
   EXPECT_EQ(lookup_res->size(), 2);
   EXPECT_EQ((*lookup_res)[0].first, "local_hash_1");
@@ -3156,7 +3152,7 @@ TEST(KVCacheStoreTest, MultiBackendPriorityLookupChain) {
   EXPECT_EQ((*lookup_res)[3].second.host_block_id, 4);
 }
 
-TEST(KVCacheStoreTest, MultiBackendTierGatingWhenGlobalDisabled) {
+TEST(KVCacheStoreTest, MultiBackendLocalLookupWhenGlobalDisabled) {
   auto b1 = std::make_shared<HostOffloadBackend>(/*capacity=*/2);
   auto b2 = std::make_shared<HostOffloadBackend>(/*capacity=*/2);
 
@@ -3171,13 +3167,14 @@ TEST(KVCacheStoreTest, MultiBackendTierGatingWhenGlobalDisabled) {
                      /*raiden_orchestrator_address=*/"",
                      /*store_server_ip=*/"127.0.0.1");
 
-  // enable_global = false => max_tier = 0 => stops after Tier 0
+  // enable_global = false => searches all local backends (b1 and b2)
   auto gated_res = store.Lookup({"h1", "h2"}, /*enable_global=*/false);
   ASSERT_TRUE(gated_res.ok());
-  ASSERT_EQ(gated_res->size(), 1);
+  ASSERT_EQ(gated_res->size(), 2);
   EXPECT_EQ((*gated_res)[0].first, "h1");
+  EXPECT_EQ((*gated_res)[1].first, "h2");
 
-  // enable_global = true => max_tier = -1 => queries Tier 0 and Tier 1
+  // enable_global = true => queries all backends as well
   auto ungated_res = store.Lookup({"h1", "h2"}, /*enable_global=*/true);
   ASSERT_TRUE(ungated_res.ok());
   ASSERT_EQ(ungated_res->size(), 2);
@@ -3570,9 +3567,7 @@ TEST_F(StoreDiscoveryTest, CapacityConstructedStoreJoinsTheGlobalTier) {
   // A local miss consults tier 1 and comes back with the owning peer.
   RaidenId peer{"some_peer", "0", "kv_cache", 0};
   ASSERT_TRUE(client_->Register({{"peer_hash", peer, 9}}).ok());
-  LookupOptions global;
-  global.max_tier = -1;
-  auto result = backend->Lookup({"peer_hash"}, global);
+  auto result = backend->Lookup({"peer_hash"});
   ASSERT_TRUE(result.ok()) << result.status().ToString();
   ASSERT_EQ(result->size(), 1);
   EXPECT_EQ((*result)[0].second.raiden_id, peer);

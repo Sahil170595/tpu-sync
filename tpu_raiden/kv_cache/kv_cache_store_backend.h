@@ -80,13 +80,11 @@ struct RaidenBlockID {
 
 using BlockSliceList = std::vector<std::pair<std::string, RaidenBlockID>>;
 
-// Options controlling lookup behavior across storage tiers.
+// Options controlling lookup behavior across storage backends.
 struct LookupOptions {
-  // Maximum tier index to search (inclusive).
-  // -1 means search all available tiers.
-  // 0 means search local Tier 0 only (preserves enable_global = false
-  // semantics).
-  int max_tier = -1;
+  // Controls whether the lookup is allowed to query the global registry.
+  // Default is true.
+  bool enable_global = true;
 };
 
 // Abstract interface for KV cache index storage backends.

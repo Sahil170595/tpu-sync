@@ -594,18 +594,13 @@ KVCacheStore::~KVCacheStore() {
 absl::StatusOr<BlockSliceList> KVCacheStore::Lookup(
     const std::vector<std::string>& block_hashes, bool enable_global) {
   LookupOptions options;
-  options.max_tier = enable_global ? -1 : 0;
+  options.enable_global = enable_global;
 
   BlockSliceList accumulated_results;
   accumulated_results.reserve(block_hashes.size());
 
   size_t start_idx = 0;
   for (size_t tier_idx = 0; tier_idx < backends_.size(); ++tier_idx) {
-    if (options.max_tier >= 0 &&
-        static_cast<int>(tier_idx) > options.max_tier) {
-      break;
-    }
-
     const auto& backend = backends_[tier_idx];
     if (start_idx >= block_hashes.size()) break;
     if (!backend) continue;
@@ -626,28 +621,6 @@ absl::StatusOr<BlockSliceList> KVCacheStore::Lookup(
     }
   }
 
-  if (enable_global && registry_client_ &&
-      accumulated_results.size() < block_hashes.size()) {
-    std::vector<std::string> missing_hashes(
-        block_hashes.begin() + accumulated_results.size(), block_hashes.end());
-    auto global_res_or = registry_client_->Lookup(missing_hashes);
-    if (global_res_or.ok()) {
-      const auto& global_res = global_res_or.value();
-      for (size_t i = 0; i < global_res.size(); ++i) {
-        const auto& item = global_res[i];
-        const auto& proto_id = item.raiden_id();
-        RaidenId remote_id{
-            .job_name = proto_id.job_name(),
-            .job_replica_id = proto_id.job_replica_id(),
-            .data_name = proto_id.data_name(),
-            .data_replica_idx = proto_id.data_replica_idx(),
-        };
-        accumulated_results.push_back(std::make_pair(
-            missing_hashes[i],
-            RaidenBlockID(remote_id, item.block_id(), BlockStatus::REMOTE)));
-      }
-    }
-  }
 
   size_t cap = capacity();
   if (cap > 0 && accumulated_results.size() > cap) {
@@ -725,8 +698,7 @@ bool KVCacheStore::Pin(const std::vector<std::string>& block_hashes) {
 
   for (size_t i = 0; i < backends_.size() && !remaining.empty(); ++i) {
     if (!backends_[i]) continue;
-    auto lookup_or =
-        backends_[i]->Lookup(remaining, LookupOptions{.max_tier = -1});
+    auto lookup_or = backends_[i]->Lookup(remaining, LookupOptions{});
     if (lookup_or.ok()) {
       const auto& matched = lookup_or.value();
       for (const auto& pair : matched) {

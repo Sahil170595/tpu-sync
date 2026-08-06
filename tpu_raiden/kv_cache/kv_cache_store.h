@@ -156,7 +156,7 @@ class KVCacheStore {
   // If enable_global is true, it will query the global registry for any
   // misses after the local lookup.
   absl::StatusOr<BlockSliceList> Lookup(
-      const std::vector<std::string>& block_hashes, bool enable_global = false);
+      const std::vector<std::string>& block_hashes, bool enable_global = true);
 
   // Caches sharded buffers into host-RAM/HBM backing store.
   // Returns:

@@ -198,6 +198,62 @@ TEST(HostOffloadBackendTest, LookupReturnsRemoteDescriptors) {
   server->Shutdown();
 }
 
+TEST(HostOffloadBackendTest,
+     LookupReturnsHostStatusForMatchingLocalRaidenIdFromGlobalRegistry) {
+  // Setup local gRPC registry server
+  auto service = std::make_unique<global_registry::GlobalRegistryServiceImpl>();
+  grpc::ServerBuilder builder;
+  int port = 0;
+  builder.AddListeningPort("localhost:0", grpc::InsecureServerCredentials(),
+                           &port);
+  builder.RegisterService(service.get());
+  auto server = builder.BuildAndStart();
+  std::string server_address = "localhost:" + std::to_string(port);
+
+  auto channel =
+      grpc::CreateChannel(server_address, grpc::InsecureChannelCredentials());
+  auto registry_client =
+      std::make_shared<global_registry::GlobalRegistryClient>(channel);
+
+  RaidenId local_node_id{"local_job", "0", "data", 0};
+  std::vector<global_registry::Registration> regs = {
+      {.prefix_hash = "local_g_hash",
+       .raiden_id = local_node_id,
+       .block_id = 99},
+  };
+  ASSERT_TRUE(registry_client->Register(regs).ok());
+
+  rpc::RaidenIdProto unit_proto;
+  unit_proto.set_job_name(local_node_id.job_name);
+  unit_proto.set_job_replica_id(local_node_id.job_replica_id);
+  unit_proto.set_data_name(local_node_id.data_name);
+  unit_proto.set_data_replica_idx(local_node_id.data_replica_idx);
+
+  controller::RaidenController controller(unit_proto, /*num_blocks=*/100,
+                                          /*num_shards=*/1,
+                                          /*shard_size_bytes=*/1024);
+
+  BackendConfig config;
+  config.type = "HostOffloadBackend";
+  config.capacity = 100;
+  config.global_registry_address = server_address;
+  config.raiden_id = local_node_id;
+
+  auto backend_or = HostOffloadBackend::Create(config, &controller);
+  ASSERT_OK(backend_or.status());
+  auto backend = *backend_or;
+
+  auto lookup_res = backend->Lookup({"local_g_hash"});
+  ASSERT_TRUE(lookup_res.ok());
+  EXPECT_EQ(lookup_res->size(), 1);
+  EXPECT_EQ((*lookup_res)[0].first, "local_g_hash");
+  EXPECT_EQ((*lookup_res)[0].second.status, BlockStatus::HOST);
+  EXPECT_EQ((*lookup_res)[0].second.host_block_id, 99);
+  EXPECT_EQ((*lookup_res)[0].second.raiden_id, local_node_id);
+
+  server->Shutdown();
+}
+
 TEST(HostOffloadBackendTest, ServerLifecycleAndControllerInitialization) {
   auto service = std::make_unique<global_registry::GlobalRegistryServiceImpl>();
   grpc::ServerBuilder builder;

@@ -32,6 +32,7 @@ import ctypes
 import importlib
 import os
 import pathlib
+import re
 
 import torch_tpu
 
@@ -50,6 +51,21 @@ def load_torch_tpu_common() -> None:
   _torch_tpu_loader.load()
   common = pathlib.Path(torch_tpu.__file__).resolve().parent / "common"
   lib = common / "libpywrap_torch_tpu_common.so"
+  if not lib.exists():
+    # Per-torch-version glue layout: common/glue_<v>/libpywrap_<v>_common.so.
+    # Load the glue matching the installed torch; its SONAME is what the
+    # raiden extension's NEEDED entry names.
+    # pylint: disable=g-import-not-at-top
+    from tpu_raiden.api.torch import torch_abi
+    # pylint: enable=g-import-not-at-top
+    built = [
+        m.group(1)
+        for d in common.glob("glue_*")
+        if (m := re.match(r"glue_(\d+_\d+_\d+)$", d.name)) is not None
+    ]
+    if built:
+      suffix = torch_abi.resolve_suffix(torch_abi.running_torch_suffix(), built)
+      lib = common / f"glue_{suffix}" / f"libpywrap_{suffix}_common.so"
   if lib.exists():
     ctypes.CDLL(str(lib), mode=os.RTLD_LOCAL | os.RTLD_NOW)
   _LOADED = True

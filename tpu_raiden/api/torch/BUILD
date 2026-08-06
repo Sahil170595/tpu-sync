@@ -17,10 +17,16 @@ load("@rules_python//python:defs.bzl", "py_library", "py_test")
 package(default_visibility = ["//visibility:public"])
 
 py_library(
+    name = "torch_abi",
+    srcs = ["torch_abi.py"],
+)
+
+py_library(
     name = "torch_tpu_common_loader",
     srcs = ["torch_tpu_common_loader.py"],
     visibility = ["//visibility:public"],
     deps = [
+        ":torch_abi",
         "@torch_tpu//torch_tpu",
         "@torch_tpu//torch_tpu:_loader",
     ],
@@ -38,6 +44,7 @@ py_library(
     visibility = ["//visibility:public"],
     deps = [
         ":pool_layout",
+        ":torch_abi",
         ":torch_tpu_common_loader",
         "//tpu_raiden/frameworks/torch:_tpu_raiden_torch",
         "//tpu_raiden/rpc:raiden_service_py_pb2",
@@ -69,6 +76,7 @@ py_library(
     srcs = ["weight_synchronizer.py"],
     visibility = ["//visibility:public"],
     deps = [
+        ":torch_abi",
         ":torch_tpu_common_loader",
         "//tpu_raiden/frameworks/torch:_tpu_raiden_torch",
         "@torch_tpu//shims/torch:pytorch",
@@ -80,6 +88,7 @@ py_library(
     srcs = ["kv_cache_store.py"],
     visibility = ["//visibility:public"],
     deps = [
+        ":torch_abi",
         ":torch_tpu_common_loader",
         "//tpu_raiden/frameworks/torch:_tpu_raiden_torch",
         "@torch_tpu//torch_tpu",

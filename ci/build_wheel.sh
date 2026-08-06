@@ -161,22 +161,53 @@ mkdir -p /workspace/dist
 cp /cache/output_base/execroot/_main/bazel-out/k8-opt/bin/ci/wheel/${WHEEL_GLOB} /workspace/dist/
 
 # The bazel-built _tpu_raiden_torch.so does not link libpywrap; the torch
-# extension loader (tpu_raiden/api/torch/kv_cache_manager.py) requires it as a
-# NEEDED so the torch_tpu symbols (MaterializeAndReturn, AwaitBuffer, ...)
-# resolve in RTLD_LOCAL scope at import. build.sh injects this for its
-# source-tree copy, but the wheel packages the raw bazel .so -- so inject it
-# into the wheel here and repack (which regenerates RECORD with valid hashes).
+# extension loader (tpu_raiden/api/torch/torch_abi.py) requires a NEEDED on
+# torch_tpu's per-torch-version glue so the torch_tpu symbols resolve in
+# RTLD_LOCAL scope at import. The wheel ships one version-suffixed extension
+# per torch ABI (_tpu_raiden_torch_<v>.so); torch_abi.load_extension picks
+# the variant matching the installed torch. RAIDEN_TORCH_ABIS lists the
+# torch releases to build variants for; the first entry doubles as the
+# torch the rest of the wheel build compiles against.
+torch_suffix() {
+  python3 -c 'import torch, re; v = re.match(r"(\d+)\.(\d+)\.(\d+)", torch.__version__); print(f"{v.group(1)}_{v.group(2)}_{v.group(3)}")'
+}
 if [[ "${WITH_TORCH}" == "1" ]]; then
   pip install -q wheel
   WHL="$(ls /workspace/dist/${WHEEL_GLOB} | head -1)"
   UNPACK_DIR="$(mktemp -d)"
   wheel unpack "${WHL}" -d "${UNPACK_DIR}"
   PKG_DIR="$(ls -d "${UNPACK_DIR}"/*/)"
-  patchelf --add-needed libpywrap_torch_tpu_common.so \
-    "${PKG_DIR}tpu_raiden/frameworks/torch/_tpu_raiden_torch.so"
+  EXT_DIR="${PKG_DIR}tpu_raiden/frameworks/torch"
+
+  # Primary variant: the torch this wheel build compiled against.
+  SUFFIX="$(torch_suffix)"
+  mv "${EXT_DIR}/_tpu_raiden_torch.so" "${EXT_DIR}/_tpu_raiden_torch_${SUFFIX}.so"
+  patchelf --add-needed "libpywrap_${SUFFIX}_common.so" \
+    "${EXT_DIR}/_tpu_raiden_torch_${SUFFIX}.so"
+  echo "wheel variant: _tpu_raiden_torch_${SUFFIX}.so (NEEDED libpywrap_${SUFFIX}_common.so)"
+
+  # Extra variants: rebuild the extension against each additional torch in an
+  # isolated venv (a fresh TORCH_SOURCE path forces the bazel torch repo to
+  # re-resolve; an in-place pip swap at the same path would be reused stale).
+  for V in ${RAIDEN_EXTRA_TORCH_ABIS:-}; do
+    python3 -m venv "/tmp/torch-abi-${V}"
+    "/tmp/torch-abi-${V}/bin/pip" install -q "torch==${V}" \
+      --index-url https://download.pytorch.org/whl/cpu
+    TORCH_SOURCE="$("/tmp/torch-abi-${V}/bin/python3" -c 'import torch, pathlib; print(pathlib.Path(torch.__file__).resolve().parent.parent)')"
+    export TORCH_SOURCE
+    SUFFIX="$("/tmp/torch-abi-${V}/bin/python3" -c 'import torch, re; v = re.match(r"(\d+)\.(\d+)\.(\d+)", torch.__version__); print(f"{v.group(1)}_{v.group(2)}_{v.group(3)}")')"
+    # build.sh derives the glue suffix from the system python's torch, which
+    # is still the primary variant's -- pin the override to this variant.
+    export RAIDEN_PYWRAP_SONAME="libpywrap_${SUFFIX}_common.so"
+    ./build.sh torch
+    unset RAIDEN_PYWRAP_SONAME
+    cp /workspace/tpu_raiden/frameworks/torch/_tpu_raiden_torch.so \
+      "${EXT_DIR}/_tpu_raiden_torch_${SUFFIX}.so"
+    echo "wheel variant: _tpu_raiden_torch_${SUFFIX}.so"
+  done
+
   rm -f "${WHL}"
   wheel pack "${PKG_DIR}" -d /workspace/dist
-  echo "patchelf: injected NEEDED libpywrap_torch_tpu_common.so into wheel .so"
 fi
 INNER_EOF
 
@@ -185,6 +216,7 @@ docker run --rm \
   "${DOCKER_MOUNTS[@]}" \
   -w /workspace \
   -e WHEEL_VERSION_EXTRAS="${WHEEL_VERSION_EXTRAS}" \
+  -e RAIDEN_EXTRA_TORCH_ABIS="${RAIDEN_EXTRA_TORCH_ABIS:-}" \
   -e WITH_TORCH="${WITH_TORCH}" \
   -e BUILD_MODE="${BUILD_MODE}" \
   "${CONTAINER_IMAGE}" \

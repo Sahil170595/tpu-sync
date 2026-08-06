@@ -50,10 +50,17 @@ def _torch_impl():
   global _TORCH_IMPL
   if _TORCH_IMPL is None:
     # pylint: disable=g-import-not-at-top
+    from tpu_raiden.api.torch import torch_abi
     from tpu_raiden.api.torch import torch_tpu_common_loader
 
     torch_tpu_common_loader.load_torch_tpu_common()
-    from tpu_raiden.frameworks.torch import _tpu_raiden_torch as impl
+    # Multi-ABI wheels bundle one extension per supported torch release;
+    # load_extension picks the variant matching the installed torch (a
+    # source checkout's single unversioned extension imports as before).
+    impl = torch_abi.load_extension(
+        "tpu_raiden.frameworks.torch",
+        "_tpu_raiden_torch",
+    )
     # pylint: enable=g-import-not-at-top
     _TORCH_IMPL = impl
   return _TORCH_IMPL

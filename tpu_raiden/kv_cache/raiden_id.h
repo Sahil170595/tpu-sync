@@ -57,6 +57,10 @@ struct RaidenId {
            data_name == other.data_name &&
            data_replica_idx == other.data_replica_idx;
   }
+
+  // Explicit so `!=` compiles without C++20 operator rewriting; parts of the
+  // build still compile as C++17.
+  bool operator!=(const RaidenId& other) const { return !(*this == other); }
 };
 
 inline std::ostream& operator<<(std::ostream& os, const RaidenId& id) {

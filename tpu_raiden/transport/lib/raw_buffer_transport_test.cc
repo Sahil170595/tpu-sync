@@ -147,7 +147,8 @@ TEST(RawBufferTransportTest, PushBufferCorrectness) {
   const std::string dst_addr = GetIpPort(dst_transport);
   const auto push_res =
       src_transport.PushBuffer(dst_addr, kBufferId, kDstShardIdx, kDstOffset,
-                               push_payload.data(), push_payload.size());
+                               push_payload.data(), push_payload.size(),
+                               /*uuid=*/0);
   EXPECT_OK(push_res) << push_res.message();
 
   // Post-condition: only the copied dst bytes are equal to the src.
@@ -258,7 +259,8 @@ TEST(RawBufferTransportTest, PollEINTRIsBenign) {
   constexpr size_t kDstOffset = 512;
   const auto push_res =
       src_transport.PushBuffer(dst_addr, kBufferId, kDstShardIdx, kDstOffset,
-                               push_payload.data(), push_payload.size());
+                               push_payload.data(), push_payload.size(),
+                               /*uuid=*/0);
   EXPECT_OK(push_res) << push_res.message();
 }
 

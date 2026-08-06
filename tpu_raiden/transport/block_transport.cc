@@ -153,9 +153,12 @@ absl::Status ForEachPayload(MajorOrder major_order,
 BlockTransport::BlockTransport(BlockTransportDelegate* delegate, int local_port,
                                const std::vector<std::string>& local_ips,
                                int parallelism)
-    : RawBufferTransport(delegate, local_port, local_ips),
-      block_delegate_(delegate),
-      parallelism_(parallelism) {
+    : block_delegate_(delegate),
+      parallelism_(parallelism),
+      raw_transport_(delegate, local_port, local_ips,
+                     [this](int client_fd, const lib::ChunkHeader& header) {
+                       return HandleCustomRequest(client_fd, header);
+                     }) {
   socket_workers_.reserve(parallelism_);
   for (int i = 0; i < parallelism_; ++i) {
     socket_workers_.push_back(
@@ -647,9 +650,10 @@ void BlockTransport::AsyncPush(
   for (int i = 0; i < P; ++i) {
     const size_t block_count =
         base_blocks_per_stream + (static_cast<size_t>(i) < remainder ? 1 : 0);
-    std::string local_ip =
-        local_ips_.empty() ? "" : local_ips_[i % local_ips_.size()];
-    std::string remote_peer = peers[i % peers.size()];
+    const auto local_ips = raw_transport_.local_ips();
+    const size_t n = local_ips.size();
+    const std::string local_ip = n >= 1 ? local_ips[i % n] : "";
+    const std::string remote_peer = peers[i % peers.size()];
 
     auto task_run = [this, i, remote_peer, local_ip, block_offset, block_count,
                      shared_src_block_ids, shared_dst_block_ids, allocated_ids,
@@ -761,9 +765,10 @@ absl::StatusOr<std::vector<int>> BlockTransport::SyncPull(
     const size_t remote_block_count =
         local_block_count * block_delegate_->shard_factor();
 
-    std::string local_ip =
-        local_ips_.empty() ? "" : local_ips_[i % local_ips_.size()];
-    std::string remote_peer = peers[i % peers.size()];
+    const auto local_ips = raw_transport_.local_ips();
+    const size_t n = local_ips.size();
+    const std::string local_ip = n >= 1 ? local_ips[i % n] : "";
+    const std::string remote_peer = peers[i % peers.size()];
 
     threads.push_back(std::thread(
         &BlockTransport::H2hReadWorker, this, i, remote_peer, local_ip,
@@ -801,7 +806,7 @@ void BlockTransport::H2hWriteWorker(int stream_idx, absl::string_view peer,
     return;
   }
 
-  auto status_or_fd = conn_pool_.Borrow(peer, local_ip);
+  auto status_or_fd = raw_transport_.conn_pool().Borrow(peer, local_ip);
   if (!status_or_fd.ok()) {
     statuses[stream_idx] = status_or_fd.status();
     return;
@@ -809,8 +814,9 @@ void BlockTransport::H2hWriteWorker(int stream_idx, absl::string_view peer,
 
   const int fd = status_or_fd.value();
   bool ok_to_pool = false;
-  auto fd_cleaner = absl::MakeCleanup(
-      [&] { conn_pool_.Return(ok_to_pool, fd, peer, local_ip); });
+  auto fd_cleaner = absl::MakeCleanup([&] {
+    raw_transport_.conn_pool().Return(ok_to_pool, fd, peer, local_ip);
+  });
 
   const lib::ChunkHeader header = {
       .op = static_cast<uint8_t>(dst_block_ids.empty() ? 1 : 6),
@@ -920,7 +926,7 @@ void BlockTransport::H2hWriteWorker(int stream_idx, absl::string_view peer,
 }
 
 void BlockTransport::ForgetPushProgress(uint64_t uuid) {
-  RawBufferTransport::ForgetPushProgress(uuid);
+  raw_transport_.ForgetPushProgress(uuid);
   absl::MutexLock lock(progress_mu_);
   for (auto it = layer_progress_.begin(); it != layer_progress_.end();) {
     if (it->first.first == uuid) {
@@ -942,7 +948,7 @@ void BlockTransport::H2hReadWorker(
     const std::vector<uint8_t*>& explicit_dst_ptrs,
     std::vector<absl::Status>& statuses, MajorOrder major_order,
     BlockReceivedCallback on_block_received, uint64_t uuid) {
-  auto status_or_fd = conn_pool_.Borrow(peer, local_ip);
+  auto status_or_fd = raw_transport_.conn_pool().Borrow(peer, local_ip);
   if (!status_or_fd.ok()) {
     statuses[stream_idx] = status_or_fd.status();
     return;
@@ -950,8 +956,9 @@ void BlockTransport::H2hReadWorker(
 
   const int fd = status_or_fd.value();
   bool ok_to_pool = false;
-  auto fd_cleaner = absl::MakeCleanup(
-      [&] { conn_pool_.Return(ok_to_pool, fd, peer, local_ip); });
+  auto fd_cleaner = absl::MakeCleanup([&] {
+    raw_transport_.conn_pool().Return(ok_to_pool, fd, peer, local_ip);
+  });
 
   size_t SF = block_delegate_->shard_factor();
 

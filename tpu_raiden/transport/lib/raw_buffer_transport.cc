@@ -141,8 +141,10 @@ inline bool IsSocketValid(int fd) { return fcntl(fd, F_GETFD) >= 0; }
 
 RawBufferTransport::RawBufferTransport(
     RawBufferTransportDelegate* delegate, int local_port,
-    const std::vector<std::string>& local_ips)
+    const std::vector<std::string>& local_ips,
+    CustomRequestHandler custom_request_handler)
     : raw_delegate_(delegate),
+      custom_request_handler_(std::move(custom_request_handler)),
       local_port_(local_port),
       bound_ip_(local_ips.empty() ? "127.0.0.1" : local_ips[0]),
       local_ips_(local_ips) {
@@ -328,7 +330,11 @@ absl::Status RawBufferTransport::ProcessPeerRequest(int client_fd) {
     return absl::OkStatus();
 
   } else {
-    return HandleCustomRequest(client_fd, header);
+    if (custom_request_handler_) {
+      return custom_request_handler_(client_fd, header);
+    }
+    return absl::UnimplementedError(
+        absl::StrCat("Unsupported raw transport op code: ", header.op));
   }
 }
 

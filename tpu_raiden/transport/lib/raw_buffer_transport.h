@@ -28,10 +28,11 @@
 #include "absl/base/thread_annotations.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
+#include "absl/functional/any_invocable.h"
 #include "absl/status/status.h"
-#include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "absl/synchronization/mutex.h"
+#include "absl/types/span.h"
 #include "tpu_raiden/transport/lib/chunk.h"
 #include "tpu_raiden/transport/lib/conn/pool.h"
 
@@ -72,9 +73,18 @@ class RawBufferTransportDelegate {
 // Standalone raw buffer POSIX TCP socket transport engine.
 class RawBufferTransport {
  public:
+  using CustomRequestHandler = absl::AnyInvocable<absl::Status(
+      int client_fd, const ChunkHeader& header)>;
+
   RawBufferTransport(RawBufferTransportDelegate* delegate, int local_port,
-                     const std::vector<std::string>& local_ips = {});
-  virtual ~RawBufferTransport();
+                     const std::vector<std::string>& local_ips = {},
+                     CustomRequestHandler custom_request_handler = nullptr);
+  ~RawBufferTransport();
+
+  int local_port() const { return local_port_; }
+  const std::string& bound_ip() const { return bound_ip_; }
+  absl::Span<const std::string> local_ips() const { return local_ips_; }
+  ConnPool& conn_pool() { return conn_pool_; }
 
   // Synchronously pulls an arbitrary continuous byte slice from a remote
   // peer's staging memory.
@@ -88,7 +98,7 @@ class RawBufferTransport {
   absl::Status PushBuffer(absl::string_view peer, size_t buffer_id,
                           size_t dst_shard_idx, size_t dst_offset_bytes,
                           const uint8_t* data_ptr, size_t size_bytes,
-                          uint64_t uuid = 0);
+                          uint64_t uuid);
 
   // Pushes a vector of buffers using the batched push protocol.
   absl::Status PushBuffers(const std::vector<BufferPushTask>& tasks,
@@ -96,10 +106,7 @@ class RawBufferTransport {
 
   absl::Status RegisterExpectedChunks(uint64_t uuid, uint32_t expected_chunks);
 
-  virtual void ForgetPushProgress(uint64_t uuid);
-
-  int local_port() const { return local_port_; }
-  const std::string& bound_ip() const { return bound_ip_; }
+  void ForgetPushProgress(uint64_t uuid);
 
  private:
   absl::Status ProcessPeerRequest(int client_fd);
@@ -108,17 +115,12 @@ class RawBufferTransport {
                          const std::vector<BufferPushTask>& tasks,
                          size_t start_idx, size_t batch_size, uint64_t uuid);
 
-  virtual absl::Status HandleCustomRequest(int client_fd,
-                                           const ChunkHeader& header) {
-    return absl::UnimplementedError(
-        absl::StrCat("Unsupported raw transport op code: ", header.op));
-  }
-
- protected:
   void ConnectionWorker(int client_fd);
   void ListenerLoop();
 
+ private:
   RawBufferTransportDelegate* raw_delegate_;
+  CustomRequestHandler custom_request_handler_;
   int local_port_;
   std::atomic<int> server_fd_ = -1;  // owned by listener_thread_
   std::string bound_ip_ = "127.0.0.1";

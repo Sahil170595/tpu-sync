@@ -221,12 +221,12 @@ class BlockTransportDelegate : public lib::RawBufferTransportDelegate {
 };
 
 // High-speed Key-Value block transport engine extending RawBufferTransport.
-class BlockTransport final : public lib::RawBufferTransport {
+class BlockTransport final {
  public:
   BlockTransport(BlockTransportDelegate* delegate, int local_port,
                  const std::vector<std::string>& local_ips = {},
                  int parallelism = 1);
-  ~BlockTransport() override;
+  ~BlockTransport();
 
   // Asynchronous Scatter-Gather Push
   void AsyncPush(
@@ -257,11 +257,37 @@ class BlockTransport final : public lib::RawBufferTransport {
 
   // Drops receive-progress counters belonging to a finished, failed, or
   // timed-out plan so the UUID can be safely reused.
-  void ForgetPushProgress(uint64_t uuid) override;
+  void ForgetPushProgress(uint64_t uuid);
 
- private:
-  absl::Status HandleCustomRequest(int client_fd,
-                                   const lib::ChunkHeader& header) override;
+  int local_port() const { return raw_transport_.local_port(); }
+  const std::string& bound_ip() const { return raw_transport_.bound_ip(); }
+
+  absl::Status PullBuffer(absl::string_view peer, size_t buffer_id,
+                          size_t src_shard_idx, size_t src_offset_bytes,
+                          size_t dst_shard_idx, size_t dst_offset_bytes,
+                          size_t size_bytes) {
+    return raw_transport_.PullBuffer(peer, buffer_id, src_shard_idx,
+                                     src_offset_bytes, dst_shard_idx,
+                                     dst_offset_bytes, size_bytes);
+  }
+
+  absl::Status PushBuffer(absl::string_view peer, size_t buffer_id,
+                          size_t dst_shard_idx, size_t dst_offset_bytes,
+                          const uint8_t* data_ptr, size_t size_bytes,
+                          uint64_t uuid = 0) {
+    return raw_transport_.PushBuffer(peer, buffer_id, dst_shard_idx,
+                                     dst_offset_bytes, data_ptr, size_bytes,
+                                     uuid);
+  }
+
+  absl::Status PushBuffers(const std::vector<lib::BufferPushTask>& tasks,
+                           int parallelism, uint64_t uuid) {
+    return raw_transport_.PushBuffers(tasks, parallelism, uuid);
+  }
+
+  absl::Status RegisterExpectedChunks(uint64_t uuid, uint32_t expected_chunks) {
+    return raw_transport_.RegisterExpectedChunks(uuid, expected_chunks);
+  }
 
  private:
   struct WriteTask {
@@ -321,7 +347,10 @@ class BlockTransport final : public lib::RawBufferTransport {
   void ResolveStepCoordinates(const std::shared_ptr<SendStreamState>& state,
                               size_t* layer, size_t* shard, size_t* block_idx);
   uint32_t GetChunksTotalSize(const std::vector<BlockChunk>& chunks);
+  absl::Status HandleCustomRequest(int client_fd,
+                                   const lib::ChunkHeader& header);
 
+ private:
   absl::Mutex active_sends_mu_;
   absl::flat_hash_map<uint64_t, std::shared_ptr<SendStreamState>> active_sends_
       ABSL_GUARDED_BY(active_sends_mu_);
@@ -344,6 +373,8 @@ class BlockTransport final : public lib::RawBufferTransport {
   size_t rr_index_ ABSL_GUARDED_BY(scheduler_mu_) = 0;
   int parallelism_ = 1;
   std::atomic<bool> scheduler_stopping_{false};
+
+  lib::RawBufferTransport raw_transport_;
   std::vector<std::thread> socket_workers_;
 };
 

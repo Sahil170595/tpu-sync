@@ -133,6 +133,12 @@ absl::Status TileBufferNDOptimized(const uint8_t* src_linear,
 
     for (int64_t tile_row = 0; tile_row < num_tiles_0; ++tile_row) {
       for (int64_t tile_col = 0; tile_col < num_tiles_1; ++tile_col) {
+        int64_t logical_col_start = tile_col * tile_W;
+        int64_t valid_elements = std::min(tile_W, W - logical_col_start);
+        if (valid_elements <= 0) {
+          continue;
+        }
+
         int64_t tile_index = tile_row * num_tiles_1 + tile_col;
         uint8_t* dst_tile_ptr = dst_batch_ptr + tile_index * tile_size_bytes;
 
@@ -141,13 +147,6 @@ absl::Status TileBufferNDOptimized(const uint8_t* src_linear,
           if (logical_row >= H) {
             continue;
           }
-
-          int64_t logical_col_start = tile_col * tile_W;
-          int64_t valid_elements = std::min(tile_W, W - logical_col_start);
-          if (valid_elements <= 0) {
-            continue;
-          }
-
           const uint8_t* src_row_ptr =
               src_batch_ptr + (logical_row * W + logical_col_start) * itemsize;
           uint8_t* dst_row_ptr = dst_tile_ptr + (r * tile_W) * itemsize;
@@ -192,6 +191,12 @@ absl::Status DetileBufferNDOptimized(const uint8_t* src_tiled,
 
     for (int64_t tile_row = 0; tile_row < num_tiles_0; ++tile_row) {
       for (int64_t tile_col = 0; tile_col < num_tiles_1; ++tile_col) {
+        int64_t logical_col_start = tile_col * tile_W;
+        int64_t valid_elements = std::min(tile_W, W - logical_col_start);
+        if (valid_elements <= 0) {
+          continue;
+        }
+
         int64_t tile_index = tile_row * num_tiles_1 + tile_col;
         const uint8_t* src_tile_ptr =
             src_batch_ptr + tile_index * tile_size_bytes;
@@ -201,13 +206,6 @@ absl::Status DetileBufferNDOptimized(const uint8_t* src_tiled,
           if (logical_row >= H) {
             continue;
           }
-
-          int64_t logical_col_start = tile_col * tile_W;
-          int64_t valid_elements = std::min(tile_W, W - logical_col_start);
-          if (valid_elements <= 0) {
-            continue;
-          }
-
           uint8_t* dst_row_ptr =
               dst_batch_ptr + (logical_row * W + logical_col_start) * itemsize;
           const uint8_t* src_row_ptr = src_tile_ptr + (r * tile_W) * itemsize;

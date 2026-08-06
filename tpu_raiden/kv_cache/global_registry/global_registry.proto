@@ -65,6 +65,17 @@ service GlobalRegistryService {
   // Removes a store registration. Called by a store on clean shutdown.
   rpc UnregisterStore(UnregisterStoreRequest)
       returns (UnregisterStoreResponse) {  }
+
+  // Atomically registers the deployment's KVTransferSpec when none is
+  // stored yet, otherwise validates the request against the stored spec and
+  // rejects any difference. Idempotent by design.
+  rpc RegisterKVTransferSpec(RegisterKVTransferSpecRequest)
+      returns (RegisterKVTransferSpecResponse) {  }
+
+  // Reads the registered KVTransferSpec. Host store nodes poll this at boot
+  // until a serving host has published the spec.
+  rpc GetKVTransferSpec(GetKVTransferSpecRequest)
+      returns (GetKVTransferSpecResponse) {  }
 }
 
 message KVBlockMetadata {
@@ -219,6 +230,47 @@ message ResolveStoreResponse {
   // itself still returns OK: "not registered" is an answer, not an error.
   bool found = 1;
   StoreInfo store = 2;
+}
+
+// The KV block geometry and transfer topology of a deployment's serving hosts.
+// The serving hosts publish it here and host store nodes bootstrap from it.
+message KVTransferSpec {
+  // One entry per KV cache block array of the serving hosts, per-layer caches
+  // have one entry per layer, a unified KV cache has exactly one, and hybrid
+  // models one per state array.
+  message BlockArray {
+    // Bytes one block occupies in this array on one shard.
+    int64 block_bytes = 1;
+  }
+  repeated BlockArray block_arrays = 1;
+
+  // Device shards each block array is split across on a serving host.
+  int32 num_kv_shards = 2;
+
+  // Number of transfer workers on the serving hosts, with worker node ids
+  // densely assigned [0, num_workers-1]).
+  int32 num_workers = 3;
+}
+
+message RegisterKVTransferSpecRequest {
+  KVTransferSpec spec = 1;
+}
+
+message RegisterKVTransferSpecResponse {
+  bool success = 1;
+  string error_message = 2;
+  // On a mismatch rejection: the spec that is already registered, so the
+  // failing publisher's log shows both sides of the disagreement.
+  KVTransferSpec registered_spec = 3;
+}
+
+message GetKVTransferSpecRequest {}
+
+message GetKVTransferSpecResponse {
+  // False when nothing has been published yet. The RPC itself returns OK:
+  // "not published yet" is an answer, not an error (mirrors ResolveStore).
+  bool found = 1;
+  KVTransferSpec spec = 2;
 }
 
 message UnregisterStoreRequest {

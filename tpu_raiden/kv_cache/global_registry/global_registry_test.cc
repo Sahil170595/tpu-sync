@@ -22,6 +22,7 @@
 
 #include <gtest/gtest.h>
 #include "absl/status/status.h"
+#include "absl/strings/match.h"
 #include "absl/time/clock.h"
 #include "absl/time/time.h"
 #include "grpcpp/channel.h"
@@ -626,6 +627,104 @@ TEST_F(GlobalRegistryTest, RoundTripsNonUtf8PrefixHash) {
   auto after = client_->Lookup({binary_hash});
   ASSERT_TRUE(after.ok()) << after.status().ToString();
   EXPECT_TRUE(after->empty());
+}
+
+// A well-formed spec: two block arrays (e.g. a unified full-attention array
+// plus one state array), 2 shards, two transfer workers.
+KVTransferSpec MakeTransferSpec() {
+  KVTransferSpec spec;
+  spec.add_block_arrays()->set_block_bytes(4096);
+  spec.add_block_arrays()->set_block_bytes(512);
+  spec.set_num_kv_shards(2);
+  spec.set_num_workers(2);
+  return spec;
+}
+
+TEST_F(GlobalRegistryTest, GetKVTransferSpecBeforePublishIsNotFound) {
+  auto spec = client_->GetKVTransferSpec();
+  EXPECT_TRUE(absl::IsNotFound(spec.status())) << spec.status().ToString();
+}
+
+TEST_F(GlobalRegistryTest, RegisterKVTransferSpecRegistersAndGetRoundTrips) {
+  const KVTransferSpec published = MakeTransferSpec();
+  ASSERT_TRUE(client_->RegisterKVTransferSpec(published).ok());
+
+  auto spec = client_->GetKVTransferSpec();
+  ASSERT_TRUE(spec.ok()) << spec.status().ToString();
+  ASSERT_EQ(spec->block_arrays_size(), published.block_arrays_size());
+  EXPECT_EQ(spec->block_arrays(0).block_bytes(), 4096);
+  EXPECT_EQ(spec->block_arrays(1).block_bytes(), 512);
+  EXPECT_EQ(spec->num_kv_shards(), 2);
+  EXPECT_EQ(spec->num_workers(), 2);
+}
+
+TEST_F(GlobalRegistryTest, RegisterKVTransferSpecIdenticalRepublishIsOk) {
+  ASSERT_TRUE(client_->RegisterKVTransferSpec(MakeTransferSpec()).ok());
+  // The restart path: the same publisher (or an agreeing peer) re-publishes
+  // the identical spec.
+  EXPECT_TRUE(client_->RegisterKVTransferSpec(MakeTransferSpec()).ok());
+}
+
+TEST_F(GlobalRegistryTest, RegisterKVTransferSpecRejectsEveryFieldMismatch) {
+  ASSERT_TRUE(client_->RegisterKVTransferSpec(MakeTransferSpec()).ok());
+
+  KVTransferSpec other = MakeTransferSpec();
+  other.mutable_block_arrays(1)->set_block_bytes(1024);
+  absl::Status status = client_->RegisterKVTransferSpec(other);
+  EXPECT_TRUE(absl::IsInvalidArgument(status)) << status.ToString();
+  EXPECT_TRUE(absl::StrContains(status.message(), "block_arrays[1]"))
+      << status.ToString();
+
+  other = MakeTransferSpec();
+  other.add_block_arrays()->set_block_bytes(512);
+  status = client_->RegisterKVTransferSpec(other);
+  EXPECT_TRUE(absl::IsInvalidArgument(status)) << status.ToString();
+
+  other = MakeTransferSpec();
+  other.set_num_kv_shards(4);
+  status = client_->RegisterKVTransferSpec(other);
+  EXPECT_TRUE(absl::IsInvalidArgument(status)) << status.ToString();
+  EXPECT_TRUE(absl::StrContains(status.message(), "num_kv_shards"))
+      << status.ToString();
+
+  other = MakeTransferSpec();
+  other.set_num_workers(3);
+  status = client_->RegisterKVTransferSpec(other);
+  EXPECT_TRUE(absl::IsInvalidArgument(status)) << status.ToString();
+  EXPECT_TRUE(absl::StrContains(status.message(), "num_workers"))
+      << status.ToString();
+
+  // None of the rejected attempts replaced the registered spec.
+  auto spec = client_->GetKVTransferSpec();
+  ASSERT_TRUE(spec.ok()) << spec.status().ToString();
+  EXPECT_EQ(spec->block_arrays(1).block_bytes(), 512);
+  EXPECT_EQ(spec->num_kv_shards(), 2);
+  EXPECT_EQ(spec->num_workers(), 2);
+}
+
+TEST_F(GlobalRegistryTest, RegisterKVTransferSpecRejectsInvalidSpecs) {
+  KVTransferSpec no_arrays = MakeTransferSpec();
+  no_arrays.clear_block_arrays();
+  EXPECT_TRUE(absl::IsInvalidArgument(
+      client_->RegisterKVTransferSpec(no_arrays)));
+
+  KVTransferSpec zero_bytes = MakeTransferSpec();
+  zero_bytes.mutable_block_arrays(0)->set_block_bytes(0);
+  EXPECT_TRUE(absl::IsInvalidArgument(
+      client_->RegisterKVTransferSpec(zero_bytes)));
+
+  KVTransferSpec zero_shards = MakeTransferSpec();
+  zero_shards.set_num_kv_shards(0);
+  EXPECT_TRUE(absl::IsInvalidArgument(
+      client_->RegisterKVTransferSpec(zero_shards)));
+
+  KVTransferSpec zero_workers = MakeTransferSpec();
+  zero_workers.set_num_workers(0);
+  EXPECT_TRUE(absl::IsInvalidArgument(
+      client_->RegisterKVTransferSpec(zero_workers)));
+
+  // A rejected spec registered nothing.
+  EXPECT_TRUE(absl::IsNotFound(client_->GetKVTransferSpec().status()));
 }
 
 }  // namespace

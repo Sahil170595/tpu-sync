@@ -221,6 +221,47 @@ absl::Status GlobalRegistryClient::UnregisterStore(const RaidenId& raiden_id) {
   return absl::OkStatus();
 }
 
+absl::Status GlobalRegistryClient::RegisterKVTransferSpec(
+    const KVTransferSpec& spec) {
+  RegisterKVTransferSpecRequest request;
+  *request.mutable_spec() = spec;
+
+  RegisterKVTransferSpecResponse response;
+  grpc::ClientContext context;
+  grpc::Status status =
+      stub_->RegisterKVTransferSpec(&context, request, &response);
+
+  if (!status.ok()) {
+    // Preserve the gRPC code (grpc and absl codes match 1:1) so callers can
+    // tell retryable transport conditions apart.
+    return absl::Status(static_cast<absl::StatusCode>(status.error_code()),
+                        status.error_message());
+  }
+  if (!response.success()) {
+    return absl::InvalidArgumentError(response.error_message());
+  }
+  return absl::OkStatus();
+}
+
+absl::StatusOr<KVTransferSpec> GlobalRegistryClient::GetKVTransferSpec() {
+  GetKVTransferSpecRequest request;
+
+  GetKVTransferSpecResponse response;
+  grpc::ClientContext context;
+  grpc::Status status = stub_->GetKVTransferSpec(&context, request, &response);
+
+  if (!status.ok()) {
+    // Preserve the gRPC code (grpc and absl codes match 1:1) so callers can
+    // tell retryable transport conditions apart.
+    return absl::Status(static_cast<absl::StatusCode>(status.error_code()),
+                        status.error_message());
+  }
+  if (!response.found()) {
+    return absl::NotFoundError("no KVTransferSpec published yet");
+  }
+  return response.spec();
+}
+
 std::string CalculatePrefixHash(const std::vector<int64_t>& tokens,
                                 absl::string_view parent_hash) {
   SHA256_CTX sha256;

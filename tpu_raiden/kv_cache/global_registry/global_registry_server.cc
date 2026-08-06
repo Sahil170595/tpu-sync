@@ -391,6 +391,105 @@ grpc::Status GlobalRegistryServiceImpl::UnregisterStore(
   return grpc::Status::OK;
 }
 
+namespace {
+
+// Returns an empty string when `spec` is structurally valid, else the reason
+// it is not.
+std::string SpecValidationError(const KVTransferSpec& spec) {
+  if (spec.block_arrays().empty()) {
+    return "spec must declare at least one block array";
+  }
+  for (int i = 0; i < spec.block_arrays_size(); ++i) {
+    if (spec.block_arrays(i).block_bytes() <= 0) {
+      return absl::StrCat("block_arrays[", i, "].block_bytes must be positive");
+    }
+  }
+  if (spec.num_kv_shards() <= 0) {
+    return "num_kv_shards must be positive";
+  }
+  if (spec.num_workers() <= 0) {
+    return "num_workers must be positive";
+  }
+  return "";
+}
+
+// Returns an empty string when the two specs are identical, else a
+// description of the first difference, named from `incoming`'s perspective.
+std::string SpecDifference(const KVTransferSpec& registered,
+                           const KVTransferSpec& incoming) {
+  if (incoming.block_arrays_size() != registered.block_arrays_size()) {
+    return absl::StrCat("block_arrays has ", incoming.block_arrays_size(),
+                        " entries, registered spec has ",
+                        registered.block_arrays_size());
+  }
+  for (int i = 0; i < incoming.block_arrays_size(); ++i) {
+    if (incoming.block_arrays(i).block_bytes() !=
+        registered.block_arrays(i).block_bytes()) {
+      return absl::StrCat("block_arrays[", i, "].block_bytes is ",
+                          incoming.block_arrays(i).block_bytes(),
+                          ", registered spec has ",
+                          registered.block_arrays(i).block_bytes());
+    }
+  }
+  if (incoming.num_kv_shards() != registered.num_kv_shards()) {
+    return absl::StrCat("num_kv_shards is ", incoming.num_kv_shards(),
+                        ", registered spec has ", registered.num_kv_shards());
+  }
+  if (incoming.num_workers() != registered.num_workers()) {
+    return absl::StrCat("num_workers is ", incoming.num_workers(),
+                        ", registered spec has ", registered.num_workers());
+  }
+  return "";
+}
+
+}  // namespace
+
+grpc::Status GlobalRegistryServiceImpl::RegisterKVTransferSpec(
+    grpc::ServerContext* context, const RegisterKVTransferSpecRequest* request,
+    RegisterKVTransferSpecResponse* response) {
+  if (!request->has_spec()) {
+    response->set_success(false);
+    response->set_error_message("spec cannot be empty");
+    return grpc::Status::OK;
+  }
+  const std::string invalid = SpecValidationError(request->spec());
+  if (!invalid.empty()) {
+    response->set_success(false);
+    response->set_error_message(invalid);
+    return grpc::Status::OK;
+  }
+
+  absl::MutexLock lock(mutex_);
+  if (!transfer_spec_.has_value()) {
+    transfer_spec_ = request->spec();
+    response->set_success(true);
+    return grpc::Status::OK;
+  }
+  const std::string diff = SpecDifference(*transfer_spec_, request->spec());
+  if (diff.empty()) {
+    // Identical republish: the idempotent restart path.
+    response->set_success(true);
+    return grpc::Status::OK;
+  }
+  response->set_success(false);
+  response->set_error_message(absl::StrCat("KVTransferSpec mismatch: ", diff));
+  *response->mutable_registered_spec() = *transfer_spec_;
+  return grpc::Status::OK;
+}
+
+grpc::Status GlobalRegistryServiceImpl::GetKVTransferSpec(
+    grpc::ServerContext* context, const GetKVTransferSpecRequest* request,
+    GetKVTransferSpecResponse* response) {
+  absl::MutexLock lock(mutex_);
+  if (!transfer_spec_.has_value()) {
+    response->set_found(false);
+    return grpc::Status::OK;
+  }
+  response->set_found(true);
+  *response->mutable_spec() = *transfer_spec_;
+  return grpc::Status::OK;
+}
+
 size_t GlobalRegistryServiceImpl::GetOwnerIndexSizeForTest(
     const RaidenId& raiden_id) const {
   absl::MutexLock lock(mutex_);

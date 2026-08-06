@@ -27,6 +27,38 @@ cc_library(
 )
 
 cc_library(
+    name = "grs_kv_transfer_spec_source",
+    srcs = ["grs_kv_transfer_spec_source.cc"],
+    hdrs = ["grs_kv_transfer_spec_source.h"],
+    deps = [
+        ":kv_transfer_spec_source",
+        "//tpu_raiden/core:status_macros",
+        "//tpu_raiden/kv_cache/global_registry:global_registry_cc_proto",
+        "//tpu_raiden/kv_cache/global_registry:global_registry_client_cc",
+        "@com_github_grpc_grpc//:grpc++",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+    ],
+)
+
+cc_test(
+    name = "grs_kv_transfer_spec_source_test",
+    srcs = ["grs_kv_transfer_spec_source_test.cc"],
+    deps = [
+        ":grs_kv_transfer_spec_source",
+        ":kv_transfer_spec_source",
+        "//tpu_raiden/kv_cache/global_registry:global_registry_cc_proto",
+        "//tpu_raiden/kv_cache/global_registry:global_registry_client_cc",
+        "//tpu_raiden/kv_cache/global_registry:global_registry_server_lib",
+        "@com_github_grpc_grpc//:grpc++",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+cc_library(
     name = "kv_cache_host_store_node",
     srcs = ["kv_cache_host_store_node.cc"],
     hdrs = ["kv_cache_host_store_node.h"],
@@ -63,8 +95,8 @@ cc_binary(
     ],
     features = ["-use_header_modules"],
     deps = [
+        ":grs_kv_transfer_spec_source",
         ":kv_cache_host_store_node",
-        ":kv_transfer_spec_source",
         "//tpu_raiden/kv_cache:raiden_id",
         "@com_google_absl//absl/flags:flag",
         "@com_google_absl//absl/flags:parse",
@@ -83,16 +115,16 @@ cc_test(
     ],
     features = ["-use_header_modules"],
     deps = [
+        ":grs_kv_transfer_spec_source",
         ":kv_cache_host_store_node",
-        ":kv_transfer_spec_source",
-        "//tpu_raiden/core/controller:raiden_controller",
-        "//tpu_raiden/kv_cache:kv_cache_store",
         "//tpu_raiden/kv_cache:raiden_id",
+        "//tpu_raiden/kv_cache/global_registry:global_registry_cc_proto",
         "//tpu_raiden/kv_cache/global_registry:global_registry_client_cc",
         "//tpu_raiden/kv_cache/global_registry:global_registry_server_lib",
         "@com_github_grpc_grpc//:grpc++",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
         "@com_google_absl//absl/time",
         "@com_google_googletest//:gtest",
         "@com_google_googletest//:gtest_main",

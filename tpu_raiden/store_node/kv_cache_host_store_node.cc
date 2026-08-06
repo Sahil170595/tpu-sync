@@ -67,11 +67,8 @@ std::string ComposeEndpoint(absl::string_view ip, int port) {
 // Transfer worker pairing id of this node's single worker. A peer pairs
 // each of its workers with the worker here that has the same node_id so this
 // value must mirror the peer's and is deliberately not configurable. The
-// full worker topology to mirror (one worker per serving-host transfer
-// rank, same node_ids) will come with the published KVTransferSpec; the
-// node will then run one manager/worker per entry and this constant goes
-// away. Until then a single worker under node_id 0 matches a
-// single-transfer-rank serving host.
+// worker count to mirror (one worker per serving-host transfer rank, same
+// node_ids) will come with the published KVTransferSpec's num_workers.
 constexpr int64_t kNodeId = 0;
 
 }  // namespace
@@ -105,14 +102,17 @@ absl::StatusOr<KVTransferSpec> KVCacheHostStoreNode::WaitForSpec(
 absl::StatusOr<size_t> KVCacheHostStoreNode::NumBlocksForBudget(
     size_t dram_budget_bytes, const KVTransferSpec& spec) {
   RETURN_IF_ERROR(ValidateSpec(spec));
-  const size_t block_bytes =
-      spec.num_layers * spec.num_shards * spec.slice_byte_size;
+  size_t bytes_per_shard = 0;
+  for (uint64_t array_bytes : spec.block_array_bytes) {
+    bytes_per_shard += array_bytes;
+  }
+  const size_t block_bytes = spec.num_kv_shards * bytes_per_shard;
   if (dram_budget_bytes < block_bytes) {
     return absl::InvalidArgumentError(absl::StrCat(
         "dram_budget_bytes=", dram_budget_bytes,
         " does not cover a single block of ", block_bytes,
-        " bytes (num_layers=", spec.num_layers, " x num_shards=",
-        spec.num_shards, " x slice_byte_size=", spec.slice_byte_size, ")"));
+        " bytes (num_kv_shards=", spec.num_kv_shards, " x ", bytes_per_shard,
+        " bytes across ", spec.block_array_bytes.size(), " block arrays)"));
   }
   return dram_budget_bytes / block_bytes;
 }
@@ -132,20 +132,36 @@ KVCacheHostStoreNode::Create(const Options& options,
   ASSIGN_OR_RETURN(const size_t num_host_blocks,
                    NumBlocksForBudget(options.dram_budget_bytes, spec));
 
+  // The CPU-only manager constructor below models one uniform stride across
+  // all block arrays; hybrid models (whose state arrays have differing
+  // block_bytes) need per-array constructor support that does not exist yet.
+  for (uint64_t array_bytes : spec.block_array_bytes) {
+    if (array_bytes != spec.block_array_bytes[0]) {
+      return absl::UnimplementedError(absl::StrCat(
+          "host store node only supports uniform block arrays for now; got ",
+          spec.block_array_bytes[0], " and ", array_bytes, " bytes"));
+    }
+  }
+  const size_t num_block_arrays = spec.block_array_bytes.size();
+  const uint64_t block_bytes_per_array = spec.block_array_bytes[0];
+
   // Phase B: the same assembly a serving host runs, CPU-backed.
   std::unique_ptr<KVCacheManagerWithTransfer> manager;
   std::unique_ptr<kv_cache::KVCacheStore> store;
   try {
     // 1. The pool. The CPU-only constructor allocates and zeroes the full
-    // num_host_blocks x num_layers x num_shards x slice_byte_size pool here,
-    // so the memory cost is paid at boot, never on a request path. A
+    // num_host_blocks x num_block_arrays x num_kv_shards x
+    // block_bytes_per_array pool here, so the memory cost is paid at boot,
+    // never on a request path. Its first and third parameters are named
+    // num_layers and slice_byte_size for historical reasons; they are the
+    // array count and the per-array block stride (see KVTransferSpec). A
     // follow-up change will build one KVCacheManagerWithTransfer per entry
     // of the worker topology the serving hosts publish in the global
     // registry, replacing this single instance (see kNodeId above).
     // local_control_port=-1: the slot protocol is engine-to-engine
     // coordination and has no role on a host store node.
     manager = std::make_unique<KVCacheManagerWithTransfer>(
-        spec.num_layers, spec.num_shards, spec.slice_byte_size,
+        num_block_arrays, spec.num_kv_shards, block_bytes_per_array,
         /*local_port=*/0,
         /*host_blocks_to_allocate=*/num_host_blocks, options.parallelism,
         kNodeId, /*local_control_port=*/-1);
@@ -160,8 +176,8 @@ KVCacheHostStoreNode::Create(const Options& options,
     // server at all (the registry decides whether the peer plane exists).
     store = std::make_unique<kv_cache::KVCacheStore>(
         /*capacity=*/num_host_blocks, options.global_registry_address,
-        options.raiden_id, static_cast<int>(spec.num_shards),
-        static_cast<int64_t>(spec.slice_byte_size),
+        options.raiden_id, static_cast<int>(spec.num_kv_shards),
+        static_cast<int64_t>(block_bytes_per_array),
         options.raiden_orchestrator_address, options.store_server_ip,
         options.raiden_controller_port);
   } catch (const std::exception& e) {
@@ -197,12 +213,12 @@ KVCacheHostStoreNode::Create(const Options& options,
       new KVCacheHostStoreNode(spec, num_host_blocks, std::move(manager),
                                std::move(worker_server), std::move(store)));
   LOG(INFO) << "KVCacheHostStoreNode up: " << node->num_host_blocks()
-            << " host blocks (num_layers=" << spec.num_layers
-            << " num_shards=" << spec.num_shards
-            << " slice_byte_size=" << spec.slice_byte_size << "), store server "
-            << node->store_server_address() << ", controller "
-            << node->raiden_controller_address() << ", worker "
-            << worker_endpoint;
+            << " host blocks (num_block_arrays=" << num_block_arrays
+            << " num_kv_shards=" << spec.num_kv_shards
+            << " block_bytes_per_array=" << block_bytes_per_array
+            << "), store server " << node->store_server_address()
+            << ", controller " << node->raiden_controller_address()
+            << ", worker " << worker_endpoint;
   return node;
 }
 

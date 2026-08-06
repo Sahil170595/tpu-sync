@@ -15,8 +15,11 @@
 #include "tpu_raiden/store_node/kv_cache_host_store_node.h"
 
 #include <cstddef>
+#include <cstdint>
 #include <cstdlib>
 #include <memory>
+#include <string>
+#include <vector>
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
@@ -29,8 +32,9 @@
 #include "grpcpp/security/server_credentials.h"
 #include "grpcpp/server.h"
 #include "grpcpp/server_builder.h"
+#include "tpu_raiden/kv_cache/global_registry/global_registry.pb.h"
 #include "tpu_raiden/kv_cache/raiden_id.h"
-#include "tpu_raiden/store_node/kv_transfer_spec_source.h"
+#include "tpu_raiden/store_node/grs_kv_transfer_spec_source.h"
 #include "tpu_raiden/kv_cache/global_registry/global_registry_client.h"
 #include "tpu_raiden/kv_cache/global_registry/global_registry_server.h"
 
@@ -64,7 +68,11 @@ class FlakyKVTransferSpecSource : public KVTransferSpecSource {
   int calls_ = 0;
 };
 
-KVTransferSpec TestSpec() { return KVTransferSpec{2, 1, 256}; }
+// Two block arrays of 256 bytes each on 1 shard: one block is 512 bytes.
+KVTransferSpec TestSpec() {
+  return KVTransferSpec{/*block_array_bytes=*/{256, 256},
+                        /*num_kv_shards=*/1};
+}
 
 KVCacheHostStoreNode::Options FastPollOptions() {
   KVCacheHostStoreNode::Options options;
@@ -73,11 +81,14 @@ KVCacheHostStoreNode::Options FastPollOptions() {
   return options;
 }
 
-TEST(ValidateSpecTest, RejectsAnyZeroField) {
+TEST(ValidateSpecTest, RejectsEmptyOrZeroQuantities) {
   EXPECT_TRUE(ValidateSpec(TestSpec()).ok());
-  EXPECT_TRUE(absl::IsInvalidArgument(ValidateSpec(KVTransferSpec{0, 1, 256})));
-  EXPECT_TRUE(absl::IsInvalidArgument(ValidateSpec(KVTransferSpec{2, 0, 256})));
-  EXPECT_TRUE(absl::IsInvalidArgument(ValidateSpec(KVTransferSpec{2, 1, 0})));
+  EXPECT_TRUE(absl::IsInvalidArgument(
+      ValidateSpec(KVTransferSpec{/*block_array_bytes=*/{}, 1})));
+  EXPECT_TRUE(absl::IsInvalidArgument(
+      ValidateSpec(KVTransferSpec{{256, 256}, 0})));
+  EXPECT_TRUE(absl::IsInvalidArgument(
+      ValidateSpec(KVTransferSpec{{256, 0}, 1})));
 }
 
 TEST(WaitForSpecTest, RetriesNotFoundUntilPublished) {
@@ -86,7 +97,7 @@ TEST(WaitForSpecTest, RetriesNotFoundUntilPublished) {
   absl::StatusOr<KVTransferSpec> spec =
       KVCacheHostStoreNode::WaitForSpec(source, FastPollOptions());
   ASSERT_TRUE(spec.ok()) << spec.status();
-  EXPECT_EQ(spec->slice_byte_size, TestSpec().slice_byte_size);
+  EXPECT_EQ(spec->block_array_bytes, TestSpec().block_array_bytes);
   EXPECT_EQ(source.calls(), 4);
 }
 
@@ -109,7 +120,7 @@ TEST(WaitForSpecTest, PropagatesFatalErrorWithoutRetry) {
 }
 
 TEST(WaitForSpecTest, RejectsInvalidPublishedSpec) {
-  FlakyKVTransferSpecSource source(KVTransferSpec{0, 0, 0}, /*failures=*/0,
+  FlakyKVTransferSpecSource source(KVTransferSpec{}, /*failures=*/0,
                                    absl::OkStatus());
   absl::StatusOr<KVTransferSpec> spec =
       KVCacheHostStoreNode::WaitForSpec(source, FastPollOptions());
@@ -128,7 +139,7 @@ TEST(WaitForSpecTest, TimesOut) {
 }
 
 TEST(NumBlocksForBudgetTest, FloorsToWholeBlocks) {
-  // One block of TestSpec() is 2 * 1 * 256 = 512 bytes.
+  // One block of TestSpec() is 1 shard * (256 + 256) = 512 bytes.
   absl::StatusOr<size_t> blocks =
       KVCacheHostStoreNode::NumBlocksForBudget(4096, TestSpec());
   ASSERT_TRUE(blocks.ok()) << blocks.status();
@@ -181,6 +192,18 @@ TEST_F(KVCacheHostStoreNodeBootTest, RequiresKVTransferSpecSource) {
   EXPECT_TRUE(absl::IsInvalidArgument(node.status()));
 }
 
+TEST_F(KVCacheHostStoreNodeBootTest, RejectsHeterogeneousBlockArraysForNow) {
+  // A hybrid-model spec: block arrays with differing strides. Valid as a
+  // spec, but the CPU-only manager cannot express it yet, so boot must fail
+  // loudly instead of allocating a wrong-shaped pool.
+  StaticKVTransferSpecSource source(
+      KVTransferSpec{/*block_array_bytes=*/{256, 512}, /*num_kv_shards=*/1});
+  absl::StatusOr<std::unique_ptr<KVCacheHostStoreNode>> node =
+      KVCacheHostStoreNode::Create(BootOptions(), &source);
+  EXPECT_TRUE(absl::IsUnimplemented(node.status())) << node.status();
+  EXPECT_THAT(node.status().message(), HasSubstr("uniform block arrays"));
+}
+
 TEST_F(KVCacheHostStoreNodeBootTest, BootsWithoutRegistryButServesNoPeers) {
   StaticKVTransferSpecSource source(TestSpec());
   absl::StatusOr<std::unique_ptr<KVCacheHostStoreNode>> node =
@@ -189,7 +212,7 @@ TEST_F(KVCacheHostStoreNodeBootTest, BootsWithoutRegistryButServesNoPeers) {
 
   // The budget became whole blocks of the received spec.
   EXPECT_EQ((*node)->num_host_blocks(), 8u);
-  EXPECT_EQ((*node)->spec().num_layers, TestSpec().num_layers);
+  EXPECT_EQ((*node)->spec().block_array_bytes, TestSpec().block_array_bytes);
 
   // KVCacheStore's construction rules make the global registry decide
   // whether the peer-facing plane exists: no registry, no store server.
@@ -246,6 +269,42 @@ TEST_F(KVCacheHostStoreNodeBootTest, BootsServesAndPublishesWithRegistry) {
   ASSERT_TRUE(store_info.ok()) << store_info.status();
   EXPECT_EQ(store_info->store_server_address(),
             (*node)->store_server_address());
+}
+
+TEST_F(KVCacheHostStoreNodeBootTest, BootsFromGrsPublishedSpec) {
+  auto service =
+      std::make_unique<kv_cache::global_registry::GlobalRegistryServiceImpl>();
+  grpc::ServerBuilder builder;
+  int port = 0;
+  builder.AddListeningPort("localhost:0", grpc::InsecureServerCredentials(),
+                           &port);
+  builder.RegisterService(service.get());
+  std::unique_ptr<grpc::Server> registry_server = builder.BuildAndStart();
+  ASSERT_NE(registry_server, nullptr);
+  const std::string registry_address = absl::StrCat("localhost:", port);
+
+  // A serving host publishes the spec; the node then boots entirely from
+  // the registry, no static spec anywhere.
+  kv_cache::global_registry::GlobalRegistryClient registry_client(
+      grpc::CreateChannel(registry_address,
+                          grpc::InsecureChannelCredentials()));
+  kv_cache::global_registry::KVTransferSpec published;
+  published.add_block_arrays()->set_block_bytes(256);
+  published.add_block_arrays()->set_block_bytes(256);
+  published.set_num_kv_shards(1);
+  published.set_num_workers(1);
+  ASSERT_TRUE(registry_client.RegisterKVTransferSpec(published).ok());
+
+  KVCacheHostStoreNode::Options options = BootOptions();
+  options.global_registry_address = registry_address;
+  GrsKVTransferSpecSource source(registry_address);
+  absl::StatusOr<std::unique_ptr<KVCacheHostStoreNode>> node =
+      KVCacheHostStoreNode::Create(options, &source);
+  ASSERT_TRUE(node.ok()) << node.status();
+  EXPECT_EQ((*node)->spec().block_array_bytes,
+            (std::vector<uint64_t>{256, 256}));
+  EXPECT_EQ((*node)->num_host_blocks(), 8u);
+  EXPECT_THAT((*node)->store_server_address(), HasSubstr("localhost:"));
 }
 
 TEST_F(KVCacheHostStoreNodeBootTest, WaitsOutLateSpecThenBoots) {

@@ -96,6 +96,15 @@ class GlobalRegistryClient {
   // teardown should not fail because the entry was already gone.
   absl::Status UnregisterStore(const RaidenId& raiden_id);
 
+  // Atomically registers the deployment's KVTransferSpec, or validates it
+  // against the already-registered one; any difference is InvalidArgument.
+  // Idempotent by design.
+  absl::Status RegisterKVTransferSpec(const KVTransferSpec& spec);
+
+  // Reads the registered KVTransferSpec. NotFound when none has been
+  // published yet.
+  absl::StatusOr<KVTransferSpec> GetKVTransferSpec();
+
  private:
   std::unique_ptr<GlobalRegistryService::Stub> stub_;
 };

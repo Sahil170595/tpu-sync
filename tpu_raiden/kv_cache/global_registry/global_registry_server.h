@@ -20,6 +20,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <thread>  // NOLINT
 
@@ -98,6 +99,15 @@ class GlobalRegistryServiceImpl final : public GlobalRegistryService::Service {
                                const UnregisterStoreRequest* request,
                                UnregisterStoreResponse* response) override;
 
+  grpc::Status RegisterKVTransferSpec(
+      grpc::ServerContext* context,
+      const RegisterKVTransferSpecRequest* request,
+      RegisterKVTransferSpecResponse* response) override;
+
+  grpc::Status GetKVTransferSpec(grpc::ServerContext* context,
+                                 const GetKVTransferSpecRequest* request,
+                                 GetKVTransferSpecResponse* response) override;
+
   // Force a cleanup of expired entries.
   void CleanupExpiredEntries();
 
@@ -143,6 +153,12 @@ class GlobalRegistryServiceImpl final : public GlobalRegistryService::Service {
   // store's registration (a lookup then hits, and ResolveStore misses).
   absl::flat_hash_map<RaidenId, StoreRecord, RaidenIdHash> store_registry_
       ABSL_GUARDED_BY(mutex_);
+
+  // The deployment's KVTransferSpec, set by the first successful
+  // RegisterKVTransferSpec and immutable afterwards (later calls only
+  // validate against it). Never expires: the spec is deployment geometry,
+  // not liveness information.
+  std::optional<KVTransferSpec> transfer_spec_ ABSL_GUARDED_BY(mutex_);
 
   std::atomic<bool> shutdown_{false};
   std::thread cleanup_thread_;

@@ -16,6 +16,8 @@
 #define THIRD_PARTY_TPU_RAIDEN_TPU_RAIDEN_STORE_NODE_KV_TRANSFER_SPEC_SOURCE_H_
 
 #include <cstddef>
+#include <cstdint>
+#include <vector>
 
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
@@ -24,30 +26,34 @@
 namespace tpu_raiden {
 namespace store_node {
 
-// Everything a host store node must match about the deployment's serving hosts
-// to interoperate with their KV transfers. The authority for these values is
-// the serving host's manager runtime (which has the real device buffers);
-// a host store node only ever receives them, it never derives them.
-//
-// Today this carries the block geometry: the uniform-slice block shape,
-// where every (layer, shard) slice has the same byte size. Planned
-// extensions -- the serving hosts' transfer worker topology, and per-pool
-// block shapes for hybrid models -- grow this struct without changing the
-// source interface below.
+// The subset of the global registry's KVTransferSpec that a host store node
+// consumes; see global_registry.proto for the field semantics. The authority
+// for these values is the serving hosts' manager runtime; the node only
+// receives them, it never derives them.
 struct KVTransferSpec {
-  size_t num_layers = 0;
-  size_t num_shards = 0;
-  size_t slice_byte_size = 0;
+  // Bytes one block occupies in each block array on one shard, in
+  // registration order.
+  std::vector<uint64_t> block_array_bytes;
+  // Device shards each block array is split across.
+  size_t num_kv_shards = 0;
 };
 
-// Returns InvalidArgument unless every field is positive.
+// Returns InvalidArgument unless the spec describes at least one block array
+// and every quantity is positive.
 inline absl::Status ValidateSpec(const KVTransferSpec& spec) {
-  if (spec.num_layers == 0 || spec.num_shards == 0 ||
-      spec.slice_byte_size == 0) {
-    return absl::InvalidArgumentError(absl::StrCat(
-        "KVTransferSpec fields must all be positive, got num_layers=",
-        spec.num_layers, " num_shards=", spec.num_shards,
-        " slice_byte_size=", spec.slice_byte_size));
+  if (spec.block_array_bytes.empty()) {
+    return absl::InvalidArgumentError(
+        "KVTransferSpec must describe at least one block array");
+  }
+  for (size_t i = 0; i < spec.block_array_bytes.size(); ++i) {
+    if (spec.block_array_bytes[i] == 0) {
+      return absl::InvalidArgumentError(absl::StrCat(
+          "KVTransferSpec block_array_bytes[", i, "] must be positive"));
+    }
+  }
+  if (spec.num_kv_shards == 0) {
+    return absl::InvalidArgumentError(
+        "KVTransferSpec num_kv_shards must be positive");
   }
   return absl::OkStatus();
 }

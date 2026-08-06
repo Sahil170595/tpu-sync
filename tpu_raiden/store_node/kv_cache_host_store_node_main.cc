@@ -30,8 +30,8 @@
 #include "absl/log/log.h"
 #include "absl/status/statusor.h"
 #include "tpu_raiden/kv_cache/raiden_id.h"
+#include "tpu_raiden/store_node/grs_kv_transfer_spec_source.h"
 #include "tpu_raiden/store_node/kv_cache_host_store_node.h"
-#include "tpu_raiden/store_node/kv_transfer_spec_source.h"
 
 // Identity: the RaidenId this node registers under. Raiden treats the four
 // fields as one opaque composite key -- no field is matched individually
@@ -64,7 +64,9 @@ ABSL_FLAG(std::string, store_server_ip, "",
 ABSL_FLAG(int, raiden_controller_port, 0,
           "Controller port; 0 lets gRPC choose.");
 ABSL_FLAG(std::string, global_registry_address, "",
-          "GlobalRegistry host:port to publish this node to.");
+          "GlobalRegistry host:port. Supplies the deployment's "
+          "KVTransferSpec and is where this node publishes itself. "
+          "Required.");
 ABSL_FLAG(std::string, raiden_orchestrator_address, "",
           "Orchestrator host:port to register the controller with.");
 
@@ -78,19 +80,11 @@ ABSL_FLAG(int, parallelism, 1,
           "transfers. Purely local performance tuning for this machine's "
           "NIC/CPU; peers need not match it.");
 
-// KVTransferSpec. Stopgap flags feeding a StaticKVTransferSpecSource;
-// replaced by the global-registry-backed source once spec publication lands
-// there, at which point the node needs no spec flags at all.
-ABSL_FLAG(size_t, num_layers, 0, "KV block geometry: layer count.");
-ABSL_FLAG(size_t, num_shards, 0, "KV block geometry: shard count.");
-ABSL_FLAG(size_t, slice_byte_size, 0,
-          "KV block geometry: bytes of one (layer, shard) slice.");
 
 namespace {
 
+using ::tpu_raiden::store_node::GrsKVTransferSpecSource;
 using ::tpu_raiden::store_node::KVCacheHostStoreNode;
-using ::tpu_raiden::store_node::KVTransferSpec;
-using ::tpu_raiden::store_node::StaticKVTransferSpecSource;
 
 int Run() {
   // Block SIGTERM/SIGINT before the node spawns any thread: threads inherit
@@ -115,10 +109,12 @@ int Run() {
   options.dram_budget_bytes = absl::GetFlag(FLAGS_dram_budget_bytes);
   options.parallelism = absl::GetFlag(FLAGS_parallelism);
 
-  StaticKVTransferSpecSource kv_transfer_spec_source(
-      KVTransferSpec{absl::GetFlag(FLAGS_num_layers),
-                     absl::GetFlag(FLAGS_num_shards),
-                     absl::GetFlag(FLAGS_slice_byte_size)});
+  if (options.global_registry_address.empty()) {
+    LOG(ERROR) << "--global_registry_address is required";
+    return 1;
+  }
+  GrsKVTransferSpecSource kv_transfer_spec_source(
+      options.global_registry_address);
 
   absl::StatusOr<std::unique_ptr<KVCacheHostStoreNode>> node =
       KVCacheHostStoreNode::Create(options, &kv_transfer_spec_source);

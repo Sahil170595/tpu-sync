@@ -3651,8 +3651,7 @@ class RaidenController:
                       " controller",
                       req_id,
                   )
-                if tree_broadcast_tasks:
-                  await asyncio.gather(*tree_broadcast_tasks)
+              await asyncio.gather(*tree_broadcast_tasks)
 
       else:
         # === OLD PLAN-BASED WORKFLOW (Backward Compatibility) ===

@@ -98,6 +98,58 @@ bool IsStandardRowMajorTiled(const xla::Shape& shape,
   return true;
 }
 
+// Copies a single tile from the source batch pointer to the destination tile
+// pointer when no padding is needed. This assumes the tile is fully within the
+// matrix bounds.
+void CopyTileNoPadding(const uint8_t* src_batch_ptr, uint8_t* dst_tile_ptr,
+                       int64_t tile_row, int64_t tile_col, int64_t tile_H,
+                       int64_t tile_W, int64_t W, int64_t itemsize) {
+  int64_t logical_col_start = tile_col * tile_W;
+  for (int64_t r = 0; r < tile_H; ++r) {
+    int64_t logical_row = tile_row * tile_H + r;
+    const uint8_t* src_row_ptr =
+        src_batch_ptr + (logical_row * W + logical_col_start) * itemsize;
+    uint8_t* dst_row_ptr = dst_tile_ptr + (r * tile_W) * itemsize;
+
+    std::memcpy(dst_row_ptr, src_row_ptr, tile_W * itemsize);
+  }
+}
+
+// Copies a single tile from the source batch pointer to the destination tile
+// pointer, handling padding if the tile is partially or fully out of bounds.
+// Out-of-bounds elements in the destination tile are zero-initialized.
+void CopyTileWithPadding(const uint8_t* src_batch_ptr, uint8_t* dst_tile_ptr,
+                         int64_t tile_row, int64_t tile_col, int64_t tile_H,
+                         int64_t tile_W, int64_t H, int64_t W, int64_t itemsize,
+                         int64_t tile_size_bytes) {
+  int64_t logical_col_start = tile_col * tile_W;
+  int64_t valid_elements = std::min(tile_W, W - logical_col_start);
+  if (valid_elements <= 0) {
+    std::memset(dst_tile_ptr, 0, tile_size_bytes);
+    return;
+  }
+
+  for (int64_t r = 0; r < tile_H; ++r) {
+    int64_t logical_row = tile_row * tile_H + r;
+    uint8_t* dst_row_ptr = dst_tile_ptr + (r * tile_W) * itemsize;
+    if (logical_row >= H) {
+      std::memset(dst_row_ptr, 0, tile_W * itemsize);
+      continue;
+    }
+    const uint8_t* src_row_ptr =
+        src_batch_ptr + (logical_row * W + logical_col_start) * itemsize;
+
+    std::memcpy(dst_row_ptr, src_row_ptr, valid_elements * itemsize);
+    if (valid_elements < tile_W) {
+      std::memset(dst_row_ptr + valid_elements * itemsize, 0,
+                  (tile_W - valid_elements) * itemsize);
+    }
+  }
+}
+
+// Tiles a buffer using an optimized path for standard row-major layouts.
+// It avoids global zero-initialization of the destination buffer to prevent
+// CPU cache pollution, instead zeroing padding elements locally per tile.
 absl::Status TileBufferNDOptimized(const uint8_t* src_linear,
                                    uint8_t* dst_tiled, const xla::Shape& shape,
                                    const xla::Layout& layout) {
@@ -123,35 +175,35 @@ absl::Status TileBufferNDOptimized(const uint8_t* src_linear,
   int64_t matrix_size_bytes = H * W * itemsize;
   int64_t tiled_matrix_size_bytes = num_tiles_0 * num_tiles_1 * tile_size_bytes;
 
-  // Zero-initialize the destination buffer to handle padding automatically
-  int64_t total_physical_elements = GetTiledBufferElements(shape);
-  std::memset(dst_tiled, 0, total_physical_elements * itemsize);
+  bool has_padding = (H % tile_H != 0) || (W % tile_W != 0);
 
-  for (int64_t b = 0; b < batch_size; ++b) {
-    const uint8_t* src_batch_ptr = src_linear + b * matrix_size_bytes;
-    uint8_t* dst_batch_ptr = dst_tiled + b * tiled_matrix_size_bytes;
+  if (!has_padding) {
+    // Fast path: No padding needed, bypass all zero-initialization and bounds checks.
+    for (int64_t b = 0; b < batch_size; ++b) {
+      const uint8_t* src_batch_ptr = src_linear + b * matrix_size_bytes;
+      uint8_t* dst_batch_ptr = dst_tiled + b * tiled_matrix_size_bytes;
 
-    for (int64_t tile_row = 0; tile_row < num_tiles_0; ++tile_row) {
-      for (int64_t tile_col = 0; tile_col < num_tiles_1; ++tile_col) {
-        int64_t logical_col_start = tile_col * tile_W;
-        int64_t valid_elements = std::min(tile_W, W - logical_col_start);
-        if (valid_elements <= 0) {
-          continue;
+      for (int64_t tile_row = 0; tile_row < num_tiles_0; ++tile_row) {
+        for (int64_t tile_col = 0; tile_col < num_tiles_1; ++tile_col) {
+          int64_t tile_index = tile_row * num_tiles_1 + tile_col;
+          uint8_t* dst_tile_ptr = dst_batch_ptr + tile_index * tile_size_bytes;
+          CopyTileNoPadding(src_batch_ptr, dst_tile_ptr, tile_row, tile_col,
+                            tile_H, tile_W, W, itemsize);
         }
+      }
+    }
+  } else {
+    // Slow path: Handle padding elements locally per tile.
+    for (int64_t b = 0; b < batch_size; ++b) {
+      const uint8_t* src_batch_ptr = src_linear + b * matrix_size_bytes;
+      uint8_t* dst_batch_ptr = dst_tiled + b * tiled_matrix_size_bytes;
 
-        int64_t tile_index = tile_row * num_tiles_1 + tile_col;
-        uint8_t* dst_tile_ptr = dst_batch_ptr + tile_index * tile_size_bytes;
-
-        for (int64_t r = 0; r < tile_H; ++r) {
-          int64_t logical_row = tile_row * tile_H + r;
-          if (logical_row >= H) {
-            continue;
-          }
-          const uint8_t* src_row_ptr =
-              src_batch_ptr + (logical_row * W + logical_col_start) * itemsize;
-          uint8_t* dst_row_ptr = dst_tile_ptr + (r * tile_W) * itemsize;
-
-          std::memcpy(dst_row_ptr, src_row_ptr, valid_elements * itemsize);
+      for (int64_t tile_row = 0; tile_row < num_tiles_0; ++tile_row) {
+        for (int64_t tile_col = 0; tile_col < num_tiles_1; ++tile_col) {
+          int64_t tile_index = tile_row * num_tiles_1 + tile_col;
+          uint8_t* dst_tile_ptr = dst_batch_ptr + tile_index * tile_size_bytes;
+          CopyTileWithPadding(src_batch_ptr, dst_tile_ptr, tile_row, tile_col,
+                              tile_H, tile_W, H, W, itemsize, tile_size_bytes);
         }
       }
     }
@@ -267,7 +319,13 @@ absl::Status TileBuffer(const uint8_t* src_linear, uint8_t* dst_tiled,
       xla::ShapeUtil::ByteSizeOfPrimitiveType(shape.element_type());
 
   int64_t total_physical_elements = GetTiledBufferElements(shape);
-  std::memset(dst_tiled, 0, total_physical_elements * itemsize);
+  int64_t logical_elements = 1;
+  for (int64_t dim : shape.dimensions()) {
+    logical_elements *= dim;
+  }
+  if (total_physical_elements > logical_elements) {
+    std::memset(dst_tiled, 0, total_physical_elements * itemsize);
+  }
 
   xla::Shape standard_shape =
       xla::ShapeUtil::MakeShape(shape.element_type(), shape.dimensions());

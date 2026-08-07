@@ -430,13 +430,12 @@ absl::Status RawBufferTransport::PullBuffer(
   auto fd_cleaner =
       absl::MakeCleanup([&] { conn_pool_.Return(ok_to_pool, fd, peer); });
 
-  const ChunkHeader header = {
-      .op = kOpBufferPull,
-      .buffer_id = static_cast<uint16_t>(buffer_id),
-      .remote_id = static_cast<uint32_t>(src_offset_bytes),
-      .local_id = static_cast<uint32_t>(src_shard_idx),
-      .count_or_size = static_cast<uint32_t>(size_bytes),
-  };
+  ChunkHeader header = {};
+  header.op = kOpBufferPull;
+  header.buffer_id = static_cast<uint16_t>(buffer_id);
+  header.remote_id = static_cast<uint32_t>(src_offset_bytes);
+  header.local_id = static_cast<uint32_t>(src_shard_idx);
+  header.count_or_size = static_cast<uint32_t>(size_bytes);
   RETURN_IF_ERROR(WriteExact(fd, &header, sizeof(header)));
 
   uint8_t* dest_ptr = raw_delegate_->GetHostPointer(buffer_id, dst_shard_idx) +
@@ -491,14 +490,13 @@ absl::Status RawBufferTransport::PushBuffer(absl::string_view peer,
   auto fd_cleaner =
       absl::MakeCleanup([&] { conn_pool_.Return(ok_to_pool, fd, peer); });
 
-  const ChunkHeader header = {
-      .op = kOpBufferPush,
-      .buffer_id = static_cast<uint16_t>(buffer_id),
-      .remote_id = static_cast<uint32_t>(dst_offset_bytes),
-      .local_id = static_cast<uint32_t>(dst_shard_idx),
-      .count_or_size = static_cast<uint32_t>(size_bytes),
-      .uuid = uuid,
-  };
+  ChunkHeader header = {};
+  header.op = kOpBufferPush;
+  header.buffer_id = static_cast<uint16_t>(buffer_id);
+  header.remote_id = static_cast<uint32_t>(dst_offset_bytes);
+  header.local_id = static_cast<uint32_t>(dst_shard_idx);
+  header.count_or_size = static_cast<uint32_t>(size_bytes);
+  header.uuid = uuid;
 
   VLOG(1) << "Pushing chunk to peer=" << peer << " uuid=" << uuid
           << " dst_shard=" << dst_shard_idx
@@ -611,14 +609,13 @@ absl::Status RawBufferTransport::PushBatch(
   auto fd_cleaner =
       absl::MakeCleanup([&] { conn_pool_.Return(ok_to_pool, fd, peer); });
 
-  const ChunkHeader header = {
-      .op = kOpBufferPushBatched,
-      .buffer_id = 0,
-      .remote_id = 0,
-      .local_id = 0,
-      .count_or_size = static_cast<uint32_t>(batch_size),
-      .uuid = uuid,
-  };
+  ChunkHeader header = {};
+  header.op = kOpBufferPushBatched;
+  header.buffer_id = 0;
+  header.remote_id = 0;
+  header.local_id = 0;
+  header.count_or_size = static_cast<uint32_t>(batch_size);
+  header.uuid = uuid;
 
   VLOG(1) << "Pushing batch to peer=" << peer << " uuid=" << uuid
           << " batch_size=" << batch_size;

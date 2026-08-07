@@ -46,6 +46,7 @@
 #include "absl/synchronization/mutex.h"
 #include "absl/types/span.h"
 #include "tpu_raiden/core/status_macros.h"
+#include "tpu_raiden/transport/block_transport_delegate.h"
 #include "tpu_raiden/transport/lib/chunk.h"
 #include "tpu_raiden/transport/lib/raw_buffer_transport.h"
 #include "tpu_raiden/transport/peregrine/src/api/socket_util.h"
@@ -460,13 +461,12 @@ absl::Status BlockTransport::HandleIncomingPull(
     return absl::InvalidArgumentError(
         "Requested remote block count is not divisible by shard_factor");
   }
-  const lib::ChunkHeader resp_header = {
-      .op = 2,
-      .flags = header.flags,
-      .remote_id = header.local_id,
-      .local_id = 0,
-      .count_or_size = header.count_or_size,
-  };
+  lib::ChunkHeader resp_header = {};
+  resp_header.op = 2;
+  resp_header.flags = header.flags;
+  resp_header.remote_id = header.local_id;
+  resp_header.local_id = 0;
+  resp_header.count_or_size = header.count_or_size;
   RETURN_IF_ERROR(WriteExact(client_fd, &resp_header, sizeof(resp_header)));
 
   size_t local_blocks = header.count_or_size / block_delegate_->shard_factor();
@@ -818,17 +818,16 @@ void BlockTransport::H2hWriteWorker(int stream_idx, absl::string_view peer,
     raw_transport_.conn_pool().Return(ok_to_pool, fd, peer, local_ip);
   });
 
-  const lib::ChunkHeader header = {
-      .op = static_cast<uint8_t>(dst_block_ids.empty() ? 1 : 6),
-      .flags = static_cast<uint8_t>(major_order),
-      .buffer_id = 0,
-      .reserved = static_cast<uint16_t>(parallelism),
-      .remote_id = static_cast<uint32_t>(block_delegate_->node_id()),
-      .local_id =
-          layer_idx == -1 ? 0xFFFFFFFF : static_cast<uint32_t>(layer_idx),
-      .count_or_size = static_cast<uint32_t>(block_count),
-      .uuid = uuid,
-  };
+  lib::ChunkHeader header = {};
+  header.op = static_cast<uint8_t>(dst_block_ids.empty() ? 1 : 6);
+  header.flags = static_cast<uint8_t>(major_order);
+  header.buffer_id = 0;
+  header.reserved = static_cast<uint16_t>(parallelism);
+  header.remote_id = static_cast<uint32_t>(block_delegate_->node_id());
+  header.local_id =
+      layer_idx == -1 ? 0xFFFF'FFFF : static_cast<uint32_t>(layer_idx);
+  header.count_or_size = static_cast<uint32_t>(block_count);
+  header.uuid = uuid;
   absl::Status s = WriteExact(fd, &header, sizeof(header));
   if (!s.ok()) {
     statuses[stream_idx] = s;
@@ -1015,13 +1014,12 @@ void BlockTransport::H2hReadWorker(
       return;
     }
 
-    const lib::ChunkHeader header = {
-        .op = 2,  // Pull request
-        .flags = static_cast<uint8_t>(major_order),
-        .remote_id = static_cast<uint32_t>(remote_read_block_id),
-        .count_or_size = static_cast<uint32_t>(chunk.remote_count),
-        .uuid = uuid,
-    };
+    lib::ChunkHeader header = {};
+    header.op = 2;  // Pull request
+    header.flags = static_cast<uint8_t>(major_order);
+    header.remote_id = static_cast<uint32_t>(remote_read_block_id);
+    header.count_or_size = static_cast<uint32_t>(chunk.remote_count);
+    header.uuid = uuid;
     absl::Status s = WriteExact(fd, &header, sizeof(header));
     if (!s.ok()) {
       statuses[stream_idx] = s;

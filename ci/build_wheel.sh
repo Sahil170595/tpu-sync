@@ -49,7 +49,19 @@ WHEEL_VERSION_EXTRAS="${WHEEL_VERSION_EXTRAS:-.dev$(date +%Y%m%d%H%M%S)}"
 export WHEEL_VERSION_EXTRAS
 echo "WHEEL_VERSION_EXTRAS: ${WHEEL_VERSION_EXTRAS}"
 
+RAIDEN_COMMIT="$(git -C "${REPO_ROOT}" rev-parse HEAD 2>/dev/null || echo unknown)"
+if [[ -n "$(git -C "${REPO_ROOT}" status --porcelain 2>/dev/null)" ]]; then
+  RAIDEN_COMMIT="${RAIDEN_COMMIT}-dirty"
+fi
+echo "raiden source commit: ${RAIDEN_COMMIT}"
+
 WITH_TORCH="${WITH_TORCH:-1}"
+# Torch releases bundled as extra ABI variants next to the primary (the
+# container's torch). Mirrors torch_tpu's supported-torch glue set, limited to
+# releases installable from the PyTorch CPU wheel index (torch_tpu also carries
+# glue for unreleased torches, which have no wheel to compile a variant
+# against). Space-separated; set to "" for a single-ABI build.
+RAIDEN_EXTRA_TORCH_ABIS="${RAIDEN_EXTRA_TORCH_ABIS-2.12.0 2.13.0}"
 TORCH_TPU_SRC="${TORCH_TPU_SRC:-${REPO_ROOT}/../torch_tpu}"
 WHEEL_DIR="${KOKORO_ARTIFACTS_DIR:-${HOME}/raiden_artifacts}/dist"
 CACHE_DIR="${RAIDEN_CONTAINER_CACHE:-${HOME}/.bazel_cache_container}"
@@ -71,6 +83,7 @@ if [[ "${WITH_TORCH}" == "1" ]]; then
     exit 1
   fi
   TORCH_TPU_SRC="$(cd "${TORCH_TPU_SRC}" && pwd)"
+  echo "torch_tpu source commit: $(git -C "${TORCH_TPU_SRC}" rev-parse HEAD 2>/dev/null || echo unknown)"
   DOCKER_MOUNTS+=(-v "${TORCH_TPU_SRC}:/torch_tpu")  # sibling ../torch_tpu == /torch_tpu
   BUILD_MODE="both"
 fi

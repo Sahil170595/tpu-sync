@@ -214,6 +214,12 @@ class HostOffloadBackend : public KVCacheStoreBackend {
   void InvalidateStoreClient(const RaidenId& remote_id);
 
  private:
+  // Registers the deployment's KVTransferSpec with the global registry, or
+  // validates it against the already-registered one (first-wins, idempotent;
+  // see global_registry.proto). Called by Create() when the BackendConfig
+  // carries a spec. Requires a global registry.
+  absl::Status RegisterKVTransferSpec(const KVTransferSpecConfig& spec_config);
+
   absl::StatusOr<std::shared_ptr<KVCacheStoreClient>> GetKVCacheStoreClient(
       const RaidenId& remote_id);
 

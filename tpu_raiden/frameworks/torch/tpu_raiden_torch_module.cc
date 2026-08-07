@@ -324,6 +324,9 @@ NB_MODULE(_tpu_raiden_torch, m) {
       .def_prop_ro("num_layers", &KVCacheManager::num_layers)
       .def_prop_ro("num_shards", &KVCacheManager::num_shards)
       .def_prop_ro("slice_byte_size", &KVCacheManager::slice_byte_size)
+      .def_prop_ro("num_block_arrays", &KVCacheManager::num_block_arrays)
+      .def("block_bytes", &KVCacheManager::block_bytes,
+           nb::arg("block_array_idx"))
       .def_prop_ro("local_control_port", &KVCacheManager::local_control_port)
       .def("get_local_endpoints",
            [](const KVCacheManager& self) {

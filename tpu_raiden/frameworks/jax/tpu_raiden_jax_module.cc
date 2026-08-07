@@ -224,6 +224,12 @@ NB_MODULE(_tpu_raiden_jax, m) {
       .def_prop_ro("slice_byte_size",
                    &tpu_raiden::kv_cache::jax::KVCacheManager::slice_byte_size)
       .def_prop_ro(
+          "num_block_arrays",
+          &tpu_raiden::kv_cache::jax::KVCacheManager::num_block_arrays)
+      .def("block_bytes",
+           &tpu_raiden::kv_cache::jax::KVCacheManager::block_bytes,
+           nb::arg("block_array_idx"))
+      .def_prop_ro(
           "local_control_port",
           &tpu_raiden::kv_cache::jax::KVCacheManager::local_control_port)
       .def("get_local_endpoints",

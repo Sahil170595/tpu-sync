@@ -38,6 +38,7 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
+#include "absl/strings/string_view.h"
 #include "absl/synchronization/mutex.h"
 #include "absl/types/span.h"
 #include "xla/future.h"
@@ -54,8 +55,10 @@
 #include "tpu_raiden/core/status_macros.h"
 #include "tpu_raiden/core/tpu_utils.h"
 #include "tpu_raiden/kv_cache/logical_block_manager.h"
+#include "tpu_raiden/kv_cache/pool_layout.h"
 #include "tpu_raiden/rpc/raiden_service.pb.h"
 #include "tpu_raiden/transport/block_transport.h"
+#include "tpu_raiden/transport/block_transport_delegate.h"
 
 namespace tpu_raiden {
 namespace kv_cache {

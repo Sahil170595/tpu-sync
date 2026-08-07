@@ -88,6 +88,7 @@
 #include "tpu_raiden/kv_cache/kv_cache_manager_base.h"
 #include "tpu_raiden/kv_cache/pool_layout.h"
 #include "tpu_raiden/transport/block_transport.h"
+#include "tpu_raiden/transport/block_transport_delegate.h"
 
 namespace tpu_raiden {
 namespace {

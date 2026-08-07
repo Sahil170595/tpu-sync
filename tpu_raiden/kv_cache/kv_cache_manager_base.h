@@ -17,6 +17,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -30,7 +31,6 @@
 #include "absl/strings/string_view.h"
 #include "absl/synchronization/mutex.h"
 #include "absl/types/span.h"
-#include "xla/future.h"
 #include "xla/pjrt/c/pjrt_c_api.h"
 #include "xla/pjrt/c/pjrt_c_api_raw_buffer_extension.h"
 #include "xla/pjrt/pjrt_client.h"
@@ -44,6 +44,7 @@
 #include "tpu_raiden/kv_cache/pool_layout.h"
 #include "tpu_raiden/rpc/raiden_service.pb.h"
 #include "tpu_raiden/transport/block_transport.h"
+#include "tpu_raiden/transport/block_transport_delegate.h"
 
 namespace tpu_raiden {
 

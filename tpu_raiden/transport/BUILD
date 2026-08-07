@@ -19,6 +19,19 @@ load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library", "cc_test")
 package(default_visibility = ["//visibility:public"])
 
 cc_library(
+    name = "block_transport_delegate",
+    hdrs = ["block_transport_delegate.h"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//tpu_raiden/transport/lib:raw_buffer_transport_delegate",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings:string_view",
+        "@com_google_absl//absl/types:span",
+    ],
+)
+
+cc_library(
     name = "block_transport",
     srcs = ["block_transport.cc"],
     hdrs = ["block_transport.h"],
@@ -29,11 +42,11 @@ cc_library(
     features = ["-use_header_modules"],
     visibility = ["//visibility:public"],
     deps = [
+        ":block_transport_delegate",
         "//tpu_raiden/core:status_macros",
         "//tpu_raiden/core:tsl_platform_headers",
         "//tpu_raiden/transport/lib:chunk",
         "//tpu_raiden/transport/lib:raw_buffer_transport",
-        "//tpu_raiden/transport/lib:raw_buffer_transport_delegate",
         "//tpu_raiden/transport/peregrine/src/api:socket_util",
         "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/cleanup",

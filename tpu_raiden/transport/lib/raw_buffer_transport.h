@@ -35,6 +35,7 @@
 #include "absl/types/span.h"
 #include "tpu_raiden/transport/lib/chunk.h"
 #include "tpu_raiden/transport/lib/conn/pool.h"
+#include "tpu_raiden/transport/lib/raw_buffer_transport_delegate.h"
 
 namespace tpu_raiden::transport::lib {
 
@@ -50,24 +51,6 @@ struct BufferPushTask {
   size_t dst_offset_bytes;
   const uint8_t* data_ptr;
   size_t size_bytes;
-};
-
-// Foundational delegate interface for RawBufferTransport to query base host
-// memory.
-class RawBufferTransportDelegate {
- public:
-  virtual ~RawBufferTransportDelegate() = default;
-
-  // Authoritative physical Host / pinned HBM base starting pointer.
-  // The buffer_id parameter allows multidimensional indexing across
-  // layers/buffers.
-  virtual uint8_t* GetHostPointer(size_t buffer_id, size_t shard_idx) = 0;
-
-  // Authoritative total byte capacity of the target shard staging buffer.
-  virtual size_t GetHostSize(size_t buffer_id, size_t shard_idx) = 0;
-
-  // Notification triggered upon verified data chunk arrival.
-  virtual absl::Status OnDataReceived() { return absl::OkStatus(); }
 };
 
 // Standalone raw buffer POSIX TCP socket transport engine.

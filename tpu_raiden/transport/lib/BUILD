@@ -25,6 +25,19 @@ cc_library(
 )
 
 cc_library(
+    name = "raw_buffer_transport_delegate",
+    hdrs = ["raw_buffer_transport_delegate.h"],
+    copts = [
+        "-fno-strict-aliasing",
+        "-fexceptions",
+    ],
+    features = ["-use_header_modules"],
+    deps = [
+        "@com_google_absl//absl/status",
+    ],
+)
+
+cc_library(
     name = "raw_buffer_transport",
     srcs = ["raw_buffer_transport.cc"],
     hdrs = ["raw_buffer_transport.h"],
@@ -35,6 +48,7 @@ cc_library(
     features = ["-use_header_modules"],
     deps = [
         ":chunk",
+        ":raw_buffer_transport_delegate",
         "//tpu_raiden/core:status_macros",
         "//tpu_raiden/transport/lib/conn:pool",
         "//tpu_raiden/transport/peregrine/src/api:socket_util",
@@ -62,6 +76,7 @@ cc_test(
     features = ["-use_header_modules"],
     deps = [
         ":raw_buffer_transport",
+        ":raw_buffer_transport_delegate",
         "//tpu_raiden/transport/lib/conn:pool",
         "//tpu_raiden/transport/peregrine/src/util",
         "@com_google_absl//absl/base:core_headers",

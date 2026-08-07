@@ -37,6 +37,7 @@
 #include "absl/types/span.h"
 #include "tpu_raiden/transport/lib/chunk.h"
 #include "tpu_raiden/transport/lib/raw_buffer_transport.h"
+#include "tpu_raiden/transport/lib/raw_buffer_transport_delegate.h"
 
 namespace tpu_raiden {
 namespace transport {

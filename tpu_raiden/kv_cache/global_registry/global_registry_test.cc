@@ -37,6 +37,7 @@
 #include "tpu_raiden/kv_cache/global_registry/global_registry.pb.h"
 #include "tpu_raiden/kv_cache/global_registry/global_registry_client.h"
 #include "tpu_raiden/kv_cache/global_registry/global_registry_server.h"
+#include "tpu_raiden/kv_cache/global_registry/test_util.h"
 #include "tpu_raiden/kv_cache/raiden_id.h"
 
 namespace tpu_raiden {
@@ -47,25 +48,15 @@ namespace {
 class GlobalRegistryTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    // Start server on ephemeral port
-    // Use short TTL and cleanup interval for testing
-    service_ = std::make_unique<GlobalRegistryServiceImpl>(
+    test_server_ = CreateTestGlobalRegistryServer(
         /*default_ttl=*/absl::Seconds(2),
         /*cleanup_interval=*/absl::Seconds(1));
-
-    grpc::ServerBuilder builder;
-    builder.AddListeningPort("localhost:0", grpc::InsecureServerCredentials(),
-                             &port_);
-    builder.RegisterService(service_.get());
-    server_ = builder.BuildAndStart();
-
-    std::string server_address = "localhost:" + std::to_string(port_);
-    channel_ =
-        grpc::CreateChannel(server_address, grpc::InsecureChannelCredentials());
-    client_ = std::make_unique<GlobalRegistryClient>(channel_);
+    service_ = test_server_->service.get();
+    channel_ = test_server_->channel;
+    client_ = test_server_->client.get();
   }
 
-  void TearDown() override { server_->Shutdown(); }
+  void TearDown() override { test_server_.reset(); }
 
   // Calls PullOwned via the raw generated stub and collects all streamed
   // entries. Reports the number of streamed messages via `num_messages` and
@@ -104,11 +95,10 @@ class GlobalRegistryTest : public ::testing::Test {
     return PullOwnedOn(channel_, raiden_id, status, num_messages);
   }
 
-  int port_ = 0;
-  std::unique_ptr<GlobalRegistryServiceImpl> service_;
-  std::unique_ptr<grpc::Server> server_;
+  std::unique_ptr<TestGlobalRegistryServer> test_server_;
+  GlobalRegistryServiceImpl* service_ = nullptr;
   std::shared_ptr<grpc::Channel> channel_;
-  std::unique_ptr<GlobalRegistryClient> client_;
+  GlobalRegistryClient* client_ = nullptr;
 };
 
 TEST_F(GlobalRegistryTest, BasicRegisterAndLookup) {
@@ -374,37 +364,27 @@ TEST_F(GlobalRegistryTest, PullOwnedUpsertKeepsSingleEntryWithLatestBlock) {
 }
 
 TEST_F(GlobalRegistryTest, PullOwnedStreamsInServerConfiguredBatches) {
-  GlobalRegistryServiceImpl service(
+  auto test_server = CreateTestGlobalRegistryServer(
       /*default_ttl=*/absl::Seconds(300),
       /*cleanup_interval=*/absl::ZeroDuration(),
       /*pull_owned_batch_size=*/2);
-  int port = 0;
-  grpc::ServerBuilder builder;
-  builder.AddListeningPort("localhost:0", grpc::InsecureServerCredentials(),
-                           &port);
-  builder.RegisterService(&service);
-  auto server = builder.BuildAndStart();
-  auto channel = grpc::CreateChannel("localhost:" + std::to_string(port),
-                                     grpc::InsecureChannelCredentials());
-  GlobalRegistryClient client(channel);
 
   RaidenId owner = {"jobB", "r1", "d1", 0};
-  ASSERT_TRUE(client
-                  .Register({{"h1", owner, 1},
-                             {"h2", owner, 2},
-                             {"h3", owner, 3},
-                             {"h4", owner, 4},
-                             {"h5", owner, 5}})
+  ASSERT_TRUE(test_server->client
+                  ->Register({{"h1", owner, 1},
+                              {"h2", owner, 2},
+                              {"h3", owner, 3},
+                              {"h4", owner, 4},
+                              {"h5", owner, 5}})
                   .ok());
 
   grpc::Status status;
   int num_messages = 0;
-  auto entries = PullOwnedOn(channel, owner, &status, &num_messages);
+  auto entries =
+      PullOwnedOn(test_server->channel, owner, &status, &num_messages);
   EXPECT_TRUE(status.ok()) << status.error_message();
   EXPECT_EQ(entries.size(), 5);
   EXPECT_EQ(num_messages, 3);  // ceil(5 entries / batch size 2)
-
-  server->Shutdown();
 }
 
 TEST_F(GlobalRegistryTest, PullOwnedRemainingTtlForExpiringEntry) {
@@ -452,28 +432,17 @@ TEST_F(GlobalRegistryTest, ClientPullOwnedRejectsEmptyRaidenId) {
 }
 
 TEST_F(GlobalRegistryTest, PullOwnedRemainingTtlZeroForInfiniteTtl) {
-  GlobalRegistryServiceImpl service(
+  auto test_server = CreateTestGlobalRegistryServer(
       /*default_ttl=*/absl::InfiniteDuration(),
       /*cleanup_interval=*/absl::ZeroDuration());
-  int port = 0;
-  grpc::ServerBuilder builder;
-  builder.AddListeningPort("localhost:0", grpc::InsecureServerCredentials(),
-                           &port);
-  builder.RegisterService(&service);
-  auto server = builder.BuildAndStart();
-  auto channel = grpc::CreateChannel("localhost:" + std::to_string(port),
-                                     grpc::InsecureChannelCredentials());
-  GlobalRegistryClient client(channel);
 
   RaidenId owner = {"jobI", "r1", "d1", 0};
   // No explicit TTL: the server's default (infinite) applies.
-  ASSERT_TRUE(client.Register({{"h1", owner, 1}}).ok());
+  ASSERT_TRUE(test_server->client->Register({{"h1", owner, 1}}).ok());
 
-  auto entries = PullOwnedOn(channel, owner);
+  auto entries = PullOwnedOn(test_server->channel, owner);
   ASSERT_EQ(entries.size(), 1);
   EXPECT_EQ(entries[0].remaining_ttl_seconds(), 0);
-
-  server->Shutdown();
 }
 
 // ---------------------------------------------------------------------------

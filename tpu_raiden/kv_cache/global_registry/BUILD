@@ -87,6 +87,20 @@ cc_library(
     ],
 )
 
+cc_library(
+    name = "test_util",
+    testonly = True,
+    hdrs = ["test_util.h"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":global_registry_client_cc",
+        ":global_registry_server_lib",
+        "@com_github_grpc_grpc//:grpc++",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/time",
+    ],
+)
+
 cc_test(
     name = "global_registry_test",
     srcs = ["global_registry_test.cc"],
@@ -95,6 +109,7 @@ cc_test(
         ":global_registry_cc_proto",
         ":global_registry_client_cc",
         ":global_registry_server_lib",
+        ":test_util",
         "//tpu_raiden/kv_cache:raiden_id",
         "@com_github_grpc_grpc//:grpc++",
         "@com_google_absl//absl/status",

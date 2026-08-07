@@ -33,10 +33,12 @@
 #include "grpcpp/server.h"
 #include "grpcpp/server_builder.h"
 #include "tpu_raiden/kv_cache/global_registry/global_registry.pb.h"
-#include "tpu_raiden/kv_cache/raiden_id.h"
-#include "tpu_raiden/store_node/grs_kv_transfer_spec_source.h"
 #include "tpu_raiden/kv_cache/global_registry/global_registry_client.h"
 #include "tpu_raiden/kv_cache/global_registry/global_registry_server.h"
+#include "tpu_raiden/kv_cache/global_registry/test_util.h"
+#include "tpu_raiden/kv_cache/raiden_id.h"
+#include "tpu_raiden/store_node/grs_kv_transfer_spec_source.h"
+#include "tpu_raiden/store_node/kv_transfer_spec_source.h"
 
 namespace tpu_raiden {
 namespace store_node {
@@ -235,21 +237,11 @@ TEST_F(KVCacheHostStoreNodeBootTest, BootsWithoutRegistryButServesNoPeers) {
 }
 
 TEST_F(KVCacheHostStoreNodeBootTest, BootsServesAndPublishesWithRegistry) {
-  // A live in-process global registry, the same pattern
-  // kv_cache_store_test.cc uses.
-  auto service =
-      std::make_unique<kv_cache::global_registry::GlobalRegistryServiceImpl>();
-  grpc::ServerBuilder builder;
-  int port = 0;
-  builder.AddListeningPort("localhost:0", grpc::InsecureServerCredentials(),
-                           &port);
-  builder.RegisterService(service.get());
-  std::unique_ptr<grpc::Server> registry_server = builder.BuildAndStart();
-  ASSERT_NE(registry_server, nullptr);
-  ASSERT_NE(port, 0);
+  auto registry_server =
+      kv_cache::global_registry::CreateTestGlobalRegistryServer();
 
   KVCacheHostStoreNode::Options options = BootOptions();
-  options.global_registry_address = absl::StrCat("localhost:", port);
+  options.global_registry_address = registry_server->server_address;
 
   StaticKVTransferSpecSource source(TestSpec());
   absl::StatusOr<std::unique_ptr<KVCacheHostStoreNode>> node =
@@ -262,9 +254,7 @@ TEST_F(KVCacheHostStoreNodeBootTest, BootsServesAndPublishesWithRegistry) {
 
   // And the node published itself: the registry resolves our RaidenId to
   // the advertised store address.
-  auto channel = grpc::CreateChannel(options.global_registry_address,
-                                     grpc::InsecureChannelCredentials());
-  kv_cache::global_registry::GlobalRegistryClient registry_client(channel);
+  auto& registry_client = *registry_server->client;
   auto store_info = registry_client.ResolveStore(options.raiden_id);
   ASSERT_TRUE(store_info.ok()) << store_info.status();
   EXPECT_EQ(store_info->store_server_address(),

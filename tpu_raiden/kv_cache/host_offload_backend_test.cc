@@ -39,6 +39,7 @@
 #include "tpu_raiden/core/kv_manager_holder.h"
 #include "tpu_raiden/kv_cache/global_registry/global_registry_client.h"
 #include "tpu_raiden/kv_cache/global_registry/global_registry_server.h"
+#include "tpu_raiden/kv_cache/global_registry/test_util.h"
 #include "tpu_raiden/kv_cache/kv_cache_store_backend.h"
 #include "tpu_raiden/kv_cache/kv_cache_store_backend_factory.h"
 #include "tpu_raiden/kv_cache/kv_cache_store_client.h"
@@ -135,19 +136,9 @@ TEST(HostOffloadBackendTest, InsertAndLockRollbackOnCapacityExceeded) {
 
 TEST(HostOffloadBackendTest, LookupReturnsRemoteDescriptors) {
   // Setup local gRPC registry server
-  auto service = std::make_unique<global_registry::GlobalRegistryServiceImpl>();
-  grpc::ServerBuilder builder;
-  int port = 0;
-  builder.AddListeningPort("localhost:0", grpc::InsecureServerCredentials(),
-                           &port);
-  builder.RegisterService(service.get());
-  auto server = builder.BuildAndStart();
-  std::string server_address = "localhost:" + std::to_string(port);
-
-  auto channel =
-      grpc::CreateChannel(server_address, grpc::InsecureChannelCredentials());
-  auto registry_client =
-      std::make_shared<global_registry::GlobalRegistryClient>(channel);
+  auto reg_server = global_registry::CreateTestGlobalRegistryServer();
+  std::string server_address = reg_server->server_address;
+  auto registry_client = reg_server->client.get();
 
   RaidenId remote_node_id{"remote_job", "1", "data", 0};
   std::vector<global_registry::Registration> regs = {
@@ -194,26 +185,14 @@ TEST(HostOffloadBackendTest, LookupReturnsRemoteDescriptors) {
   auto partial_res = backend->Lookup({"r_hash1", "missing_hash"});
   ASSERT_TRUE(partial_res.ok());
   EXPECT_EQ(partial_res->size(), 1);
-
-  server->Shutdown();
 }
 
 TEST(HostOffloadBackendTest,
      LookupReturnsHostStatusForMatchingLocalRaidenIdFromGlobalRegistry) {
   // Setup local gRPC registry server
-  auto service = std::make_unique<global_registry::GlobalRegistryServiceImpl>();
-  grpc::ServerBuilder builder;
-  int port = 0;
-  builder.AddListeningPort("localhost:0", grpc::InsecureServerCredentials(),
-                           &port);
-  builder.RegisterService(service.get());
-  auto server = builder.BuildAndStart();
-  std::string server_address = "localhost:" + std::to_string(port);
-
-  auto channel =
-      grpc::CreateChannel(server_address, grpc::InsecureChannelCredentials());
-  auto registry_client =
-      std::make_shared<global_registry::GlobalRegistryClient>(channel);
+  auto reg_server = global_registry::CreateTestGlobalRegistryServer();
+  std::string server_address = reg_server->server_address;
+  auto registry_client = reg_server->client.get();
 
   RaidenId local_node_id{"local_job", "0", "data", 0};
   std::vector<global_registry::Registration> regs = {
@@ -250,19 +229,11 @@ TEST(HostOffloadBackendTest,
   EXPECT_EQ((*lookup_res)[0].second.status, BlockStatus::HOST);
   EXPECT_EQ((*lookup_res)[0].second.host_block_id, 99);
   EXPECT_EQ((*lookup_res)[0].second.raiden_id, local_node_id);
-
-  server->Shutdown();
 }
 
 TEST(HostOffloadBackendTest, ServerLifecycleAndControllerInitialization) {
-  auto service = std::make_unique<global_registry::GlobalRegistryServiceImpl>();
-  grpc::ServerBuilder builder;
-  int port = 0;
-  builder.AddListeningPort("localhost:0", grpc::InsecureServerCredentials(),
-                           &port);
-  builder.RegisterService(service.get());
-  auto server = builder.BuildAndStart();
-  std::string server_address = "localhost:" + std::to_string(port);
+  auto reg_server = global_registry::CreateTestGlobalRegistryServer();
+  std::string server_address = reg_server->server_address;
 
   RaidenId node_id{"node_job", "0", "data", 0};
   BackendConfig config;
@@ -294,8 +265,6 @@ TEST(HostOffloadBackendTest, ServerLifecycleAndControllerInitialization) {
   EXPECT_GT(store_server->GetGrpcPort(), 0);
   EXPECT_FALSE(store_server->GetServerAddress().empty());
   store_server->Shutdown();
-
-  server->Shutdown();
 }
 
 TEST(HostOffloadBackendTest, StartServerStripsControllerPort) {
@@ -333,20 +302,9 @@ TEST(HostOffloadBackendTest, StartServerStripsControllerPort) {
 
 TEST(HostOffloadBackendTest, EndToEndFetchRPC) {
   // 1. Setup global registry server
-  auto reg_service =
-      std::make_unique<global_registry::GlobalRegistryServiceImpl>();
-  grpc::ServerBuilder reg_builder;
-  int reg_port = 0;
-  reg_builder.AddListeningPort("localhost:0", grpc::InsecureServerCredentials(),
-                               &reg_port);
-  reg_builder.RegisterService(reg_service.get());
-  auto reg_server = reg_builder.BuildAndStart();
-  std::string reg_address = "localhost:" + std::to_string(reg_port);
-
-  auto reg_channel =
-      grpc::CreateChannel(reg_address, grpc::InsecureChannelCredentials());
-  auto registry_client =
-      std::make_shared<global_registry::GlobalRegistryClient>(reg_channel);
+  auto reg_server = global_registry::CreateTestGlobalRegistryServer();
+  std::string reg_address = reg_server->server_address;
+  auto registry_client = reg_server->client.get();
 
   // 2. Setup mock worker server & transfer manager
   auto test_worker_server = controller::CreateTestWorkerServer();
@@ -463,18 +421,11 @@ TEST(HostOffloadBackendTest, EndToEndFetchRPC) {
 
   store_server->Shutdown();
   orchestrator_server->Shutdown();
-  reg_server->Shutdown();
 }
 
 TEST(HostOffloadBackendTest, LoadMismatchedDeviceBlockCount) {
-  auto service = std::make_unique<global_registry::GlobalRegistryServiceImpl>();
-  grpc::ServerBuilder builder;
-  int port = 0;
-  builder.AddListeningPort("localhost:0", grpc::InsecureServerCredentials(),
-                           &port);
-  builder.RegisterService(service.get());
-  auto server = builder.BuildAndStart();
-  std::string server_address = "localhost:" + std::to_string(port);
+  auto reg_server = global_registry::CreateTestGlobalRegistryServer();
+  std::string server_address = reg_server->server_address;
   RaidenId node_id{"node_job", "0", "data", 0};
 
   rpc::RaidenIdProto unit_proto;
@@ -502,20 +453,12 @@ TEST(HostOffloadBackendTest, LoadMismatchedDeviceBlockCount) {
   auto load_future = backend->Load(node_id, hashes, dev_ids);
   EXPECT_THAT(load_future.Await(),
               absl_testing::StatusIs(absl::StatusCode::kInvalidArgument));
-
-  server->Shutdown();
 }
 
 TEST(HostOffloadBackendTest, LoadSuccess) {
   // Setup GlobalRegistry and register remote block
-  auto service = std::make_unique<global_registry::GlobalRegistryServiceImpl>();
-  grpc::ServerBuilder builder;
-  int port = 0;
-  builder.AddListeningPort("localhost:0", grpc::InsecureServerCredentials(),
-                           &port);
-  builder.RegisterService(service.get());
-  auto server = builder.BuildAndStart();
-  std::string server_address = "localhost:" + std::to_string(port);
+  auto reg_server = global_registry::CreateTestGlobalRegistryServer();
+  std::string server_address = reg_server->server_address;
 
   // Setup orchestrator server
   auto orchestrator_service = std::make_unique<RaidenOrchestrator>();
@@ -615,7 +558,6 @@ TEST(HostOffloadBackendTest, LoadSuccess) {
 
   remote_server->Shutdown();
   orchestrator_server->Shutdown();
-  server->Shutdown();
 }
 
 TEST(HostOffloadBackendTest, LoadLocalSuccess) {
@@ -872,32 +814,21 @@ TEST(HostOffloadBackendWriteRemoteTest,
 
 TEST(HostOffloadBackendWriteRemoteTest,
      RegisterBlocksSyncPublishesToTheRegistry) {
-  global_registry::GlobalRegistryServiceImpl service;
-  grpc::ServerBuilder builder;
-  int port = 0;
-  builder.AddListeningPort("localhost:0", grpc::InsecureServerCredentials(),
-                           &port);
-  builder.RegisterService(&service);
-  auto server = builder.BuildAndStart();
-  const std::string address = "localhost:" + std::to_string(port);
-  auto channel =
-      grpc::CreateChannel(address, grpc::InsecureChannelCredentials());
-  global_registry::GlobalRegistryClient client(channel);
+  auto reg_server = global_registry::CreateTestGlobalRegistryServer();
 
   RaidenId id{"job_regsync", "0", "data", 0};
   HostOffloadBackend backend(
       /*capacity=*/8, std::nullopt, id, /*raiden_controller=*/nullptr,
-      std::make_shared<global_registry::GlobalRegistryClient>(channel));
+      std::make_shared<global_registry::GlobalRegistryClient>(
+          reg_server->channel));
 
   ASSERT_TRUE(backend.RegisterBlocksSync({"a", "b"}, {7, 8}).ok());
 
-  auto looked_up = client.Lookup({"a", "b"});
+  auto looked_up = reg_server->client->Lookup({"a", "b"});
   ASSERT_TRUE(looked_up.ok()) << looked_up.status().ToString();
   ASSERT_EQ(looked_up->size(), 2);
   EXPECT_EQ((*looked_up)[0].block_id(), 7);
   EXPECT_EQ((*looked_up)[1].block_id(), 8);
-
-  server->Shutdown();
 }
 
 // Unlike Insert's inline Register, which logs and swallows. COMMITTED is only

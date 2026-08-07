@@ -117,10 +117,12 @@ cc_test(
     deps = [
         ":grs_kv_transfer_spec_source",
         ":kv_cache_host_store_node",
+        ":kv_transfer_spec_source",
         "//tpu_raiden/kv_cache:raiden_id",
         "//tpu_raiden/kv_cache/global_registry:global_registry_cc_proto",
         "//tpu_raiden/kv_cache/global_registry:global_registry_client_cc",
         "//tpu_raiden/kv_cache/global_registry:global_registry_server_lib",
+        "//tpu_raiden/kv_cache/global_registry:test_util",
         "@com_github_grpc_grpc//:grpc++",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",

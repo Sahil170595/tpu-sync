@@ -58,6 +58,7 @@
 #include "tpu_raiden/core/controller/test_util.h"
 #include "tpu_raiden/core/kv_manager_holder.h"
 #include "tpu_raiden/kv_cache/global_registry/global_registry_server.h"
+#include "tpu_raiden/kv_cache/global_registry/test_util.h"
 #include "tpu_raiden/kv_cache/host_offload_backend.h"
 #include "tpu_raiden/kv_cache/kv_cache_metadata.h"
 #include "tpu_raiden/kv_cache/kv_cache_store.h"
@@ -948,17 +949,10 @@ TEST_F(WriteRemoteTest, PollRejectsTheReservedOperationId) {
 // itself does not build), so this kills the registry afterwards, which is also
 // how it happens in practice.
 TEST(WriteRemoteRegistryFailureTest, StoredButUnregisteredIsReportedAsSuch) {
-  global_registry::GlobalRegistryServiceImpl registry_service;
-  ::grpc::ServerBuilder registry_builder;
-  int registry_port = 0;
-  registry_builder.AddListeningPort(
-      "localhost:0", ::grpc::InsecureServerCredentials(), &registry_port);
-  registry_builder.RegisterService(&registry_service);
-  auto registry_server = registry_builder.BuildAndStart();
+  auto registry_server = global_registry::CreateTestGlobalRegistryServer();
 
   const RaidenId dst_id{"dst_job_unreg", "0", "dst_data", 0};
-  KVCacheStore store(/*capacity=*/8,
-                     "localhost:" + std::to_string(registry_port), dst_id,
+  KVCacheStore store(/*capacity=*/8, registry_server->server_address, dst_id,
                      /*num_shards=*/1, /*shard_size_bytes=*/1024,
                      /*raiden_orchestrator_address=*/"",
                      /*store_server_ip=*/"127.0.0.1");
@@ -999,7 +993,7 @@ TEST(WriteRemoteRegistryFailureTest, StoredButUnregisteredIsReportedAsSuch) {
   ASSERT_NE(op_id, 0);
 
   // The transfer is in flight; take the registry away before it lands.
-  registry_server->Shutdown();
+  registry_server->server->Shutdown();
   latch.Release(absl::OkStatus());
 
   proto::PollWriteRemoteResponse poll;

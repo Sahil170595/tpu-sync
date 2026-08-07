@@ -58,6 +58,7 @@
 #include "tpu_raiden/kv_cache/global_registry/global_registry.grpc.pb.h"
 #include "tpu_raiden/kv_cache/global_registry/global_registry_client.h"
 #include "tpu_raiden/kv_cache/global_registry/global_registry_server.h"
+#include "tpu_raiden/kv_cache/global_registry/test_util.h"
 #include "tpu_raiden/kv_cache/host_offload_backend.h"
 #include "tpu_raiden/kv_cache/kv_cache_metadata.h"
 #include "tpu_raiden/kv_cache/kv_cache_store_backend.h"
@@ -276,19 +277,11 @@ TEST(KVCacheStoreTest, EvictionTracking) {
 
 TEST(KVCacheStoreTest, GlobalLookupFallback) {
   // 1. Start a local registry server
-  auto service = std::make_unique<global_registry::GlobalRegistryServiceImpl>();
-  grpc::ServerBuilder builder;
-  int port = 0;
-  builder.AddListeningPort("localhost:0", grpc::InsecureServerCredentials(),
-                           &port);
-  builder.RegisterService(service.get());
-  auto server = builder.BuildAndStart();
-  std::string server_address = "localhost:" + std::to_string(port);
+  auto reg_server = global_registry::CreateTestGlobalRegistryServer();
+  std::string server_address = reg_server->server_address;
 
   // 2. Register some blocks in the registry
-  auto channel =
-      grpc::CreateChannel(server_address, grpc::InsecureChannelCredentials());
-  global_registry::GlobalRegistryClient registry_client(channel);
+  auto& registry_client = *reg_server->client;
 
   std::string hash1 = "global_hash_1";
   RaidenId host1{"job1", "0", "kv_cache", 0};
@@ -405,8 +398,6 @@ TEST(KVCacheStoreTest, GlobalLookupFallback) {
     EXPECT_EQ((*lookup_res)[0].first, "local_only_hash");
     EXPECT_EQ((*lookup_res)[1].first, "global_hash_1");
   }
-
-  server->Shutdown();
 }
 
 // Delegates every RPC to a real GlobalRegistryServiceImpl except Lookup,
@@ -621,19 +612,11 @@ TEST(KVCacheStoreTest, LookupCapLimit) {
 
 TEST(KVCacheStoreTest, LookupCapLimitWithGlobal) {
   // 1. Start a local registry server
-  auto service = std::make_unique<global_registry::GlobalRegistryServiceImpl>();
-  grpc::ServerBuilder builder;
-  int port = 0;
-  builder.AddListeningPort("localhost:0", grpc::InsecureServerCredentials(),
-                           &port);
-  builder.RegisterService(service.get());
-  auto server = builder.BuildAndStart();
-  std::string server_address = "localhost:" + std::to_string(port);
+  auto reg_server = global_registry::CreateTestGlobalRegistryServer();
+  std::string server_address = reg_server->server_address;
 
   // 2. Register some blocks in the registry
-  auto channel =
-      grpc::CreateChannel(server_address, grpc::InsecureChannelCredentials());
-  global_registry::GlobalRegistryClient registry_client(channel);
+  auto& registry_client = *reg_server->client;
 
   std::string hash1 = "global_hash_1";
   RaidenId host1{"job1", "0", "kv_cache", 0};
@@ -667,25 +650,15 @@ TEST(KVCacheStoreTest, LookupCapLimitWithGlobal) {
   EXPECT_EQ(lookup_res->size(), 2);
   EXPECT_EQ((*lookup_res)[0].first, "global_hash_1");
   EXPECT_EQ((*lookup_res)[1].first, "global_hash_2");
-
-  server->Shutdown();
 }
 
 TEST(KVCacheStoreTest, LookupCapLimitMixed) {
   // 1. Start a local registry server
-  auto service = std::make_unique<global_registry::GlobalRegistryServiceImpl>();
-  grpc::ServerBuilder builder;
-  int port = 0;
-  builder.AddListeningPort("localhost:0", grpc::InsecureServerCredentials(),
-                           &port);
-  builder.RegisterService(service.get());
-  auto server = builder.BuildAndStart();
-  std::string server_address = "localhost:" + std::to_string(port);
+  auto reg_server = global_registry::CreateTestGlobalRegistryServer();
+  std::string server_address = reg_server->server_address;
 
   // 2. Register some blocks in the registry
-  auto channel =
-      grpc::CreateChannel(server_address, grpc::InsecureChannelCredentials());
-  global_registry::GlobalRegistryClient registry_client(channel);
+  auto& registry_client = *reg_server->client;
 
   std::string hash2 = "global_hash_2";
   RaidenId host2{"job2", "0", "kv_cache", 0};
@@ -720,8 +693,6 @@ TEST(KVCacheStoreTest, LookupCapLimitMixed) {
   EXPECT_EQ(lookup_res->size(), 2);
   EXPECT_EQ((*lookup_res)[0].first, "local_hash_1");
   EXPECT_EQ((*lookup_res)[1].first, "global_hash_2");
-
-  server->Shutdown();
 }
 
 TEST(KVCacheStoreTest, LookupAvailableSpaceLimit) {
@@ -1351,14 +1322,8 @@ TEST_F(KVCacheStoreEmbeddedControllerTest, LoadSuccess) {
 
 TEST_F(KVCacheStoreEmbeddedControllerTest, LoadRemoteSuccess) {
   // 1. Setup GlobalRegistry server
-  auto service = std::make_unique<global_registry::GlobalRegistryServiceImpl>();
-  grpc::ServerBuilder registry_builder;
-  int registry_port = 0;
-  registry_builder.AddListeningPort(
-      "localhost:0", grpc::InsecureServerCredentials(), &registry_port);
-  registry_builder.RegisterService(service.get());
-  auto registry_server = registry_builder.BuildAndStart();
-  std::string registry_address = "localhost:" + std::to_string(registry_port);
+  auto registry_server = global_registry::CreateTestGlobalRegistryServer();
+  std::string registry_address = registry_server->server_address;
 
   RaidenId local_rid{"local_job", "0", "local_cache", 0};
   RaidenId remote_rid{"remote_job", "0", "remote_cache", 0};
@@ -1606,14 +1571,8 @@ TEST_F(KVCacheStoreEmbeddedControllerTest, LoadMultiWorkerSuccess) {
 
 TEST_F(KVCacheStoreEmbeddedControllerTest, SaveWriteThrough) {
   // 1. Start a local mock registry server
-  auto service = std::make_unique<global_registry::GlobalRegistryServiceImpl>();
-  grpc::ServerBuilder builder;
-  int port = 0;
-  builder.AddListeningPort("localhost:0", grpc::InsecureServerCredentials(),
-                           &port);
-  builder.RegisterService(service.get());
-  auto server = builder.BuildAndStart();
-  std::string server_address = "localhost:" + std::to_string(port);
+  auto server = global_registry::CreateTestGlobalRegistryServer();
+  std::string server_address = server->server_address;
 
   // 2. Setup mock transfer manager & controller
   ::tpu_raiden::controller::MockTransferManager mock_mgr;
@@ -1699,20 +1658,12 @@ TEST_F(KVCacheStoreEmbeddedControllerTest, SaveWriteThrough) {
             rid.data_replica_idx);
   EXPECT_EQ(metadata_results[1].block_id(),
             1);  // second host block allocated is 1
-
-  server->Shutdown();
 }
 
 TEST_F(KVCacheStoreEmbeddedControllerTest, EvictByHashesHostAndHbmToErased) {
   // 1. Start a local registry server
-  auto service = std::make_unique<global_registry::GlobalRegistryServiceImpl>();
-  grpc::ServerBuilder builder;
-  int port = 0;
-  builder.AddListeningPort("localhost:0", grpc::InsecureServerCredentials(),
-                           &port);
-  builder.RegisterService(service.get());
-  auto server = builder.BuildAndStart();
-  std::string server_address = "localhost:" + std::to_string(port);
+  auto server = global_registry::CreateTestGlobalRegistryServer();
+  std::string server_address = server->server_address;
 
   // 2. Setup mock transfer manager & controller
   ::tpu_raiden::controller::MockTransferManager mock_mgr;
@@ -1799,19 +1750,11 @@ TEST_F(KVCacheStoreEmbeddedControllerTest, EvictByHashesHostAndHbmToErased) {
     absl::SleepFor(absl::Milliseconds(10));
   }
   EXPECT_TRUE(unregistered);
-
-  server->Shutdown();
 }
 
 TEST_F(KVCacheStoreEmbeddedControllerTest, EvictByHashesHostToErased) {
-  auto service = std::make_unique<global_registry::GlobalRegistryServiceImpl>();
-  grpc::ServerBuilder builder;
-  int port = 0;
-  builder.AddListeningPort("localhost:0", grpc::InsecureServerCredentials(),
-                           &port);
-  builder.RegisterService(service.get());
-  auto server = builder.BuildAndStart();
-  std::string server_address = "localhost:" + std::to_string(port);
+  auto server = global_registry::CreateTestGlobalRegistryServer();
+  std::string server_address = server->server_address;
 
   ::tpu_raiden::controller::MockTransferManager mock_mgr;
   test_server_->service->SetTransferManager(
@@ -1874,19 +1817,11 @@ TEST_F(KVCacheStoreEmbeddedControllerTest, EvictByHashesHostToErased) {
     absl::SleepFor(absl::Milliseconds(10));
   }
   EXPECT_TRUE(unregistered);
-
-  server->Shutdown();
 }
 
 TEST_F(KVCacheStoreEmbeddedControllerTest, EvictOnSave) {
-  auto service = std::make_unique<global_registry::GlobalRegistryServiceImpl>();
-  grpc::ServerBuilder builder;
-  int port = 0;
-  builder.AddListeningPort("localhost:0", grpc::InsecureServerCredentials(),
-                           &port);
-  builder.RegisterService(service.get());
-  auto server = builder.BuildAndStart();
-  std::string server_address = "localhost:" + std::to_string(port);
+  auto server = global_registry::CreateTestGlobalRegistryServer();
+  std::string server_address = server->server_address;
 
   ::tpu_raiden::controller::MockTransferManager mock_mgr;
   test_server_->service->SetTransferManager(
@@ -1968,8 +1903,6 @@ TEST_F(KVCacheStoreEmbeddedControllerTest, EvictOnSave) {
     absl::SleepFor(absl::Milliseconds(10));
   }
   EXPECT_TRUE(unregistered_A);
-
-  server->Shutdown();
 }
 
 TEST_F(KVCacheStoreEmbeddedControllerTest, ProactiveEvictionWithCandidates) {

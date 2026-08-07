@@ -61,11 +61,11 @@ inline IpAddr IpLocalhost(int family) {
 Endpoint TestOnly_LocalEndpoint(int family, bool tcp);
 
 // Finds an unused TCP port in the given address `family`.
-// Return a non-zero port if successful, otherwise crashes.
+// Return a nonzero port if successful, otherwise crashes.
 port_t TestOnly_FindFreeTcpPort(int family);
 
 // Finds an unused UDP port in the given address `family`.
-// Return a non-zero port if successful, otherwise crashes.
+// Return a nonzero port if successful, otherwise crashes.
 port_t TestOnly_FindFreeUdpPort(int family);
 
 // Creates a TCP socket in the given address `family`.

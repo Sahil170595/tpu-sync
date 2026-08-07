@@ -85,6 +85,11 @@ struct LookupOptions {
   // Controls whether the lookup is allowed to query the global registry.
   // Default is true.
   bool enable_global = true;
+
+  // Controls whether matched local blocks in store/backends are automatically
+  // pinned in memory to protect against LRU eviction.
+  // Default is false.
+  bool pin_found = false;
 };
 
 // Abstract interface for KV cache index storage backends.

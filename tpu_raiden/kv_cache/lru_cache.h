@@ -178,13 +178,12 @@ class LRUCache {
     return &(it->second->value);
   }
 
-  // Increments the reference pin count for the given key.
-  // Pinned items are protected entirely against automated LRU eviction.
-  // Returns true if the key exists and was successfully pinned.
-  bool Pin(const Key& key) {
+  // Retrieves a pointer to the stored value for the given key and increments
+  // its reference pin count. Returns nullptr if absent.
+  Value* GetAndPin(const Key& key) {
     auto it = map_.find(key);
     if (it == map_.end()) {
-      return false;
+      return nullptr;
     }
     if (it->second->pin_count == 0) {
       if (it->second->location == NodeLocation::kLru) {
@@ -196,8 +195,13 @@ class LRUCache {
       it->second->location = NodeLocation::kPinned;
     }
     it->second->pin_count++;
-    return true;
+    return &(it->second->value);
   }
+
+  // Increments the reference pin count for the given key.
+  // Pinned items are protected entirely against automated LRU eviction.
+  // Returns true if the key exists and was successfully pinned.
+  bool Pin(const Key& key) { return GetAndPin(key) != nullptr; }
 
   // Decrements the reference pin count for the given key.
   // When pin count reaches 0, the item is eligible for normal LRU eviction.

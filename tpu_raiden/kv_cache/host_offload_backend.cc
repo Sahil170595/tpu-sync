@@ -186,7 +186,9 @@ absl::StatusOr<BlockSliceList> HostOffloadBackend::Lookup(
   {
     absl::MutexLock lock(mutex_);
     for (const auto& hash : block_hashes) {
-      const RaidenBlockID* existing = lru_cache_.Peek(hash);
+      const RaidenBlockID* existing = options.pin_found
+                                          ? lru_cache_.GetAndPin(hash)
+                                          : lru_cache_.Peek(hash);
       if (!existing) {
         break;  // First miss
       }

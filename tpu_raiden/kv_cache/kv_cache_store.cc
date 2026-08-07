@@ -593,9 +593,12 @@ KVCacheStore::~KVCacheStore() {
 
 absl::StatusOr<BlockSliceList> KVCacheStore::Lookup(
     const std::vector<std::string>& block_hashes, bool enable_global) {
-  LookupOptions options;
-  options.enable_global = enable_global;
+  return Lookup(block_hashes, LookupOptions{.enable_global = enable_global});
+}
 
+absl::StatusOr<BlockSliceList> KVCacheStore::Lookup(
+    const std::vector<std::string>& block_hashes,
+    const LookupOptions& options) {
   BlockSliceList accumulated_results;
   accumulated_results.reserve(block_hashes.size());
 
@@ -611,6 +614,14 @@ absl::StatusOr<BlockSliceList> KVCacheStore::Lookup(
       if (!accumulated_results.empty() && absl::IsNotFound(res_or.status())) {
         break;
       }
+      if (options.pin_found && !accumulated_results.empty()) {
+        std::vector<std::string> matched_hashes;
+        matched_hashes.reserve(accumulated_results.size());
+        for (const auto& pair : accumulated_results) {
+          matched_hashes.push_back(pair.first);
+        }
+        Release(matched_hashes);
+      }
       return res_or.status();
     }
 
@@ -621,9 +632,16 @@ absl::StatusOr<BlockSliceList> KVCacheStore::Lookup(
     }
   }
 
-
   size_t cap = capacity();
   if (cap > 0 && accumulated_results.size() > cap) {
+    if (options.pin_found) {
+      std::vector<std::string> excess_hashes;
+      excess_hashes.reserve(accumulated_results.size() - cap);
+      for (size_t i = cap; i < accumulated_results.size(); ++i) {
+        excess_hashes.push_back(accumulated_results[i].first);
+      }
+      Release(excess_hashes);
+    }
     accumulated_results.resize(cap);
   }
 

@@ -158,6 +158,11 @@ class KVCacheStore {
   absl::StatusOr<BlockSliceList> Lookup(
       const std::vector<std::string>& block_hashes, bool enable_global = true);
 
+  // Overload accepting LookupOptions for granular control (e.g. pin_found).
+  absl::StatusOr<BlockSliceList> Lookup(
+      const std::vector<std::string>& block_hashes,
+      const LookupOptions& options);
+
   // Caches sharded buffers into host-RAM/HBM backing store.
   // Returns:
   // - bool: whether all blocks were successfully inserted (i.e. none already

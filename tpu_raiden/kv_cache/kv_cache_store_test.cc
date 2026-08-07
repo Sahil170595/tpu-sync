@@ -201,11 +201,13 @@ TEST(KVCacheStoreTest, PinAndRelease) {
   EXPECT_THAT(KVCacheStoreTest::GetEvictCandidateKeys(controller),
               ::testing::ElementsAre("101"));
 
-  // Lookup {"101", "102"} will miss 101 (since candidates are invisible to
-  // Peek). It will break early and return empty.
+  // Lookup {"101", "102"} will miss on 101 (since lookup uses
+  // candidate-invisible Peek).
   auto lookup_res = controller.Lookup({"101", "102"});
   ASSERT_TRUE(lookup_res.ok());
-  EXPECT_EQ(lookup_res->size(), 0);
+  EXPECT_TRUE(lookup_res->empty());
+  EXPECT_THAT(KVCacheStoreTest::GetEvictCandidateKeys(controller),
+              ::testing::ElementsAre("101"));
 
   // 102 is still in cache.
   EXPECT_EQ(controller.Lookup({"102"})->size(), 1);
@@ -262,11 +264,10 @@ TEST(KVCacheStoreTest, EvictionTracking) {
   EXPECT_THAT(KVCacheStoreTest::GetEvictCandidateKeys(controller),
               ::testing::ElementsAre("101"));
 
-  // 4. Verify that lookup for 101 misses (since lookup uses Peek and ignores
-  // candidates).
+  // 4. Verify that lookup for 101 misses (candidate invisible with Peek).
   auto lookup_res = controller.Lookup({"101"});
   ASSERT_TRUE(lookup_res.ok());
-  EXPECT_EQ(lookup_res->size(), 0);
+  EXPECT_TRUE(lookup_res->empty());
   // 101 should still be in candidates.
   EXPECT_THAT(KVCacheStoreTest::GetEvictCandidateKeys(controller),
               ::testing::ElementsAre("101"));
@@ -794,8 +795,8 @@ TEST(KVCacheStoreTest, ReleaseAndDelete) {
   ASSERT_TRUE(res);
   EXPECT_EQ(store.GetPinCount("remote_1"), 1);
   EXPECT_EQ(store.GetPinCount("remote_2"), 1);
-  EXPECT_EQ(store.Lookup({"local_1"})->size(), 0);
-  EXPECT_EQ(store.Lookup({"local_2"})->size(), 0);
+  EXPECT_THAT(KVCacheStoreTest::GetEvictCandidateKeys(store),
+              ::testing::UnorderedElementsAre("local_1", "local_2"));
 
   // Now call ReleaseAndDelete to revert InsertAndLock!
   auto release_res = store.ReleaseAndDelete(remote_hashes);
@@ -917,10 +918,13 @@ TEST(KVCacheStoreTest, RollbackRescue) {
   ASSERT_TRUE(lookup_res.ok());
   EXPECT_EQ(lookup_res->size(), 1);
 
+  EXPECT_THAT(KVCacheStoreTest::GetEvictCandidateKeys(store),
+              ::testing::ElementsAre("local_1"));
+
+  // Lookup for local_1 misses (candidate invisible with Peek)
   auto lookup_local_1 = store.Lookup({"local_1"});
   ASSERT_TRUE(lookup_local_1.ok());
-  EXPECT_EQ(lookup_local_1->size(), 0);
-
+  EXPECT_TRUE(lookup_local_1->empty());
   EXPECT_THAT(KVCacheStoreTest::GetEvictCandidateKeys(store),
               ::testing::ElementsAre("local_1"));
 }
@@ -1947,7 +1951,7 @@ TEST_F(KVCacheStoreEmbeddedControllerTest, ProactiveEvictionWithCandidates) {
 
   // Verify both are HOST_AND_HBM
   {
-    auto lookup_res = store.Lookup({"hash_A", "hash_B"});
+    auto lookup_res = store.Lookup({"hash_B", "hash_A"});
     ASSERT_TRUE(lookup_res.ok());
     ASSERT_EQ(lookup_res->size(), 2);
     EXPECT_EQ((*lookup_res)[0].second.status, BlockStatus::HOST_AND_HBM);
@@ -1963,18 +1967,6 @@ TEST_F(KVCacheStoreEmbeddedControllerTest, ProactiveEvictionWithCandidates) {
   ASSERT_TRUE(store.Insert(hash_C, slice_C, false).first);
 
   // B should now be in candidates.
-  EXPECT_THAT(KVCacheStoreTest::GetEvictCandidateKeys(store),
-              ::testing::ElementsAre("hash_B"));
-
-  // 4. Access B (using Lookup). This should miss because B is candidate and
-  // lookup uses Peek.
-  {
-    auto lookup_res = store.Lookup({"hash_B"});
-    ASSERT_TRUE(lookup_res.ok());
-    ASSERT_EQ(lookup_res->size(), 0);
-  }
-
-  // B is still in candidates.
   EXPECT_THAT(KVCacheStoreTest::GetEvictCandidateKeys(store),
               ::testing::ElementsAre("hash_B"));
 
@@ -2016,12 +2008,6 @@ TEST_F(KVCacheStoreEmbeddedControllerTest, ProactiveEvictionWithCandidates) {
   // - D should be HOST_AND_HBM
   {
     auto lookup_res = store.Lookup({"hash_B"});
-    ASSERT_TRUE(lookup_res.ok());
-    ASSERT_EQ(lookup_res->size(), 0);
-  }
-  {
-    // A should miss because it is still in candidate list.
-    auto lookup_res = store.Lookup({"hash_A"});
     ASSERT_TRUE(lookup_res.ok());
     ASSERT_EQ(lookup_res->size(), 0);
   }
@@ -4122,6 +4108,130 @@ TEST(KVCacheStoreConstructionRulesTest, CreateFailsWhenRegistryPublishFails) {
                                  "surface as a Create() failure";
 
   server->Shutdown();
+}
+
+class ErrorLookupBackend : public KVCacheStoreBackend {
+ public:
+  std::string name() const override { return "ErrorLookupBackend"; }
+  absl::StatusOr<BlockSliceList> Lookup(
+      absl::Span<const std::string> block_hashes,
+      const LookupOptions& options = {}) override {
+    return absl::InternalError("Backend lookup failed");
+  }
+  tsl::Future<> Load(const RaidenId& remote_id,
+                     absl::Span<const std::string> block_hashes,
+                     absl::Span<const int32_t> device_block_ids = {}) override {
+    return {};
+  }
+  std::pair<bool, BlockSliceList> Insert(
+      absl::Span<const std::string> block_hashes,
+      absl::Span<const RaidenBlockID> slices, bool on_host) override {
+    return {false, {}};
+  }
+  bool InsertAndLock(absl::Span<const std::string> block_hashes,
+                     absl::Span<const RaidenBlockID> slices,
+                     bool on_host) override {
+    return false;
+  }
+  size_t ReleaseAndDelete(absl::Span<const std::string> block_hashes) override {
+    return 0;
+  }
+  void Delete(absl::Span<const std::string> block_hashes,
+              absl::Span<const RaidenBlockID> slices) override {}
+  bool Pin(absl::Span<const std::string> block_hashes) override {
+    return false;
+  }
+  void Release(absl::Span<const std::string> block_hashes) override {}
+  int GetPinCount(const std::string& hash) const override { return 0; }
+  size_t GetCapacity() const override { return 0; }
+  size_t GetSize() const override { return 0; }
+  size_t GetAvailableSpace() const override { return 0; }
+};
+
+TEST(KVCacheStoreTest, LookupAndPinWorkflow) {
+  auto b = std::make_shared<HostOffloadBackend>(/*capacity=*/2);
+  KVCacheStore store(std::vector<std::shared_ptr<KVCacheStoreBackend>>{b},
+                     RaidenId{}, /*num_shards=*/1, /*shard_size_bytes=*/512,
+                     /*raiden_orchestrator_address=*/"",
+                     /*store_server_ip=*/"127.0.0.1");
+
+  RaidenId id{"job", "0", "cache", 0};
+  std::vector<std::string> hashes = {"h1", "h2"};
+  std::vector<RaidenBlockID> slices = {RaidenBlockID(id, 1, BlockStatus::HOST),
+                                       RaidenBlockID(id, 2, BlockStatus::HOST)};
+  store.Insert(hashes, slices, /*on_host=*/true);
+
+  auto res = store.Lookup(hashes, LookupOptions{.pin_found = true});
+  ASSERT_TRUE(res.ok());
+  EXPECT_EQ(res->size(), 2);
+  EXPECT_EQ(store.GetPinCount("h1"), 1);
+  EXPECT_EQ(store.GetPinCount("h2"), 1);
+
+  // Attempting to insert h3 when all blocks are pinned should not evict h1 or
+  // h2
+  std::vector<std::string> new_hash = {"h3"};
+  std::vector<RaidenBlockID> new_slice = {
+      RaidenBlockID(id, 3, BlockStatus::HOST)};
+  auto insert_res = store.Insert(new_hash, new_slice, /*on_host=*/true);
+  EXPECT_TRUE(insert_res.second.empty());  // No evictions occurred
+
+  // Release pins
+  store.Release(hashes);
+  EXPECT_EQ(store.GetPinCount("h1"), 0);
+  EXPECT_EQ(store.GetPinCount("h2"), 0);
+
+  // Now inserting h3 evicts unpinned h2 (tail of sequence)
+  insert_res = store.Insert(new_hash, new_slice, /*on_host=*/true);
+  ASSERT_EQ(insert_res.second.size(), 1);
+  EXPECT_EQ(insert_res.second[0].first, "h2");
+}
+
+TEST(KVCacheStoreTest, LookupAndPinErrorRollback) {
+  auto b1 = std::make_shared<HostOffloadBackend>(/*capacity=*/2);
+  RaidenId id{"job", "0", "cache", 0};
+  b1->Insert({"h1"}, {RaidenBlockID(id, 1, BlockStatus::HOST)},
+             /*on_host=*/true);
+
+  auto b2 = std::make_shared<ErrorLookupBackend>();
+
+  KVCacheStore store(std::vector<std::shared_ptr<KVCacheStoreBackend>>{b1, b2},
+                     RaidenId{}, /*num_shards=*/1, /*shard_size_bytes=*/512,
+                     /*raiden_orchestrator_address=*/"",
+                     /*store_server_ip=*/"127.0.0.1");
+
+  auto res = store.Lookup({"h1", "h2"}, LookupOptions{.pin_found = true});
+  EXPECT_FALSE(res.ok());
+  EXPECT_EQ(b1->GetPinCount("h1"), 0);
+}
+
+TEST(KVCacheStoreTest, LookupAndPinCapacityTruncation) {
+  auto b1 = std::make_shared<HostOffloadBackend>(/*capacity=*/2);
+  auto b2 = std::make_shared<HostOffloadBackend>(/*capacity=*/2);
+
+  RaidenId id{"job", "0", "cache", 0};
+  b1->Insert({"h1", "h2"},
+             {RaidenBlockID(id, 1, BlockStatus::HOST),
+              RaidenBlockID(id, 2, BlockStatus::HOST)},
+             /*on_host=*/true);
+  b2->Insert({"h3"}, {RaidenBlockID(id, 3, BlockStatus::HOST)},
+             /*on_host=*/true);
+
+  KVCacheStore store(std::vector<std::shared_ptr<KVCacheStoreBackend>>{b1, b2},
+                     RaidenId{}, /*num_shards=*/1, /*shard_size_bytes=*/512,
+                     /*raiden_orchestrator_address=*/"",
+                     /*store_server_ip=*/"127.0.0.1");
+
+  EXPECT_EQ(store.capacity(), 2);
+
+  auto res = store.Lookup({"h1", "h2", "h3"}, LookupOptions{.pin_found = true});
+  ASSERT_TRUE(res.ok());
+  ASSERT_EQ(res->size(), 2);
+  EXPECT_EQ((*res)[0].first, "h1");
+  EXPECT_EQ((*res)[1].first, "h2");
+
+  EXPECT_EQ(b1->GetPinCount("h1"), 1);
+  EXPECT_EQ(b1->GetPinCount("h2"), 1);
+  EXPECT_EQ(b2->GetPinCount("h3"), 0);
 }
 
 }  // namespace

@@ -353,6 +353,41 @@ TEST(LRUCacheTest, CandidateVisibility) {
   EXPECT_EQ(*cache.PeekMutable(2), "two");
 }
 
+TEST(LRUCacheTest, GetAndPinBasic) {
+  LRUCache<int, std::string> cache(2);
+  cache.Put(1, "one");
+  cache.Put(2, "two");
+
+  // Non-existent key
+  EXPECT_EQ(cache.GetAndPin(99), nullptr);
+
+  // Existing key: returns value pointer and pins item
+  auto* val1 = cache.GetAndPin(1);
+  ASSERT_NE(val1, nullptr);
+  EXPECT_EQ(*val1, "one");
+  EXPECT_EQ(cache.GetPinCount(1), 1);
+
+  // Calling GetAndPin again increments pin count further
+  auto* val1_again = cache.GetAndPin(1);
+  ASSERT_NE(val1_again, nullptr);
+  EXPECT_EQ(*val1_again, "one");
+  EXPECT_EQ(cache.GetPinCount(1), 2);
+
+  // 1 is pinned twice, 2 is unpinned. Put(3) evicts 2.
+  auto evicted = cache.Put(3, "three");
+  ASSERT_TRUE(evicted.has_value());
+  EXPECT_EQ(evicted->first, 2);
+  // 2 is now a candidate
+  EXPECT_FALSE(cache.Contains(2));
+
+  // GetAndPin on candidate 2 rescues and pins it
+  auto* val2 = cache.GetAndPin(2);
+  ASSERT_NE(val2, nullptr);
+  EXPECT_EQ(*val2, "two");
+  EXPECT_EQ(cache.GetPinCount(2), 1);
+  EXPECT_TRUE(cache.Contains(2));
+}
+
 }  // namespace
 }  // namespace kv_cache
 }  // namespace tpu_raiden

@@ -231,16 +231,9 @@ TEST(HostOffloadBackendTest,
   EXPECT_EQ((*lookup_res)[0].second.raiden_id, local_node_id);
 }
 
-
 TEST(HostOffloadBackendTest, CreateRegistersKVTransferSpecFromConfig) {
-  auto service = std::make_unique<global_registry::GlobalRegistryServiceImpl>();
-  grpc::ServerBuilder builder;
-  int port = 0;
-  builder.AddListeningPort("localhost:0", grpc::InsecureServerCredentials(),
-                           &port);
-  builder.RegisterService(service.get());
-  auto server = builder.BuildAndStart();
-  std::string server_address = "localhost:" + std::to_string(port);
+  auto reg_server = global_registry::CreateTestGlobalRegistryServer();
+  std::string server_address = reg_server->server_address;
 
   BackendConfig config;
   config.type = "HostOffloadBackend";
@@ -271,8 +264,6 @@ TEST(HostOffloadBackendTest, CreateRegistersKVTransferSpecFromConfig) {
   config.kv_transfer_spec->num_kv_shards = 4;
   EXPECT_TRUE(
       absl::IsInvalidArgument(HostOffloadBackend::Create(config).status()));
-
-  server->Shutdown();
 }
 
 TEST(HostOffloadBackendTest, KVTransferSpecWithoutRegistryFailsCreation) {
@@ -904,6 +895,85 @@ TEST(HostOffloadBackendWriteRemoteTest,
   HostOffloadBackend backend(/*capacity=*/8);
   EXPECT_TRUE(
       absl::IsInvalidArgument(backend.RegisterBlocksSync({"a", "b"}, {1})));
+}
+
+TEST(HostOffloadBackendTest, LookupAndPinBasicHits) {
+  HostOffloadBackend backend(/*capacity=*/5);
+  std::vector<std::string> hashes = {"h1", "h2", "h3"};
+  RaidenId id{"job", "0", "data", 0};
+  std::vector<RaidenBlockID> slices = {
+      RaidenBlockID(id, 10, BlockStatus::HOST),
+      RaidenBlockID(id, 11, BlockStatus::HOST),
+      RaidenBlockID(id, 12, BlockStatus::HOST)};
+
+  backend.Insert(hashes, slices, /*on_host=*/true);
+
+  auto res = backend.Lookup(hashes, LookupOptions{.pin_found = true});
+  ASSERT_TRUE(res.ok());
+  EXPECT_EQ(res->size(), 3);
+  EXPECT_EQ(backend.GetPinCount("h1"), 1);
+  EXPECT_EQ(backend.GetPinCount("h2"), 1);
+  EXPECT_EQ(backend.GetPinCount("h3"), 1);
+}
+
+TEST(HostOffloadBackendTest, LookupAndPinPartialMiss) {
+  HostOffloadBackend backend(/*capacity=*/5);
+  std::vector<std::string> hashes = {"h1", "h2"};
+  RaidenId id{"job", "0", "data", 0};
+  std::vector<RaidenBlockID> slices = {
+      RaidenBlockID(id, 10, BlockStatus::HOST),
+      RaidenBlockID(id, 11, BlockStatus::HOST)};
+
+  backend.Insert(hashes, slices, /*on_host=*/true);
+
+  auto res =
+      backend.Lookup({"h1", "h2", "h3"}, LookupOptions{.pin_found = true});
+  ASSERT_TRUE(res.ok());
+  EXPECT_EQ(res->size(), 2);
+  EXPECT_EQ(backend.GetPinCount("h1"), 1);
+  EXPECT_EQ(backend.GetPinCount("h2"), 1);
+  EXPECT_EQ(backend.GetPinCount("h3"), 0);
+}
+
+TEST(HostOffloadBackendTest, LookupAndPinRemoteDescriptorsUnpinnedLocally) {
+  auto reg_server = global_registry::CreateTestGlobalRegistryServer();
+  std::string server_address = reg_server->server_address;
+  auto registry_client = reg_server->client.get();
+
+  RaidenId remote_node_id{"remote_job", "0", "data", 0};
+  std::vector<global_registry::Registration> regs = {
+      {.prefix_hash = "r1", .raiden_id = remote_node_id, .block_id = 42},
+  };
+  ASSERT_TRUE(registry_client->Register(regs).ok());
+
+  RaidenId local_node_id{"local_job", "0", "data", 0};
+  rpc::RaidenIdProto unit_proto;
+  unit_proto.set_job_name(local_node_id.job_name);
+  unit_proto.set_job_replica_id(local_node_id.job_replica_id);
+  unit_proto.set_data_name(local_node_id.data_name);
+  unit_proto.set_data_replica_idx(local_node_id.data_replica_idx);
+
+  controller::RaidenController controller(unit_proto, /*num_blocks=*/100,
+                                          /*num_shards=*/1,
+                                          /*shard_size_bytes=*/1024);
+
+  BackendConfig config;
+  config.type = "HostOffloadBackend";
+  config.capacity = 100;
+  config.global_registry_address = server_address;
+  config.raiden_id = local_node_id;
+
+  auto backend_or = HostOffloadBackend::Create(config, &controller);
+  ASSERT_OK(backend_or.status());
+  auto backend = *backend_or;
+
+  auto lookup_res = backend->Lookup(
+      {"r1"}, LookupOptions{.enable_global = true, .pin_found = true});
+  ASSERT_TRUE(lookup_res.ok());
+  ASSERT_EQ(lookup_res->size(), 1);
+  EXPECT_EQ((*lookup_res)[0].first, "r1");
+  EXPECT_EQ((*lookup_res)[0].second.status, BlockStatus::REMOTE);
+  EXPECT_EQ(backend->GetPinCount("r1"), 0);
 }
 
 }  // namespace

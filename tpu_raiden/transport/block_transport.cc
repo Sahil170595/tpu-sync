@@ -75,7 +75,9 @@ std::vector<struct iovec> ToIovec(const std::vector<BlockChunk>& chunks) {
   std::vector<struct iovec> iov;
   iov.reserve(chunks.size());
   for (const auto& chunk : chunks) {
-    iov.push_back({.iov_base = chunk.ptr, .iov_len = chunk.size});
+    if (chunk.size > 0) {
+      iov.push_back({.iov_base = chunk.ptr, .iov_len = chunk.size});
+    }
   }
   return iov;
 }
@@ -364,7 +366,9 @@ absl::Status BlockTransport::HandleIncomingPush(
               " bytes for Block ID: ", dst_id));
         }
 
-        RETURN_IF_ERROR(ReadVExact(client_fd, ToIovec(chunks)));
+        if (expected_size > 0) {
+          RETURN_IF_ERROR(ReadVExact(client_fd, ToIovec(chunks)));
+        }
         return absl::OkStatus();
       }));
 
@@ -555,7 +559,9 @@ void BlockTransport::TriggerNextSendStep(
             active_sends_.erase(state->uuid);
             return;
           }
-          s = WriteVExact(state->client_fd, ToIovec(chunks));
+          if (total_size > 0) {
+            s = WriteVExact(state->client_fd, ToIovec(chunks));
+          }
           if (!s.ok()) {
             LOG(ERROR) << "Write payload failed: " << s.ToString();
             shutdown(state->client_fd, SHUT_RDWR);
@@ -907,7 +913,10 @@ void BlockTransport::H2hWriteWorker(int stream_idx, absl::string_view peer,
         }
 
         RETURN_IF_ERROR(WriteExact(fd, &total_size, sizeof(total_size)));
-        return WriteVExact(fd, ToIovec(chunks));
+        if (total_size > 0) {
+          return WriteVExact(fd, ToIovec(chunks));
+        }
+        return absl::OkStatus();
       });
   if (!s.ok()) {
     statuses[stream_idx] = s;
@@ -1111,7 +1120,9 @@ void BlockTransport::H2hReadWorker(
                 " bytes for Block ID: ", dst_id));
           }
 
-          RETURN_IF_ERROR(ReadVExact(fd, ToIovec(chunks)));
+          if (expected_size > 0) {
+            RETURN_IF_ERROR(ReadVExact(fd, ToIovec(chunks)));
+          }
 
           if (on_block_received != nullptr) {
             RETURN_IF_ERROR(on_block_received(l, sh, dst_id, expected_size));

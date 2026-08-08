@@ -282,6 +282,7 @@ absl::Status RawBufferTransport::ProcessPeerRequest(int client_fd) {
 
     std::vector<struct iovec> iovs;
     iovs.reserve(batch_size);
+    size_t total_bytes = 0;
 
     for (uint32_t i = 0; i < batch_size; ++i) {
       const auto& meta = metadata[i];
@@ -294,14 +295,19 @@ absl::Status RawBufferTransport::ProcessPeerRequest(int client_fd) {
         return absl::InvalidArgumentError(
             "Destination out of bounds in batched push");
       }
-      struct iovec iov;
-      iov.iov_base = base_host_ptr + meta.dst_offset_bytes;
-      iov.iov_len = meta.size_bytes;
-      iovs.push_back(iov);
+      if (meta.size_bytes > 0) {
+        struct iovec iov;
+        iov.iov_base = base_host_ptr + meta.dst_offset_bytes;
+        iov.iov_len = meta.size_bytes;
+        iovs.push_back(iov);
+        total_bytes += meta.size_bytes;
+      }
     }
 
     // Read all payloads directly using ReadVExact.
-    RETURN_IF_ERROR(ReadVExact(client_fd, iovs));
+    if (total_bytes > 0) {
+      RETURN_IF_ERROR(ReadVExact(client_fd, iovs));
+    }
 
     bool trigger_h2d = false;
     if (header.uuid > 0) {
@@ -638,15 +644,21 @@ absl::Status RawBufferTransport::PushBatch(
 
   std::vector<struct iovec> iovs;
   iovs.reserve(batch_size);
+  size_t total_bytes = 0;
   for (size_t i = 0; i < batch_size; ++i) {
     const auto& task = tasks[start_idx + i];
-    struct iovec iov;
-    iov.iov_base = const_cast<uint8_t*>(task.data_ptr);
-    iov.iov_len = task.size_bytes;
-    iovs.push_back(iov);
+    if (task.size_bytes > 0) {
+      struct iovec iov;
+      iov.iov_base = const_cast<uint8_t*>(task.data_ptr);
+      iov.iov_len = task.size_bytes;
+      iovs.push_back(iov);
+      total_bytes += task.size_bytes;
+    }
   }
 
-  RETURN_IF_ERROR(WriteVExact(fd, iovs));
+  if (total_bytes > 0) {
+    RETURN_IF_ERROR(WriteVExact(fd, iovs));
+  }
 
   uint8_t ack = 0;
   RETURN_IF_ERROR(ReadExact(fd, &ack, 1));

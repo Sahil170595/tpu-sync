@@ -33,6 +33,7 @@
 #include "absl/strings/string_view.h"
 #include "absl/synchronization/mutex.h"
 #include "tpu_raiden/transport/block_transport_delegate.h"
+#include "tpu_raiden/transport/buffer_push_task.h"
 #include "tpu_raiden/transport/lib/chunk.h"
 #include "tpu_raiden/transport/lib/raw_buffer_transport.h"
 
@@ -132,7 +133,7 @@ class BlockTransport final {
                                      uuid);
   }
 
-  absl::Status PushBuffers(const std::vector<lib::BufferPushTask>& tasks,
+  absl::Status PushBuffers(const std::vector<BufferPushTask>& tasks,
                            int parallelism, uint64_t uuid) {
     return raw_transport_.PushBuffers(tasks, parallelism, uuid);
   }

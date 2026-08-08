@@ -32,6 +32,7 @@
 #include "tpu_raiden/core/tpu_utils.h"
 #include "tpu_raiden/transport/block_transport.h"
 #include "tpu_raiden/transport/block_transport_delegate.h"
+#include "tpu_raiden/transport/buffer_push_task.h"
 
 namespace tpu_raiden {
 
@@ -83,9 +84,8 @@ class RaidenManagerBase : public tpu_raiden::transport::BlockTransportDelegate {
                                 const uint8_t* data_ptr, size_t size_bytes,
                                 uint64_t uuid = 0, size_t layer_idx = 0);
 
-  // TODO(yongx): do not use transport::lib::* which is transport internal.
   absl::Status PushWeightsChunks(
-      const std::vector<transport::lib::BufferPushTask>& tasks, int parallelism,
+      const std::vector<transport::BufferPushTask>& tasks, int parallelism,
       uint64_t uuid);
 
   absl::Status RegisterExpectedChunks(uint64_t uuid, uint32_t expected_chunks);

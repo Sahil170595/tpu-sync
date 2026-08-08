@@ -32,6 +32,12 @@ cc_library(
 )
 
 cc_library(
+    name = "buffer_push_task",
+    hdrs = ["buffer_push_task.h"],
+    visibility = ["//visibility:public"],
+)
+
+cc_library(
     name = "block_transport",
     srcs = ["block_transport.cc"],
     hdrs = ["block_transport.h"],
@@ -43,6 +49,7 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         ":block_transport_delegate",
+        ":buffer_push_task",
         "//tpu_raiden/core:status_macros",
         "//tpu_raiden/core:tsl_platform_headers",
         "//tpu_raiden/transport/lib:chunk",

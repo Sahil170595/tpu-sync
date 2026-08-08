@@ -50,6 +50,7 @@ cc_library(
         ":chunk",
         ":raw_buffer_transport_delegate",
         "//tpu_raiden/core:status_macros",
+        "//tpu_raiden/transport:buffer_push_task",
         "//tpu_raiden/transport/lib/conn:pool",
         "//tpu_raiden/transport/peregrine/src/api:socket_util",
         "@com_google_absl//absl/base:core_headers",
@@ -77,6 +78,7 @@ cc_test(
     deps = [
         ":raw_buffer_transport",
         ":raw_buffer_transport_delegate",
+        "//tpu_raiden/transport:buffer_push_task",
         "//tpu_raiden/transport/lib/conn:pool",
         "//tpu_raiden/transport/peregrine/src/util",
         "@com_google_absl//absl/base:core_headers",

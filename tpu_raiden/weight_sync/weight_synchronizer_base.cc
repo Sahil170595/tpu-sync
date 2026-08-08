@@ -41,6 +41,7 @@
 #include "tpu_raiden/core/raiden_manager_base.h"
 #include "tpu_raiden/core/raw_transfer_core.h"
 #include "tpu_raiden/rpc/raiden_service.pb.h"
+#include "tpu_raiden/transport/buffer_push_task.h"
 #include "tpu_raiden/weight_sync/tiling_utils.h"
 #include "tpu_raiden/weight_sync/weight_synchronizer_listener.h"
 
@@ -440,7 +441,7 @@ absl::Status WeightSynchronizerBase::PushWeightsResharded(
     VLOG(1) << "PushWeightsResharded: Skipping D2H copy.";
   }
 
-  std::vector<transport::lib::BufferPushTask> tasks;
+  std::vector<transport::BufferPushTask> tasks;
   const auto& schedules = request.shard_push_schedules();
   for (size_t i = 0; i < num_shards_; ++i) {
     auto it = schedules.find(static_cast<int32_t>(i));

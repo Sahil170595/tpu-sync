@@ -35,6 +35,7 @@
 #include "tpu_raiden/core/raw_transfer_core.h"
 #include "tpu_raiden/core/tpu_utils.h"
 #include "tpu_raiden/transport/block_transport.h"
+#include "tpu_raiden/transport/buffer_push_task.h"
 
 namespace tpu_raiden {
 
@@ -293,7 +294,7 @@ absl::Status RaidenManagerBase::PushWeightsChunk(
 }
 
 absl::Status RaidenManagerBase::PushWeightsChunks(
-    const std::vector<transport::lib::BufferPushTask>& tasks, int parallelism,
+    const std::vector<transport::BufferPushTask>& tasks, int parallelism,
     uint64_t uuid) {
   auto* transport = InitTransportServer();
   if (!transport) {

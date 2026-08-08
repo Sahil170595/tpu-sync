@@ -33,6 +33,7 @@
 #include "absl/strings/string_view.h"
 #include "absl/synchronization/mutex.h"
 #include "absl/types/span.h"
+#include "tpu_raiden/transport/buffer_push_task.h"
 #include "tpu_raiden/transport/lib/chunk.h"
 #include "tpu_raiden/transport/lib/conn/pool.h"
 #include "tpu_raiden/transport/lib/raw_buffer_transport_delegate.h"
@@ -42,15 +43,6 @@ namespace tpu_raiden::transport::lib {
 struct RawProgress {
   uint32_t completed_chunks = 0;
   std::optional<uint32_t> expected_chunks;
-};
-
-struct BufferPushTask {
-  std::string peer;
-  size_t buffer_id;
-  size_t dst_shard_idx;
-  size_t dst_offset_bytes;
-  const uint8_t* data_ptr;
-  size_t size_bytes;
 };
 
 // Standalone raw buffer POSIX TCP socket transport engine.

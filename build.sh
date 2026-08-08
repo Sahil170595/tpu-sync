@@ -193,7 +193,15 @@ PY
   fi
   export TORCH_SOURCE
   echo "Using local torch from: ${TORCH_SOURCE}"
+  # Local-torch mode needs two switches. The define drives raiden's own
+  # //ci/wheel config (the wheel then declares no torch requirement). The
+  # @torch_tpu//shims/torch:local_torch flag drives torch_tpu's torch shims;
+  # torch_tpu's own --config=local_torch sets it via its .bazelrc, which does
+  # not apply when torch_tpu is a dependency module, so pass it explicitly.
+  # Without the flag, the shims resolve to torch_tpu's pinned pypi torch and
+  # TORCH_SOURCE never enters the build.
   DEFINE_FLAGS+=" --define=TORCH_SOURCE=local"
+  TORCH_REPO_ENV_FLAGS+=("--@torch_tpu//shims/torch:local_torch=True")
   TORCH_REPO_ENV_FLAGS+=("--repo_env=TORCH_SOURCE=${TORCH_SOURCE}")
   BAZEL_TARGETS+=(
     "//tpu_raiden/frameworks/torch:_tpu_raiden_host"

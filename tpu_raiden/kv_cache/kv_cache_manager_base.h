@@ -48,6 +48,31 @@
 
 namespace tpu_raiden {
 
+// Marks a pull whose ordering is already guaranteed by a KVCacheStore read
+// lease, so the source must NOT gate it on device-to-host readiness.
+//
+// Why a sentinel rather than 0: the readiness gate
+// (KVCacheManagerWithTransfer::RegisterBlockReadinessCallback) identifies a
+// transfer by uuid. Pulls historically sent 0, which is indistinguishable from
+// "no uuid supplied", so the gate could never match a pull to its own transfer
+// and always fell through to scanning every live send entry -- coupling the
+// pull to an unrelated transfer's D2H future. This value says something
+// specific and true instead: "the lease already ordered this read."
+//
+// Why THIS value cannot collide. Both uuid generators produce strictly smaller
+// numbers, so nothing in the system can ever mint it:
+//   * the disagg connector: uuid4().int >> 78, i.e. 50 bits, range
+//     [0, 2^50 - 1]   (tpu-inference: distributed/tpu_raiden_connector.py,
+//     get_uuid())
+//   * the raiden python controller: random.randint(1, 2**63 - 1), range
+//     [1, 2^63 - 1]   (tpu_raiden/rpc/raiden_controller.py)
+// Anything with the top bit set is therefore unreachable by either; all-ones is
+// also unmistakable in a log line or packet dump.
+//
+// If a third uuid source is ever added, it MUST stay below 2^63 or this
+// sentinel loses its meaning silently.
+inline constexpr uint64_t kLeaseAuthorizedPullUuid = 0xFFFFFFFFFFFFFFFFull;
+
 struct BlockMetadata {
   int block_id;
   void* data_ptr;

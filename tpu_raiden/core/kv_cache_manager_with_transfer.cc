@@ -1970,7 +1970,7 @@ void KVCacheManagerWithTransfer::RegisterBlockReadinessCallback(
     cb(absl::OkStatus());
     return;
   }
-  if (uuid == transport::kLeaseAuthorizedPullUuid) {
+  if (uuid == kLeaseAuthorizedPullUuid) {
     // A lease-authorised pull. The reader holds a lease over blocks this node
     // already published as host-resident, so their device-to-host copy
     // provably completed before the lease was granted, and the pin keeps them

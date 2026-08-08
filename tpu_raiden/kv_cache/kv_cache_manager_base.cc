@@ -1091,8 +1091,7 @@ absl::StatusOr<raiden::PjRtCopyFuture> KVCacheManagerBase::H2hReadExplicit(
       std::vector<int> allocated_ids,
       server_->SyncPull({peer}, src_block_ids, local_block_ids,
                         explicit_dst_ptrs, parallelism, major_order,
-                        on_block_received,
-                        tpu_raiden::transport::kLeaseAuthorizedPullUuid));
+                        on_block_received, kLeaseAuthorizedPullUuid));
   return raiden::PjRtCopyFuture(std::vector<raiden::BufferHolder>{});
 }
 

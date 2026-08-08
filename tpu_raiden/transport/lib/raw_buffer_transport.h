@@ -51,47 +51,75 @@ class RawBufferTransport final {
   using CustomRequestHandler = absl::AnyInvocable<absl::Status(
       int client_fd, const ChunkHeader& header)>;
 
+  // Constructor sets up a TCP listening socket on the given `local_port`.
+  // IPv6 is preferred with IPv4 as a fallback.
   RawBufferTransport(RawBufferTransportDelegate* delegate, int local_port,
                      const std::vector<std::string>& local_ips = {},
                      CustomRequestHandler custom_request_handler = nullptr);
+
+  // Destructor closes all sockets and joins all threads.
   ~RawBufferTransport();
 
+  // Return the TCP listening socket port.
   int local_port() const { return local_port_; }
+
+  // Return the bound IP address.
+  // It is the first IP in `local_ips` if provided, otherwise "127.0.0.1".
   const std::string& bound_ip() const { return bound_ip_; }
+
+  // Return the local IP addresses.
   absl::Span<const std::string> local_ips() const { return local_ips_; }
+
+  // Return the connection pool that manages the sockets that connect to peers.
   ConnPool& conn_pool() { return conn_pool_; }
 
-  // Synchronously pulls an arbitrary continuous byte slice from a remote
-  // peer's staging memory.
+  // Synchronously pulls a buffer identified by `buffer_id` from the remote
+  // `peer`, by sending out a `kOpBufferPull ChunkHeader` and then receiving
+  // the data from the peer.
+  // Note: This function is only used in RawBufferTransportTest, nowhere else.
   absl::Status PullBuffer(absl::string_view peer, size_t buffer_id,
                           size_t src_shard_idx, size_t src_offset_bytes,
                           size_t dst_shard_idx, size_t dst_offset_bytes,
                           size_t size_bytes);
 
-  // Synchronously pushes an arbitrary continuous byte array into a specific
-  // offset of a remote peer's buffer.
+  // Synchronously pushes a buffer identified by `buffer_id` to the remote
+  // `peer`, by sending out a `kOpBufferPush ChunkHeader` followed by the data.
+  // It waits for a one-byte ack from the `peer` before it returns.
   absl::Status PushBuffer(absl::string_view peer, size_t buffer_id,
                           size_t dst_shard_idx, size_t dst_offset_bytes,
                           const uint8_t* data_ptr, size_t size_bytes,
                           uint64_t uuid);
 
-  // Pushes a vector of buffers using the batched push protocol.
+  // Pushes a vector of buffers to multiple peers using `PushBatch()`.
   absl::Status PushBuffers(const std::vector<BufferPushTask>& tasks,
                            int parallelism, uint64_t uuid);
 
+  // Registers the expected number of chunks for the given `uuid`.
+  // If the completed number of chunks is equal to the expected, it triggers
+  // the delegate's `OnDataReceived()` H2D callback.
   absl::Status RegisterExpectedChunks(uint64_t uuid, uint32_t expected_chunks);
 
+  // Drops receive-progress counters belonging to the give `uuid`.
   void ForgetPushProgress(uint64_t uuid);
 
  private:
-  absl::Status ProcessPeerRequest(int client_fd);
-
+  // Pushes a batch of buffers to the remote `peer`, by sending out a
+  // `kOpBufferPushBatched ChunkHeader` followed by a `batch_size` sequence
+  // of metadata and then the data.
+  // This is the internal function that is called by `PushBuffers`.
   absl::Status PushBatch(absl::string_view peer,
                          const std::vector<BufferPushTask>& tasks,
                          size_t start_idx, size_t batch_size, uint64_t uuid);
 
-  void ConnectionWorker(int client_fd);
+  // Processes a single peer request from the given `client_fd`. These requests
+  // are those sent by `PullBuffer`, `PushBuffer`, `PushBuffers` calls.
+  absl::Status ProcessPeerRequest(int client_fd);
+
+  // Accepts incoming connections and creates worker threads.
   void ListenerLoop();
+
+  // Polls the socket `client_fd` and processes incoming peer requests.
+  void ConnectionWorker(int client_fd);
 
  private:
   RawBufferTransportDelegate* const raw_delegate_;

@@ -935,20 +935,6 @@ void BlockTransport::H2hWriteWorker(int stream_idx, absl::string_view peer,
   ok_to_pool = true;
 }
 
-void BlockTransport::ForgetPushProgress(uint64_t uuid) {
-  raw_transport_.ForgetPushProgress(uuid);
-  absl::MutexLock lock(progress_mu_);
-  for (auto it = layer_progress_.begin(); it != layer_progress_.end();) {
-    if (it->first.first == uuid) {
-      // absl::flat_hash_map::erase(iterator) returns void.
-      auto erase_it = it++;
-      layer_progress_.erase(erase_it);
-    } else {
-      ++it;
-    }
-  }
-}
-
 void BlockTransport::H2hReadWorker(
     int stream_idx, absl::string_view peer, absl::string_view local_ip,
     size_t local_block_offset, size_t local_block_count,
@@ -1137,6 +1123,20 @@ void BlockTransport::H2hReadWorker(
     }
   }
   ok_to_pool = true;
+}
+
+void BlockTransport::ForgetPushProgress(uint64_t uuid) {
+  raw_transport_.ForgetPushProgress(uuid);
+  absl::MutexLock lock(progress_mu_);
+  for (auto it = layer_progress_.begin(); it != layer_progress_.end();) {
+    if (it->first.first == uuid) {
+      // absl::flat_hash_map::erase(iterator) returns void.
+      auto erase_it = it++;
+      layer_progress_.erase(erase_it);
+    } else {
+      ++it;
+    }
+  }
 }
 
 }  // namespace transport

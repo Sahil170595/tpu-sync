@@ -36,6 +36,7 @@
 #include <utility>
 #include <vector>
 
+#include "absl/base/optimization.h"
 #include "absl/cleanup/cleanup.h"
 #include "absl/log/check.h"
 #include "absl/log/log.h"
@@ -210,12 +211,27 @@ RawBufferTransport::~RawBufferTransport() {
   conn_pool_.Close();
 }
 
-
 absl::Status RawBufferTransport::ProcessPeerRequest(int client_fd) {
   ChunkHeader header = {};
   RETURN_IF_ERROR(ReadExact(client_fd, &header, sizeof(header)));
 
-  if (header.op == kOpBufferPush) {  // peer push request
+  if ABSL_PREDICT_FALSE (header.op == kOpBufferPull) {  // peer pull request
+    const uint32_t src_offset = header.remote_id;
+    const uint32_t src_shard_idx = header.local_id;
+    const uint32_t size_bytes = header.count_or_size;
+    const uint16_t buf_id = header.buffer_id;
+
+    uint8_t* const base_host_ptr =
+        raw_delegate_->GetHostPointer(buf_id, src_shard_idx);
+    const size_t host_size = raw_delegate_->GetHostSize(buf_id, src_shard_idx);
+    if (base_host_ptr == nullptr || src_offset + size_bytes > host_size) {
+      return absl::InvalidArgumentError("Source out of bounds");
+    }
+    uint8_t* const src_ptr = base_host_ptr + src_offset;
+    RETURN_IF_ERROR(WriteExact(client_fd, src_ptr, size_bytes));
+    return absl::OkStatus();
+
+  } else if (header.op == kOpBufferPush) {  // peer push request
     const uint32_t dst_offset = header.remote_id;
     const uint32_t dst_shard_idx = header.local_id;
     const uint32_t size_bytes = header.count_or_size;
@@ -256,22 +272,6 @@ absl::Status RawBufferTransport::ProcessPeerRequest(int client_fd) {
 
     const uint8_t ack = 1;
     RETURN_IF_ERROR(WriteExact(client_fd, &ack, 1));
-    return absl::OkStatus();
-
-  } else if (header.op == kOpBufferPull) {  // peer pull request
-    const uint32_t src_offset = header.remote_id;
-    const uint32_t src_shard_idx = header.local_id;
-    const uint32_t size_bytes = header.count_or_size;
-    const uint16_t buf_id = header.buffer_id;
-
-    uint8_t* const base_host_ptr =
-        raw_delegate_->GetHostPointer(buf_id, src_shard_idx);
-    const size_t host_size = raw_delegate_->GetHostSize(buf_id, src_shard_idx);
-    if (base_host_ptr == nullptr || src_offset + size_bytes > host_size) {
-      return absl::InvalidArgumentError("Source out of bounds");
-    }
-    uint8_t* const src_ptr = base_host_ptr + src_offset;
-    RETURN_IF_ERROR(WriteExact(client_fd, src_ptr, size_bytes));
     return absl::OkStatus();
 
   } else if (header.op == kOpBufferPushBatched) {  // peer batched push request
@@ -529,8 +529,8 @@ absl::Status RawBufferTransport::PushBuffer(absl::string_view peer,
 
 absl::Status RawBufferTransport::PushBuffers(
     const std::vector<BufferPushTask>& tasks, int parallelism, uint64_t uuid) {
-  std::vector<BufferPushTask> sorted_tasks = tasks;
-  std::stable_sort(sorted_tasks.begin(), sorted_tasks.end(),
+  std::vector<BufferPushTask> grouped_tasks = tasks;
+  std::stable_sort(grouped_tasks.begin(), grouped_tasks.end(),
                    [](const BufferPushTask& a, const BufferPushTask& b) {
                      return a.peer < b.peer;
                    });
@@ -542,18 +542,17 @@ absl::Status RawBufferTransport::PushBuffers(
   };
 
   std::vector<BatchInfo> batches;
-  for (size_t i = 0; i < sorted_tasks.size();) {
-    std::string peer = sorted_tasks[i].peer;
+  for (size_t i = 0; i < grouped_tasks.size();) {
+    const std::string peer = grouped_tasks[i].peer;
     size_t peer_start = i;
     size_t peer_task_count = 0;
-    while (i < sorted_tasks.size() && sorted_tasks[i].peer == peer) {
+    while (i < grouped_tasks.size() && grouped_tasks[i].peer == peer) {
       peer_task_count++;
       i++;
     }
 
-    const size_t effective_parallelism = std::max(1, parallelism);
-    const size_t target_batch_size =
-        (peer_task_count + effective_parallelism - 1) / effective_parallelism;
+    const size_t p = std::max(1, parallelism);
+    const size_t target_batch_size = (peer_task_count + p - 1) / p;
     const size_t batch_size =
         std::clamp(target_batch_size, size_t{1}, static_cast<size_t>(IOV_MAX));
 
@@ -571,7 +570,7 @@ absl::Status RawBufferTransport::PushBuffers(
 
   if (parallelism <= 1 || batches.size() == 1) {
     for (const auto& batch : batches) {
-      RETURN_IF_ERROR(PushBatch(batch.peer, sorted_tasks, batch.start_idx,
+      RETURN_IF_ERROR(PushBatch(batch.peer, grouped_tasks, batch.start_idx,
                                 batch.count, uuid));
     }
     return absl::OkStatus();
@@ -590,7 +589,7 @@ absl::Status RawBufferTransport::PushBuffers(
         size_t idx = next_batch_idx.fetch_add(1);
         if (idx >= batches.size()) break;
         const auto& batch = batches[idx];
-        statuses[idx] = PushBatch(batch.peer, sorted_tasks, batch.start_idx,
+        statuses[idx] = PushBatch(batch.peer, grouped_tasks, batch.start_idx,
                                   batch.count, uuid);
       }
     }));

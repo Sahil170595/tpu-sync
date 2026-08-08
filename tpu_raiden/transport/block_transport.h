@@ -51,10 +51,21 @@ using BlockReceivedCallback = std::function<absl::Status(
 // High-speed Key-Value block transport engine.
 class BlockTransport final {
  public:
+  // Constructor sets up a TCP listening socket on the given `local_port`. It
+  // starts #`parallelism` worker threads to handle incoming `WriteTask`s.
   BlockTransport(BlockTransportDelegate* delegate, int local_port,
                  const std::vector<std::string>& local_ips = {},
                  int parallelism = 1);
+
+  // Destructor closes all sockets and joins all threads.
   ~BlockTransport();
+
+  // Return the TCP listening socket port.
+  int local_port() const { return raw_transport_.local_port(); }
+
+  // Return the bound IP address.
+  // It is the first IP in `local_ips` if provided, otherwise "127.0.0.1".
+  const std::string& bound_ip() const { return raw_transport_.bound_ip(); }
 
   // Asynchronous Scatter-Gather Push
   void AsyncPush(
@@ -84,21 +95,12 @@ class BlockTransport final {
       BlockReceivedCallback on_block_received = {}, uint64_t uuid = 0);
 
   // Drops receive-progress counters belonging to a finished, failed, or
-  // timed-out plan so the UUID can be safely reused.
+  // timed-out plan so the `uuid` can be safely reused.
   void ForgetPushProgress(uint64_t uuid);
 
-  int local_port() const { return raw_transport_.local_port(); }
-  const std::string& bound_ip() const { return raw_transport_.bound_ip(); }
-
-  absl::Status PullBuffer(absl::string_view peer, size_t buffer_id,
-                          size_t src_shard_idx, size_t src_offset_bytes,
-                          size_t dst_shard_idx, size_t dst_offset_bytes,
-                          size_t size_bytes) {
-    return raw_transport_.PullBuffer(peer, buffer_id, src_shard_idx,
-                                     src_offset_bytes, dst_shard_idx,
-                                     dst_offset_bytes, size_bytes);
-  }
-
+  // Synchronously pushes a buffer identified by `buffer_id` to the remote
+  // `peer`, by sending out a `kOpBufferPush ChunkHeader` followed by the data.
+  // It waits for a one-byte ack from the `peer` before it returns.
   absl::Status PushBuffer(absl::string_view peer, size_t buffer_id,
                           size_t dst_shard_idx, size_t dst_offset_bytes,
                           const uint8_t* data_ptr, size_t size_bytes,
@@ -108,11 +110,15 @@ class BlockTransport final {
                                      uuid);
   }
 
+  // Pushes a vector of buffers to multiple peers.
   absl::Status PushBuffers(const std::vector<BufferPushTask>& tasks,
                            int parallelism, uint64_t uuid) {
     return raw_transport_.PushBuffers(tasks, parallelism, uuid);
   }
 
+  // Registers the expected number of chunks for the given `uuid`.
+  // If the completed number of chunks is equal to the expected, it triggers
+  // the delegate's `OnDataReceived()` H2D callback.
   absl::Status RegisterExpectedChunks(uint64_t uuid, uint32_t expected_chunks) {
     return raw_transport_.RegisterExpectedChunks(uuid, expected_chunks);
   }

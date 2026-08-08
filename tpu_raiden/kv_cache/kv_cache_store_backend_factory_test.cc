@@ -41,7 +41,8 @@ class CustomTestBackend : public KVCacheStoreBackend {
   }
   tsl::Future<> Load(const RaidenId& remote_id,
                      absl::Span<const std::string> block_hashes,
-                     absl::Span<const int32_t> device_block_ids = {}) override {
+                     absl::Span<const int32_t> device_block_ids = {},
+                     absl::Span<const RaidenBlockID> slices = {}) override {
     return tsl::Future<>(absl::UnimplementedError("Load is not supported."));
   }
   std::pair<bool, BlockSliceList> Insert(absl::Span<const std::string>,

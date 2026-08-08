@@ -855,8 +855,8 @@ absl::Status KVCacheStore::Save(const std::vector<std::string>& block_hashes) {
   return absl::OkStatus();
 }
 
-absl::Status KVCacheStore::Load(const std::vector<std::string>& block_hashes,
-                                const std::vector<int>& device_block_ids) {
+absl::Status KVCacheStore::Load(absl::Span<const std::string> block_hashes,
+                                absl::Span<const int> device_block_ids) {
   if (block_hashes.size() != device_block_ids.size()) {
     return absl::InvalidArgumentError(
         "block_hashes and device_block_ids size mismatch");
@@ -922,15 +922,92 @@ absl::Status KVCacheStore::Load(const std::vector<std::string>& block_hashes,
     }
   }
 
-  tsl::Future<> future = backend()->Load(remote_id, block_hashes,
-                                         absl::MakeConstSpan(device_block_ids));
+  tsl::Future<> future =
+      backend()->Load(remote_id, block_hashes, device_block_ids);
 
   {
     absl::MutexLock lock(mutex_);
     active_loads_.push_back(LoadState{
         .future = std::move(future),
-        .block_hashes = block_hashes,
-        .device_block_ids = device_block_ids,
+        .block_hashes =
+            std::vector<std::string>(block_hashes.begin(), block_hashes.end()),
+        .device_block_ids =
+            std::vector<int>(device_block_ids.begin(), device_block_ids.end()),
+    });
+  }
+
+  return absl::OkStatus();
+}
+
+absl::Status KVCacheStore::Load(absl::Span<const std::string> block_hashes,
+                                absl::Span<const RaidenBlockID> slices,
+                                absl::Span<const int> device_block_ids) {
+  if (block_hashes.size() != slices.size() ||
+      slices.size() != device_block_ids.size()) {
+    return absl::InvalidArgumentError(
+        "block_hashes, slices, and device_block_ids size mismatch");
+  }
+  if (!raiden_controller_) {
+    return absl::FailedPreconditionError("RaidenController is not initialized");
+  }
+  if (block_hashes.empty()) {
+    return absl::OkStatus();
+  }
+
+  RaidenId remote_id;
+  {
+    absl::MutexLock lock(mutex_);
+
+    BlockStatus first_status = slices[0].status;
+    if (first_status == BlockStatus::REMOTE) {
+      remote_id = slices[0].raiden_id;
+    }
+
+    for (size_t i = 0; i < slices.size(); ++i) {
+      const auto& hash = block_hashes[i];
+      const auto& existing = slices[i];
+      if (loading_hashes_.contains(hash)) {
+        return absl::FailedPreconditionError(
+            absl::StrCat("Block is already loading: ", hash));
+      }
+
+      if (first_status == BlockStatus::REMOTE) {
+        if (existing.status != BlockStatus::REMOTE) {
+          return absl::InvalidArgumentError(
+              "Mixed block statuses in a single Load call");
+        }
+        if (existing.raiden_id != remote_id) {
+          return absl::InvalidArgumentError(
+              "Mixed remote node IDs in a single Load call");
+        }
+      } else {
+        if (existing.status != BlockStatus::HOST &&
+            existing.status != BlockStatus::HOST_AND_HBM) {
+          return absl::FailedPreconditionError(
+              absl::StrCat("Block is not on host: ", hash));
+        }
+        if (existing.host_block_id == -1) {
+          return absl::FailedPreconditionError(
+              absl::StrCat("Block host_block_id is -1: ", hash));
+        }
+      }
+    }
+    for (const auto& hash : block_hashes) {
+      loading_hashes_.insert(hash);
+    }
+  }
+
+  tsl::Future<> future =
+      backend()->Load(remote_id, block_hashes, device_block_ids, slices);
+
+  {
+    absl::MutexLock lock(mutex_);
+    active_loads_.push_back(LoadState{
+        .future = std::move(future),
+        .block_hashes =
+            std::vector<std::string>(block_hashes.begin(), block_hashes.end()),
+        .device_block_ids =
+            std::vector<int>(device_block_ids.begin(), device_block_ids.end()),
     });
   }
 

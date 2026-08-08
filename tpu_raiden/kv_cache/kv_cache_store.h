@@ -232,8 +232,14 @@ class KVCacheStore {
   //   2. load(block_hashes, device_block_ids)
   //   3. poll_load_status() -> wait for completion
   //   4. release(completed_block_hashes)
-  absl::Status Load(const std::vector<std::string>& block_hashes,
-                    const std::vector<int>& device_block_ids);
+  absl::Status Load(absl::Span<const std::string> block_hashes,
+                    absl::Span<const int> device_block_ids);
+
+  // Overload accepting pre-looked up RaidenBlockID slices.
+  // NOTE: Blocks in `slices` are assumed to be already pinned externally.
+  absl::Status Load(absl::Span<const std::string> block_hashes,
+                    absl::Span<const RaidenBlockID> slices,
+                    absl::Span<const int> device_block_ids);
 
   int GetPinCount(const std::string& hash) const;
 

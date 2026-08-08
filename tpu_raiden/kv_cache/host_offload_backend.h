@@ -131,7 +131,8 @@ class HostOffloadBackend : public KVCacheStoreBackend {
 
   tsl::Future<> Load(const RaidenId& remote_id,
                      absl::Span<const std::string> block_hashes,
-                     absl::Span<const int32_t> device_block_ids = {}) override;
+                     absl::Span<const int32_t> device_block_ids = {},
+                     absl::Span<const RaidenBlockID> slices = {}) override;
 
   // --- Remote write (WriteRemote); see KVCacheStoreBackend for why each of
   // these exists rather than reusing Lookup/Insert/Delete.
@@ -222,6 +223,14 @@ class HostOffloadBackend : public KVCacheStoreBackend {
 
   absl::StatusOr<std::shared_ptr<KVCacheStoreClient>> GetKVCacheStoreClient(
       const RaidenId& remote_id);
+
+  tsl::Future<> LoadRemoteBlocks(const RaidenId& remote_id,
+                                 absl::Span<const std::string> block_hashes,
+                                 absl::Span<const int32_t> device_block_ids);
+
+  tsl::Future<> LoadLocalHostBlocks(absl::Span<const std::string> block_hashes,
+                                    absl::Span<const int32_t> device_block_ids,
+                                    absl::Span<const RaidenBlockID> slices);
 
   void SetMetadataEntry(absl::string_view hash, const RaidenBlockID& block)
       ABSL_EXCLUSIVE_LOCKS_REQUIRED(mutex_);

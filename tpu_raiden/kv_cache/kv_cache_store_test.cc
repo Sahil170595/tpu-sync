@@ -1324,6 +1324,236 @@ TEST_F(KVCacheStoreEmbeddedControllerTest, LoadSuccess) {
   EXPECT_EQ((*lookup_res)[1].second.device_block_id, 3);
 }
 
+TEST_F(KVCacheStoreEmbeddedControllerTest, LoadWithSlicesSuccess) {
+  ::tpu_raiden::controller::MockTransferManager mock_mgr;
+  test_server_->service->SetTransferManager(
+      ::tpu_raiden::KVManagerHolder(&mock_mgr));
+
+  auto controller =
+      std::make_unique<::tpu_raiden::controller::RaidenController>(
+          unit_, 10, 1, 512, orchestrator_address_, "");
+  RegisterAndInitWorker(*controller, "worker_0", test_server_->server_address);
+
+  RaidenId rid{"test_job", "0", "test_cache", 0};
+  KVCacheStore store(10, std::move(controller), "", rid, std::nullopt,
+                     /*store_server_ip=*/"127.0.0.1");
+
+  std::vector<std::string> hashes = {"hash_1", "hash_2"};
+  std::vector<RaidenBlockID> slices = {
+      RaidenBlockID(rid, 0, -1, BlockStatus::HOST),
+      RaidenBlockID(rid, 1, -1, BlockStatus::HOST)};
+
+  ASSERT_TRUE(store.Insert(hashes, slices, true).first);
+  ASSERT_TRUE(store.Pin(hashes));
+
+  absl::Status status = store.Load(hashes, slices, {2, 3});
+  ASSERT_TRUE(status.ok()) << status.message();
+
+  bool done = false;
+  while (!done) {
+    auto [load_done, load_failed, load_pending] = store.PollLoadStatus();
+    if (!load_failed.empty()) {
+      FAIL() << "Async Load failed during polling";
+    }
+    if (!load_done.empty()) {
+      EXPECT_THAT(load_done,
+                  ::testing::UnorderedElementsAre("hash_1", "hash_2"));
+      done = true;
+    }
+    if (!done) {
+      absl::SleepFor(absl::Milliseconds(10));
+    }
+  }
+
+  EXPECT_EQ(mock_mgr.d2h_calls, 0);
+  EXPECT_EQ(mock_mgr.h2d_calls, 1);
+  EXPECT_THAT(mock_mgr.last_src_offsets, ElementsAre(0, 1));
+  EXPECT_THAT(mock_mgr.last_dst_offsets, ElementsAre(2, 3));
+
+  auto lookup_res = store.Lookup(hashes);
+  ASSERT_TRUE(lookup_res.ok());
+  ASSERT_EQ(lookup_res->size(), 2);
+  EXPECT_EQ((*lookup_res)[0].second.status, BlockStatus::HOST_AND_HBM);
+  EXPECT_EQ((*lookup_res)[0].second.host_block_id, 0);
+  EXPECT_EQ((*lookup_res)[0].second.device_block_id, 2);
+  EXPECT_EQ((*lookup_res)[1].second.status, BlockStatus::HOST_AND_HBM);
+  EXPECT_EQ((*lookup_res)[1].second.host_block_id, 1);
+  EXPECT_EQ((*lookup_res)[1].second.device_block_id, 3);
+}
+
+TEST_F(KVCacheStoreEmbeddedControllerTest, LoadWithSlicesSizeMismatch) {
+  auto controller =
+      std::make_unique<::tpu_raiden::controller::RaidenController>(
+          unit_, 10, 1, 512, orchestrator_address_, "");
+  RegisterAndInitWorker(*controller, "worker_0", test_server_->server_address);
+
+  RaidenId rid{"test_job", "0", "test_cache", 0};
+  KVCacheStore store(10, std::move(controller), "", rid, std::nullopt,
+                     /*store_server_ip=*/"127.0.0.1");
+
+  std::vector<std::string> hashes = {"hash_1", "hash_2"};
+  std::vector<RaidenBlockID> slices = {
+      RaidenBlockID(rid, 0, -1, BlockStatus::HOST)};
+
+  absl::Status status = store.Load(hashes, slices, {2, 3});
+  EXPECT_TRUE(absl::IsInvalidArgument(status));
+  EXPECT_THAT(std::string(status.message()), ::testing::HasSubstr("mismatch"));
+}
+
+TEST_F(KVCacheStoreEmbeddedControllerTest, LoadWithSlicesUnpinnedSucceeds) {
+  ::tpu_raiden::controller::MockTransferManager mock_mgr;
+  test_server_->service->SetTransferManager(
+      ::tpu_raiden::KVManagerHolder(&mock_mgr));
+
+  auto controller =
+      std::make_unique<::tpu_raiden::controller::RaidenController>(
+          unit_, 10, 1, 512, orchestrator_address_, "");
+  RegisterAndInitWorker(*controller, "worker_0", test_server_->server_address);
+
+  RaidenId rid{"test_job", "0", "test_cache", 0};
+  KVCacheStore store(10, std::move(controller), "", rid, std::nullopt,
+                     /*store_server_ip=*/"127.0.0.1");
+
+  std::vector<std::string> hashes = {"hash_1"};
+  std::vector<RaidenBlockID> slices = {
+      RaidenBlockID(rid, 0, -1, BlockStatus::HOST)};
+
+  ASSERT_TRUE(store.Insert(hashes, slices, true).first);
+
+  absl::Status status = store.Load(hashes, slices, {2});
+  EXPECT_TRUE(status.ok()) << status.message();
+}
+
+TEST_F(KVCacheStoreEmbeddedControllerTest, LoadWithSlicesAlreadyLoadingFails) {
+  auto controller =
+      std::make_unique<::tpu_raiden::controller::RaidenController>(
+          unit_, 10, 1, 512, orchestrator_address_, "");
+  RegisterAndInitWorker(*controller, "worker_0", test_server_->server_address);
+
+  RaidenId rid{"test_job", "0", "test_cache", 0};
+  KVCacheStore store(10, std::move(controller), "", rid, std::nullopt,
+                     /*store_server_ip=*/"127.0.0.1");
+
+  std::vector<std::string> hashes = {"hash_1"};
+  std::vector<RaidenBlockID> slices = {
+      RaidenBlockID(rid, 0, -1, BlockStatus::HOST)};
+
+  ASSERT_TRUE(store.Insert(hashes, slices, true).first);
+  ASSERT_TRUE(store.Pin(hashes));
+
+  absl::Status status1 = store.Load(hashes, slices, {2});
+  ASSERT_TRUE(status1.ok());
+
+  absl::Status status2 = store.Load(hashes, slices, {3});
+  EXPECT_TRUE(absl::IsFailedPrecondition(status2));
+  EXPECT_THAT(std::string(status2.message()),
+              ::testing::HasSubstr("Block is already loading"));
+}
+
+TEST_F(KVCacheStoreEmbeddedControllerTest, LoadWithSlicesMixedStatusesFails) {
+  auto controller =
+      std::make_unique<::tpu_raiden::controller::RaidenController>(
+          unit_, 10, 1, 512, orchestrator_address_, "");
+  RegisterAndInitWorker(*controller, "worker_0", test_server_->server_address);
+
+  RaidenId rid{"test_job", "0", "test_cache", 0};
+  RaidenId remote_rid{"remote_job", "0", "remote_cache", 0};
+  KVCacheStore store(10, std::move(controller), "", rid, std::nullopt,
+                     /*store_server_ip=*/"127.0.0.1");
+
+  std::vector<std::string> hashes = {"hash_1", "hash_2"};
+  std::vector<RaidenBlockID> slices = {
+      RaidenBlockID(remote_rid, 0, -1, BlockStatus::REMOTE),
+      RaidenBlockID(rid, 1, -1, BlockStatus::HOST)};
+
+  ASSERT_TRUE(store.Insert({"hash_1"}, {slices[0]}, /*on_host=*/false).first);
+  ASSERT_TRUE(store.Insert({"hash_2"}, {slices[1]}, /*on_host=*/true).first);
+  ASSERT_TRUE(store.Pin(hashes));
+
+  absl::Status status = store.Load(hashes, slices, {2, 3});
+  EXPECT_TRUE(absl::IsInvalidArgument(status));
+  EXPECT_THAT(std::string(status.message()),
+              ::testing::HasSubstr("Mixed block statuses"));
+}
+
+TEST_F(KVCacheStoreEmbeddedControllerTest, LoadWithSlicesRemoteSuccess) {
+  auto registry_server = global_registry::CreateTestGlobalRegistryServer();
+  std::string registry_address = registry_server->server_address;
+
+  RaidenId local_rid{"local_job", "0", "local_cache", 0};
+  RaidenId remote_rid{"remote_job", "0", "remote_cache", 0};
+
+  auto controller =
+      std::make_unique<::tpu_raiden::controller::RaidenController>(
+          unit_, 10, 1, 512, orchestrator_address_, "");
+  RegisterAndInitWorker(*controller, "worker_0", test_server_->server_address);
+
+  BackendConfig remote_config;
+  remote_config.type = "HostOffloadBackend";
+  remote_config.capacity = 100;
+  remote_config.global_registry_address = registry_address;
+  remote_config.raiden_id = remote_rid;
+
+  auto remote_backend_or =
+      HostOffloadBackend::Create(remote_config, controller.get());
+  ASSERT_OK(remote_backend_or.status());
+  auto remote_backend =
+      std::dynamic_pointer_cast<HostOffloadBackend>(*remote_backend_or);
+  ASSERT_NE(remote_backend, nullptr);
+
+  std::vector<RaidenBlockID> remote_slices = {
+      RaidenBlockID(remote_rid, 42, BlockStatus::HOST),
+  };
+  remote_backend->Insert({"load_remote_hash_1"}, remote_slices,
+                         /*on_host=*/true);
+
+  auto remote_server = KVCacheStoreServer::Create();
+  ASSERT_OK(remote_server->StartServer(remote_backend.get(), controller.get(),
+                                       "127.0.0.1"));
+
+  auto channel =
+      grpc::CreateChannel(registry_address, grpc::InsecureChannelCredentials());
+  auto registry_client =
+      std::make_shared<global_registry::GlobalRegistryClient>(channel);
+  ASSERT_OK(registry_client->RegisterStore(
+      remote_rid, remote_server->GetServerAddress(), orchestrator_address_));
+
+  KVCacheStore store(10, std::move(controller), registry_address, local_rid,
+                     std::nullopt, /*store_server_ip=*/"127.0.0.1");
+
+  std::vector<std::string> hashes = {"load_remote_hash_1"};
+  std::vector<RaidenBlockID> slices = {
+      RaidenBlockID(remote_rid, 42, BlockStatus::REMOTE)};
+
+  ASSERT_TRUE(store.Insert(hashes, slices, /*on_host=*/false).first);
+  ASSERT_TRUE(store.Pin(hashes));
+
+  absl::Status status = store.Load(hashes, slices, {5});
+  ASSERT_TRUE(status.ok()) << status.message();
+
+  bool done = false;
+  for (int attempt = 0; attempt < 100; ++attempt) {
+    auto [load_done, load_failed, load_pending] = store.PollLoadStatus();
+    ASSERT_TRUE(load_failed.empty());
+    if (!load_done.empty()) {
+      EXPECT_THAT(load_done,
+                  ::testing::UnorderedElementsAre("load_remote_hash_1"));
+      done = true;
+      break;
+    }
+    absl::SleepFor(absl::Milliseconds(10));
+  }
+  ASSERT_TRUE(done);
+
+  auto lookup_res = store.Lookup(hashes);
+  ASSERT_TRUE(lookup_res.ok());
+  ASSERT_EQ(lookup_res->size(), 1);
+  EXPECT_EQ((*lookup_res)[0].second.status, BlockStatus::HBM);
+  EXPECT_EQ((*lookup_res)[0].second.host_block_id, -1);
+  EXPECT_EQ((*lookup_res)[0].second.device_block_id, 5);
+  EXPECT_EQ((*lookup_res)[0].second.raiden_id, local_rid);
+}
+
 TEST_F(KVCacheStoreEmbeddedControllerTest, LoadRemoteSuccess) {
   // 1. Setup GlobalRegistry server
   auto registry_server = global_registry::CreateTestGlobalRegistryServer();
@@ -4120,7 +4350,8 @@ class ErrorLookupBackend : public KVCacheStoreBackend {
   }
   tsl::Future<> Load(const RaidenId& remote_id,
                      absl::Span<const std::string> block_hashes,
-                     absl::Span<const int32_t> device_block_ids = {}) override {
+                     absl::Span<const int32_t> device_block_ids = {},
+                     absl::Span<const RaidenBlockID> slices = {}) override {
     return {};
   }
   std::pair<bool, BlockSliceList> Insert(

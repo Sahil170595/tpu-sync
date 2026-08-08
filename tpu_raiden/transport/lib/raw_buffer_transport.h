@@ -45,8 +45,8 @@ struct RawProgress {
   std::optional<uint32_t> expected_chunks;
 };
 
-// Standalone raw buffer POSIX TCP socket transport engine.
-class RawBufferTransport {
+// Standalone raw buffer TCP socket transport engine.
+class RawBufferTransport final {
  public:
   using CustomRequestHandler = absl::AnyInvocable<absl::Status(
       int client_fd, const ChunkHeader& header)>;
@@ -94,13 +94,14 @@ class RawBufferTransport {
   void ListenerLoop();
 
  private:
-  RawBufferTransportDelegate* raw_delegate_;
+  RawBufferTransportDelegate* const raw_delegate_;
   CustomRequestHandler custom_request_handler_;
+
+  const std::string bound_ip_;
+  const std::vector<std::string> local_ips_;
   int local_port_;
-  std::atomic<int> server_fd_ = -1;  // owned by listener_thread_
-  std::string bound_ip_ = "127.0.0.1";
-  std::vector<std::string> local_ips_;
-  std::atomic<bool> stopping_{false};
+  std::atomic<int> server_fd_;  // owned by listener_thread_
+  std::atomic<bool> stopping_;
 
   // The active_client_fds do not own the sockets it contains. It is only used
   // to shutdown the sockets, thus unblocking worker_threads_. Each worker

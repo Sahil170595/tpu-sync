@@ -158,6 +158,8 @@ BlockTransport::BlockTransport(BlockTransportDelegate* delegate, int local_port,
                                int parallelism)
     : block_delegate_(delegate),
       parallelism_(parallelism),
+      rr_index_(0),
+      scheduler_stopping_(false),
       raw_transport_(delegate, local_port, local_ips,
                      [this](int client_fd, const lib::ChunkHeader& header) {
                        return HandleCustomRequest(client_fd, header);

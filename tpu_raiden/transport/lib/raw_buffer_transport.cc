@@ -138,7 +138,7 @@ absl::StatusOr<std::pair<int, int>> CreateSocket(const int port) {
   return fd_port.ok() ? fd_port : CreateTcpIPv4Socket(port);
 }
 
-inline bool IsSocketValid(int fd) { return fcntl(fd, F_GETFD) >= 0; }
+inline bool IsValidSocket(int fd) { return fcntl(fd, F_GETFD) >= 0; }
 }  // namespace
 
 RawBufferTransport::RawBufferTransport(
@@ -147,9 +147,11 @@ RawBufferTransport::RawBufferTransport(
     CustomRequestHandler custom_request_handler)
     : raw_delegate_(delegate),
       custom_request_handler_(std::move(custom_request_handler)),
-      local_port_(local_port),
       bound_ip_(local_ips.empty() ? "127.0.0.1" : local_ips[0]),
-      local_ips_(local_ips) {
+      local_ips_(local_ips),
+      local_port_(local_port),
+      server_fd_(-1),
+      stopping_(false) {
   // 1. Setup server listening socket.
   const absl::StatusOr<std::pair<int, int>> fd_port = CreateSocket(local_port_);
   if (!fd_port.ok()) {
@@ -162,7 +164,7 @@ RawBufferTransport::RawBufferTransport(
   local_port_ = fd_port->second;
   DCHECK_GE(server_fd_, 0);
   DCHECK(1 <= local_port_ && local_port_ <= 65535);
-  DCHECK(IsSocketValid(server_fd_));
+  DCHECK(IsValidSocket(server_fd_));
 
   if (listen(server_fd_, 128) < 0) {
     LOG(FATAL) << "Failed to listen on server socket: " << std::strerror(errno);
@@ -178,7 +180,7 @@ RawBufferTransport::~RawBufferTransport() {
   // 1. Listener side:
   // 1.1 Shutdown on all active sockets to unblock the threads.
   if (server_fd_ >= 0) {
-    DCHECK(IsSocketValid(server_fd_));
+    DCHECK(IsValidSocket(server_fd_));
     shutdown(server_fd_, SHUT_RDWR);
   }
   {
@@ -305,7 +307,6 @@ absl::Status RawBufferTransport::ProcessPeerRequest(int client_fd) {
       }
     }
 
-    // Read all payloads directly using ReadVExact.
     if (total_bytes > 0) {
       RETURN_IF_ERROR(ReadVExact(client_fd, iovs));
     }
@@ -377,7 +378,7 @@ void RawBufferTransport::ConnectionWorker(int client_fd) {
 
 void RawBufferTransport::ListenerLoop() {
   while (!stopping_) {
-    DCHECK(IsSocketValid(server_fd_));
+    DCHECK(IsValidSocket(server_fd_));
     struct pollfd pfd;
     pfd.fd = server_fd_;
     pfd.events = POLLIN;
@@ -411,10 +412,10 @@ void RawBufferTransport::ListenerLoop() {
         std::thread([this, client_fd]() { ConnectionWorker(client_fd); }));
   }
 
-  DCHECK(IsSocketValid(server_fd_));
+  DCHECK(IsValidSocket(server_fd_));
   close(server_fd_);
   server_fd_ = -1;
-  DCHECK(!IsSocketValid(server_fd_));
+  DCHECK(!IsValidSocket(server_fd_));
 }
 
 absl::Status RawBufferTransport::PullBuffer(
@@ -509,8 +510,9 @@ absl::Status RawBufferTransport::PushBuffer(absl::string_view peer,
           << " dst_shard=" << dst_shard_idx
           << " dst_offset=" << dst_offset_bytes << " size=" << size_bytes;
 
-  RETURN_IF_ERROR(WriteExact(fd, &header, sizeof(header)));
-  RETURN_IF_ERROR(WriteExact(fd, data_ptr, size_bytes));
+  const std::vector<struct iovec> iovs = {
+      {&header, sizeof(header)}, {const_cast<uint8_t*>(data_ptr), size_bytes}};
+  RETURN_IF_ERROR(WriteVExact(fd, iovs));
 
   uint8_t ack = 0;
   RETURN_IF_ERROR(ReadExact(fd, &ack, 1));

@@ -48,7 +48,7 @@ enum class MajorOrder : uint8_t {
 using BlockReceivedCallback = std::function<absl::Status(
     size_t layer_idx, size_t shard_idx, int block_id, size_t size_bytes)>;
 
-// High-speed Key-Value block transport engine extending RawBufferTransport.
+// High-speed Key-Value block transport engine.
 class BlockTransport final {
  public:
   BlockTransport(BlockTransportDelegate* delegate, int local_port,
@@ -171,6 +171,11 @@ class BlockTransport final {
     size_t total_steps = 0;
   };
 
+  struct LayerProgress {
+    size_t completed_chunks = 0;
+    bool on_layer_received_called = false;
+  };
+
   void TriggerNextSendStep(std::shared_ptr<SendStreamState> state);
   void ResolveStepCoordinates(const std::shared_ptr<SendStreamState>& state,
                               size_t* layer, size_t* shard, size_t* block_idx);
@@ -179,16 +184,13 @@ class BlockTransport final {
                                    const lib::ChunkHeader& header);
 
  private:
+  BlockTransportDelegate* const block_delegate_;
+  const int parallelism_;
+
   absl::Mutex active_sends_mu_;
   absl::flat_hash_map<uint64_t, std::shared_ptr<SendStreamState>> active_sends_
       ABSL_GUARDED_BY(active_sends_mu_);
 
-  BlockTransportDelegate* block_delegate_;
-
-  struct LayerProgress {
-    size_t completed_chunks = 0;
-    bool on_layer_received_called = false;
-  };
   absl::Mutex progress_mu_;
   absl::flat_hash_map<std::pair<uint64_t, int>, LayerProgress> layer_progress_
       ABSL_GUARDED_BY(progress_mu_);
@@ -198,9 +200,8 @@ class BlockTransport final {
   absl::flat_hash_map<std::string, PeerQueue> peer_queues_
       ABSL_GUARDED_BY(scheduler_mu_);
   std::vector<std::string> active_peers_ ABSL_GUARDED_BY(scheduler_mu_);
-  size_t rr_index_ ABSL_GUARDED_BY(scheduler_mu_) = 0;
-  int parallelism_ = 1;
-  std::atomic<bool> scheduler_stopping_{false};
+  size_t rr_index_ ABSL_GUARDED_BY(scheduler_mu_);
+  std::atomic<bool> scheduler_stopping_;
 
   lib::RawBufferTransport raw_transport_;
   std::vector<std::thread> socket_workers_;

@@ -24,6 +24,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cerrno>
 #include <cstddef>
@@ -510,8 +511,10 @@ absl::Status RawBufferTransport::PushBuffer(absl::string_view peer,
           << " dst_shard=" << dst_shard_idx
           << " dst_offset=" << dst_offset_bytes << " size=" << size_bytes;
 
-  const std::vector<struct iovec> iovs = {
-      {&header, sizeof(header)}, {const_cast<uint8_t*>(data_ptr), size_bytes}};
+  const std::array<struct iovec, 2> iovs = {
+      iovec(&header, sizeof(header)),
+      iovec(const_cast<uint8_t*>(data_ptr), size_bytes),
+  };
   RETURN_IF_ERROR(WriteVExact(fd, iovs));
 
   uint8_t ack = 0;

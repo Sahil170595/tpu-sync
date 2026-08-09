@@ -245,63 +245,6 @@ class TransferPlan:
   skip_tiling: dict[int, bool] = dataclasses.field(default_factory=dict)
 
 
-@dataclasses.dataclass(frozen=True)
-class PoolByteSpan:
-  """One contiguous (or uniformly strided) byte copy between one source and
-
-  one destination block of the same pool.
-
-  The byte-span registration IR: it mirrors ShardPushEntryProto fields 3-10,
-  so planning reduces to validate/bind/re-key with no token or unit
-  arithmetic. The ordinal indexes the owning registration's block_ids list;
-  the destination index addresses the transfer's destination id list —
-  never physical ids.
-  """
-
-  src_block_ordinal: int
-  src_offset_bytes: int
-  dst_block_index: int
-  dst_offset_bytes: int
-  size_bytes: int
-  src_stride_bytes: int = 0
-  dst_stride_bytes: int = 0
-  count: int = 1
-
-
-@dataclasses.dataclass(frozen=True)
-class PoolSpanRegistration:
-  """One rank's declared byte-span contribution to one pool tag."""
-
-  tag: str
-  block_ids: tuple[int, ...]
-  spans: tuple[PoolByteSpan, ...]
-  declared_bytes: int
-  # 0 (legacy): page-indexed destination spans. 1: request-global compact
-  # destination byte space; the controller performs the page split.
-  dst_space_version: int = 0
-
-
-@dataclasses.dataclass(frozen=True)
-class RequestBlockRegistration:
-  """Producer-owned block IDs and byte-span declarations for one request
-
-  and unit.
-  """
-
-  uuid: int
-  block_ids: tuple[int, ...]
-  expires_at: float
-  pool_spans: tuple[PoolSpanRegistration, ...] = ()
-
-
-@dataclasses.dataclass
-class RequestBlockCompletions:
-  """Per-rank terminal votes retained until the complete PCP group votes."""
-
-  units: set[RaidenId]
-  expires_at: float
-
-
 def _coerce_pool_spec_proto(pool: Any) -> Any:
   """Returns an owned PoolSpecProto from a proto, mapping, or dataclass."""
   result = raiden_service_pb2.PoolSpecProto()
@@ -997,23 +940,8 @@ class RaidenController:
     self._registered_page_tokens: dict[RaidenId, int] = {}
     self._registered_transfer_parallelism: dict[RaidenId, int] = {}
     self._registered_transfer_ranks: dict[RaidenId, int] = {}
-    self._request_blocks: dict[
-        tuple[str, RaidenId], RequestBlockRegistration
-    ] = {}
-    # Request-block lifecycle is keyed by the request's generation UUID. A
-    # planner claim freezes the D5 snapshot against cancellation; a cancellation
-    # tombstone prevents a producer's late D5 registration from resurrecting a
-    # request whose consumer has already given up. Both markers expire with the
-    # registry TTL so an abandoned request does not leak lifecycle state.
-    self._claimed_request_blocks: dict[tuple[str, int], float] = {}
-    self._claimed_request_block_units: dict[
-        tuple[str, int], frozenset[RaidenId]
-    ] = {}
-    self._claimed_request_block_owners: dict[tuple[str, int], Any] = {}
-    self._completed_request_block_units: dict[
-        tuple[str, int], RequestBlockCompletions
-    ] = {}
-    self._cancelled_request_blocks: dict[tuple[str, int], float] = {}
+    # The C++ reshard store owns the request-block registry lifecycle end to
+    # end; the Python controller does not allocate or expire these entries.
     if request_registry_ttl_s <= 0:
       raise ValueError("request_registry_ttl_s must be positive")
     self._request_registry_ttl_s = request_registry_ttl_s
@@ -1102,10 +1030,6 @@ class RaidenController:
 
     with self._lock:
       self._registered_shards[unit] = list(shards)
-      # A worker restart invalidates every request-local physical block ID
-      # previously reported by that identity.
-      for key in [key for key in self._request_blocks if key[1] == unit]:
-        del self._request_blocks[key]
       # Registration is replacement, not a patch: stale optional metadata
       # must disappear when a unit restarts with a different payload.
       for registry in (
@@ -1188,76 +1112,6 @@ class RaidenController:
         raise ValueError(f"Work unit is not registered: {unit}")
       return list(shards)
 
-  def _purge_expired_request_blocks_locked(self, *args, **kwargs):
-    """REMOVED: the Python pool-reshard implementation is retired."""
-    raise RuntimeError(
-        "RaidenController._purge_expired_request_blocks_locked was removed after the phase-B C++"
-        " migration: the pool-reshard path is served by the C++ reshard"
-        " store (see RESHARD_PHASE_B_RUN_REPORT.md)")
-
-  def _purge_expired_request_block_lifecycle_locked(self, *args, **kwargs):
-    """REMOVED: the Python pool-reshard implementation is retired."""
-    raise RuntimeError(
-        "RaidenController._purge_expired_request_block_lifecycle_locked was removed after the phase-B C++"
-        " migration: the pool-reshard path is served by the C++ reshard"
-        " store (see RESHARD_PHASE_B_RUN_REPORT.md)")
-
-  def _retire_request_blocks_locked(self, *args, **kwargs):
-    """REMOVED: the Python pool-reshard implementation is retired."""
-    raise RuntimeError(
-        "RaidenController._retire_request_blocks_locked was removed after the phase-B C++"
-        " migration: the pool-reshard path is served by the C++ reshard"
-        " store (see RESHARD_PHASE_B_RUN_REPORT.md)")
-
-  def register_request_blocks(self, *args, **kwargs):
-    """REMOVED: the Python pool-reshard implementation is retired."""
-    raise RuntimeError(
-        "RaidenController.register_request_blocks was removed after the phase-B C++"
-        " migration: the pool-reshard path is served by the C++ reshard"
-        " store (see RESHARD_PHASE_B_RUN_REPORT.md)")
-
-  def release_request_blocks(self, *args, **kwargs):
-    """REMOVED: the Python pool-reshard implementation is retired."""
-    raise RuntimeError(
-        "RaidenController.release_request_blocks was removed after the phase-B C++"
-        " migration: the pool-reshard path is served by the C++ reshard"
-        " store (see RESHARD_PHASE_B_RUN_REPORT.md)")
-
-  def complete_request_blocks(self, *args, **kwargs):
-    """REMOVED: the Python pool-reshard implementation is retired."""
-    raise RuntimeError(
-        "RaidenController.complete_request_blocks was removed after the phase-B C++"
-        " migration: the pool-reshard path is served by the C++ reshard"
-        " store (see RESHARD_PHASE_B_RUN_REPORT.md)")
-
-  def cancel_request_blocks_if_unclaimed(self, *args, **kwargs):
-    """REMOVED: the Python pool-reshard implementation is retired."""
-    raise RuntimeError(
-        "RaidenController.cancel_request_blocks_if_unclaimed was removed after the phase-B C++"
-        " migration: the pool-reshard path is served by the C++ reshard"
-        " store (see RESHARD_PHASE_B_RUN_REPORT.md)")
-
-  def _lookup_request_blocks(self, *args, **kwargs):
-    """REMOVED: the Python pool-reshard implementation is retired."""
-    raise RuntimeError(
-        "RaidenController._lookup_request_blocks was removed after the phase-B C++"
-        " migration: the pool-reshard path is served by the C++ reshard"
-        " store (see RESHARD_PHASE_B_RUN_REPORT.md)")
-
-  def _abandon_request_blocks_claim(self, *args, **kwargs):
-    """REMOVED: the Python pool-reshard implementation is retired."""
-    raise RuntimeError(
-        "RaidenController._abandon_request_blocks_claim was removed after the phase-B C++"
-        " migration: the pool-reshard path is served by the C++ reshard"
-        " store (see RESHARD_PHASE_B_RUN_REPORT.md)")
-
-  def get_plan(self, *args, **kwargs):
-    """REMOVED: the Python pool-reshard implementation is retired."""
-    raise RuntimeError(
-        "RaidenController.get_plan was removed after the phase-B C++"
-        " migration: the pool-reshard path is served by the C++ reshard"
-        " store (see RESHARD_PHASE_B_RUN_REPORT.md)")
-
   async def _query_remote_metadata(self, addr: str) -> list[Any]:
     req = raiden_service_pb2.ControlRequest(
         command=raiden_service_pb2.ControlRequest.COMMAND_GET_METADATA
@@ -1296,20 +1150,6 @@ class RaidenController:
     if missing:
       raise ValueError(f"Missing registration metadata for {missing}")
     return result
-
-  def _build_pool_reshard_plan(self, *args, **kwargs):
-    """REMOVED: the Python pool-reshard implementation is retired."""
-    raise RuntimeError(
-        "RaidenController._build_pool_reshard_plan was removed after the phase-B C++"
-        " migration: the pool-reshard path is served by the C++ reshard"
-        " store (see RESHARD_PHASE_B_RUN_REPORT.md)")
-
-  def _build_byte_span_plan_claimed(self, *args, **kwargs):
-    """REMOVED: the Python pool-reshard implementation is retired."""
-    raise RuntimeError(
-        "RaidenController._build_byte_span_plan_claimed was removed after the phase-B C++"
-        " migration: the pool-reshard path is served by the C++ reshard"
-        " store (see RESHARD_PHASE_B_RUN_REPORT.md)")
 
   async def _execute_slice_broadcast(
       self,
@@ -2692,39 +2532,9 @@ class RaidenControllerServer:
       ):
         resp = self._proto_module.ControllerResponse()
         resp.success = False
-        try:
-          block_req = req.register_request_blocks_request
-          self._controller.register_request_blocks(
-              block_req.req_id,
-              block_req.uuid,
-              _raiden_id_from_proto(block_req.unit),
-              list(block_req.block_ids),
-              pool_spans=[
-                  PoolSpanRegistration(
-                      tag=entry.tag,
-                      block_ids=tuple(entry.block_ids),
-                      spans=tuple(
-                          PoolByteSpan(
-                              src_block_ordinal=span.src_block_ordinal,
-                              src_offset_bytes=span.src_offset_bytes,
-                              dst_block_index=span.dst_block_index,
-                              dst_offset_bytes=span.dst_offset_bytes,
-                              size_bytes=span.size_bytes,
-                              src_stride_bytes=span.src_stride_bytes,
-                              dst_stride_bytes=span.dst_stride_bytes,
-                              count=span.count,
-                          )
-                          for span in entry.spans
-                      ),
-                      declared_bytes=entry.declared_bytes,
-                      dst_space_version=entry.dst_space_version,
-                  )
-                  for entry in block_req.pool_spans
-              ],
-          )
-          resp.success = True
-        except Exception as e:  # pylint: disable=broad-except
-          resp.message = str(e)
+        resp.message = (
+            "the Python request-block registration surface is unavailable; "
+            "use the C++ reshard store")
         resp_bytes = resp.SerializeToString()
         conn.sendall(len(resp_bytes).to_bytes(4, "big") + resp_bytes)
       elif (
@@ -2734,21 +2544,9 @@ class RaidenControllerServer:
       ):
         resp = self._proto_module.ControllerResponse()
         resp.success = False
-        try:
-          release_req = req.release_request_blocks_request
-          if not release_req.force:
-            raise ValueError(
-                "Legacy rank-local release is unsafe; use the aggregate "
-                "completion-vote RPC"
-            )
-          released = self._controller.release_request_blocks(
-              release_req.req_id,
-              release_req.uuid,
-          )
-          resp.response_data = str(released)
-          resp.success = True
-        except Exception as e:  # pylint: disable=broad-except
-          resp.message = str(e)
+        resp.message = (
+            "the Python request-block release surface is unavailable; use "
+            "the C++ reshard store")
         resp_bytes = resp.SerializeToString()
         conn.sendall(len(resp_bytes).to_bytes(4, "big") + resp_bytes)
       elif (
@@ -2758,17 +2556,9 @@ class RaidenControllerServer:
       ):
         resp = self._proto_module.ControllerResponse()
         resp.success = False
-        try:
-          complete_req = req.complete_request_blocks_request
-          released = self._controller.complete_request_blocks(
-              complete_req.req_id,
-              complete_req.uuid,
-              _raiden_id_from_proto(complete_req.unit),
-          )
-          resp.response_data = str(released)
-          resp.success = True
-        except Exception as e:  # pylint: disable=broad-except
-          resp.message = str(e)
+        resp.message = (
+            "the Python request-block completion surface is unavailable; "
+            "use the C++ reshard store")
         resp_bytes = resp.SerializeToString()
         conn.sendall(len(resp_bytes).to_bytes(4, "big") + resp_bytes)
       elif req.command == (
@@ -2776,15 +2566,9 @@ class RaidenControllerServer:
       ) and req.HasField("cancel_request_blocks_if_unclaimed_request"):
         resp = self._proto_module.ControllerResponse()
         resp.success = False
-        try:
-          cancel_req = req.cancel_request_blocks_if_unclaimed_request
-          cancelled = self._controller.cancel_request_blocks_if_unclaimed(
-              cancel_req.req_id, cancel_req.uuid
-          )
-          resp.response_data = "true" if cancelled else "false"
-          resp.success = True
-        except Exception as e:  # pylint: disable=broad-except
-          resp.message = str(e)
+        resp.message = (
+            "the Python request-block cancellation surface is unavailable; "
+            "use the C++ reshard store")
         resp_bytes = resp.SerializeToString()
         conn.sendall(len(resp_bytes).to_bytes(4, "big") + resp_bytes)
       else:
@@ -3127,92 +2911,6 @@ class RaidenControllerClientFacade:
         register_work_unit_request=reg_req,
     )
     self._send_raiden_protobuf_rpc(req)
-
-  def register_request_blocks(
-      self,
-      req_id: str,
-      uuid: int,
-      unit: RaidenId,
-      block_ids: typing.Sequence[int],
-      pool_spans: typing.Sequence[Any] = (),
-  ) -> None:
-    """Registers producer-owned block IDs and declared spans (D5)."""
-    block_req = self._proto_module.RegisterRequestBlocksRequest(
-        req_id=req_id,
-        uuid=uuid,
-        unit=self._raiden_id_to_proto(unit),
-        block_ids=list(block_ids),
-    )
-    for entry in pool_spans:
-      entry_proto = block_req.pool_spans.add(
-          tag=str(entry.tag),
-          block_ids=[int(block_id) for block_id in entry.block_ids],
-          declared_bytes=int(entry.declared_bytes),
-          dst_space_version=int(getattr(entry, "dst_space_version", 0)),
-      )
-      for span in entry.spans:
-        entry_proto.spans.add(
-            src_block_ordinal=int(span.src_block_ordinal),
-            src_offset_bytes=int(span.src_offset_bytes),
-            dst_block_index=int(span.dst_block_index),
-            dst_offset_bytes=int(span.dst_offset_bytes),
-            size_bytes=int(span.size_bytes),
-            src_stride_bytes=int(span.src_stride_bytes),
-            dst_stride_bytes=int(span.dst_stride_bytes),
-            count=int(span.count),
-        )
-    req = self._proto_module.ControllerRequest(
-        command=self._proto_module.ControllerRequest.COMMAND_REGISTER_REQUEST_BLOCKS,
-        register_request_blocks_request=block_req,
-    )
-    self._send_protobuf_rpc(req)
-
-  def release_request_blocks(self, req_id: str, uuid: int) -> None:
-    """Explicitly force-releases a complete request lifecycle generation."""
-    release_req = self._proto_module.ReleaseRequestBlocksRequest(
-        req_id=req_id, uuid=uuid, force=True
-    )
-    req = self._proto_module.ControllerRequest(
-        command=self._proto_module.ControllerRequest.COMMAND_RELEASE_REQUEST_BLOCKS,
-        release_request_blocks_request=release_req,
-    )
-    self._send_protobuf_rpc(req)
-
-  def complete_request_blocks(
-      self, req_id: str, uuid: int, unit: RaidenId
-  ) -> None:
-    """Votes one producer rank terminal using the aggregate-safe protocol."""
-    complete_req = self._proto_module.CompleteRequestBlocksRequest(
-        req_id=req_id,
-        uuid=uuid,
-        unit=self._raiden_id_to_proto(unit),
-    )
-    req = self._proto_module.ControllerRequest(
-        command=self._proto_module.ControllerRequest.COMMAND_COMPLETE_REQUEST_BLOCKS,
-        complete_request_blocks_request=complete_req,
-    )
-    self._send_protobuf_rpc(req)
-
-  def cancel_request_blocks_if_unclaimed(self, req_id: str, uuid: int) -> bool:
-    """Cancels D5 state unless a transfer plan has already claimed it."""
-    cancel_req = self._proto_module.CancelRequestBlocksIfUnclaimedRequest(
-        req_id=req_id, uuid=uuid
-    )
-    req = self._proto_module.ControllerRequest(
-        command=(
-            self._proto_module.ControllerRequest.COMMAND_CANCEL_REQUEST_BLOCKS_IF_UNCLAIMED
-        ),
-        cancel_request_blocks_if_unclaimed_request=cancel_req,
-    )
-    response = self._send_protobuf_rpc(req)
-    if response.response_data == "true":
-      return True
-    if response.response_data == "false":
-      return False
-    raise RuntimeError(
-        "Remote Controller Server returned an invalid cancellation result: "
-        f"{response.response_data!r}"
-    )
 
   def coordinate_transfer(
       self,

@@ -220,3 +220,22 @@ cc_test(
         "@com_google_googletest//:gtest_main",
     ],
 )
+
+cc_library(
+    name = "reshard_client",
+    srcs = ["reshard_client.cc"],
+    hdrs = ["reshard_client.h"],
+    copts = RESHARD_COPTS,
+    features = ["-use_header_modules"],
+    deps = [
+        ":declaration_types",
+        ":framed_rpc",
+        "//tpu_raiden/kv_cache:raiden_id",
+        "//tpu_raiden/rpc:controller_service_cc_proto",
+        "//tpu_raiden/rpc:raiden_service_cc_proto",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/time",
+    ],
+)

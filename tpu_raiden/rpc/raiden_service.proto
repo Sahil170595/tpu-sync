@@ -72,6 +72,7 @@ message VariableMetadataProto {
   repeated int32 layout = 4;
   int32 item_size = 5;
   int32 layer_idx = 6;
+  repeated string sharding_spec = 7;
 }
 
 message RegisterWorkUnitRequest {
@@ -95,6 +96,8 @@ message RegisterWorkUnitRequest {
 
   // Multi-variable manifest
   repeated VariableMetadataProto variables = 14;
+  // Optional list of logical mesh axis names (e.g. ['fsdp', 'tp']).
+  repeated string mesh_axes = 15;
 }
 
 // Defines an explicit 1D linear memory push operation from a local source to a

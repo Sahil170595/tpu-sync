@@ -2649,5 +2649,201 @@ def _byte_spans_for_rank(
   return spans, local_cursor
 
 
+class GetGlobalIndicesTest(absltest.TestCase):
+
+  def test_single_host(self):
+    unit = raiden_controller.RaidenId("trainer", "0", "weights")
+    shards = ["10.0.0.1:8000"] * 4
+    indices = raiden_controller._get_global_indices(
+        unit,
+        shards,
+        logical_mesh_shape=[1, 4],
+        layout=[1, 0],
+        num_physical_hosts=1,
+    )
+    self.assertEqual(indices, [(0, 0), (1, 1), (2, 2), (3, 3)])
+
+  def test_multi_host_matching_axis(self):
+    unit = raiden_controller.RaidenId("trainer", "1", "weights")
+    shards = ["10.0.0.2:8000"] * 4
+    indices = raiden_controller._get_global_indices(
+        unit,
+        shards,
+        logical_mesh_shape=[4, 4],
+        layout=[1, 0],
+        num_physical_hosts=4,
+    )
+    self.assertEqual(indices, [(0, 4), (1, 5), (2, 6), (3, 7)])
+
+  def test_multi_host_non_matching_axis_fallback_without_spec(self):
+    unit = raiden_controller.RaidenId("trainer", "1", "weights")
+    shards = ["10.0.0.2:8000"] * 4
+    indices = raiden_controller._get_global_indices(
+        unit,
+        shards,
+        logical_mesh_shape=[8, 2],
+        layout=[1, 0],
+        num_physical_hosts=4,
+    )
+    self.assertEqual(indices, [(0, 0), (1, 1), (2, 2), (3, 3)])
+
+  def test_multi_host_non_matching_axis_with_spec(self):
+    unit = raiden_controller.RaidenId("trainer", "1", "weights")
+    shards = ["10.0.0.2:8000"] * 4
+    indices = raiden_controller._get_global_indices(
+        unit,
+        shards,
+        logical_mesh_shape=[8, 2],
+        layout=[1, 0],
+        num_physical_hosts=4,
+        sharding_spec=["tp", "fsdp"],
+        mesh_axes=["fsdp", "tp"],
+        physical_mesh_shape=[2, 8],
+    )
+    self.assertEqual(indices, [(0, 8), (1, 10), (2, 12), (3, 14)])
+
+  def test_multi_host_non_matching_axis_with_spec_fsdp_major_var(self):
+    unit = raiden_controller.RaidenId("trainer", "1", "weights")
+    shards = ["10.0.0.2:8000"] * 4
+    indices = raiden_controller._get_global_indices(
+        unit,
+        shards,
+        logical_mesh_shape=[2, 8],
+        layout=[1, 0],
+        num_physical_hosts=4,
+        sharding_spec=["fsdp", "tp"],
+        mesh_axes=["fsdp", "tp"],
+        physical_mesh_shape=[2, 8],
+    )
+    self.assertEqual(indices, [(0, 4), (1, 5), (2, 6), (3, 7)])
+
+  def test_replicated_variable(self):
+    unit = raiden_controller.RaidenId("trainer", "1", "weights")
+    shards = ["10.0.0.2:8000"] * 4
+    indices = raiden_controller._get_global_indices(
+        unit,
+        shards,
+        logical_mesh_shape=[1, 1],
+        layout=[1, 0],
+        num_physical_hosts=4,
+    )
+    self.assertEqual(indices, [(0, 0), (1, 0), (2, 0), (3, 0)])
+
+  def test_variable_resharding_with_grouping(self):
+    client = RecordingWorkerRpcClient()
+    controller = raiden_controller.RaidenController(
+        port=10005, worker_rpc_client=client
+    )
+
+    src = raiden_controller.RaidenId(
+        job_name="trainer", job_replica_id="0", data_name="weights"
+    )
+    target_0 = raiden_controller.RaidenId(
+        job_name="inference_server", job_replica_id="0", data_name="weights"
+    )
+    target_1 = raiden_controller.RaidenId(
+        job_name="inference_server", job_replica_id="1", data_name="weights"
+    )
+
+    variables_src = [
+        raiden_service_pb2.VariableMetadataProto(
+            name=f"weights_{i}",
+            shape=[8, 8],
+            mesh_shape=[1, 2],
+            layout=[-1, 0],
+            item_size=4,
+            layer_idx=i,
+        )
+        for i in range(4)
+    ]
+
+    variables_dst = [
+        raiden_service_pb2.VariableMetadataProto(
+            name=f"weights_{i}",
+            shape=[8, 8],
+            mesh_shape=[
+                1,
+                1,
+            ],  # Use [1, 1] to trigger replicated branch in _get_global_indices
+            layout=[-1, -1],
+            item_size=4,
+            layer_idx=i,
+        )
+        for i in range(4)
+    ]
+
+    controller.register_work_unit(
+        src,
+        ["10.0.0.1:8000", "10.0.0.1:8000"],  # 2 shards
+        mesh_shape=[1, 2],
+        layout=[-1, 0],
+        global_shape=[8, 8],
+        itemsize=4,
+        control_plane_rpc_address="10.0.0.1:9000",
+        variables=variables_src,
+    )
+    controller.register_work_unit(
+        target_0,
+        ["10.0.0.2:8000", "10.0.0.2:8000"],  # 2 shards
+        mesh_shape=[1, 2],
+        layout=[-1, -1],
+        global_shape=[8, 8],
+        itemsize=4,
+        control_plane_rpc_address="10.0.0.2:9000",
+        variables=variables_dst,
+    )
+    controller.register_work_unit(
+        target_1,
+        ["10.0.0.3:8000", "10.0.0.3:8000"],  # 2 shards
+        mesh_shape=[1, 2],
+        layout=[-1, -1],
+        global_shape=[8, 8],
+        itemsize=4,
+        control_plane_rpc_address="10.0.0.3:9000",
+        variables=variables_dst,
+    )
+
+    future = controller.start_transfer(
+        src_units=[src],
+        dst_units=[target_0, target_1],
+        use_block_chunks=True,
+        group_size=2,
+    )
+    asyncio.run(future.wait())
+
+    # Filter out D2H calls
+    src_calls = [
+        call
+        for call in client.calls
+        if call[0] == src and "_d2h_" not in call[1].req_id
+    ]
+    target_0_calls = [
+        call
+        for call in client.calls
+        if call[0] == target_0 and "_d2h_" not in call[1].req_id
+    ]
+    target_1_calls = [
+        call
+        for call in client.calls
+        if call[0] == target_1 and "_d2h_" not in call[1].req_id
+    ]
+
+    self.assertLen(src_calls, 8)
+    self.assertLen(target_0_calls, 4)
+    self.assertLen(target_1_calls, 4)
+
+    for _, plan in src_calls:
+      self.assertIsNotNone(plan.shard_push_schedules)
+      schedules = plan.shard_push_schedules.get(src)
+      if schedules:
+        for shard_idx, entries in schedules.items():
+          self.assertLen(entries, 4)  # 2 variables * 2 devices
+          dst_shards = [entry[1] for entry in entries]
+          self.assertEqual(sorted(dst_shards), [0, 0, 1, 1])
+          layer_indices = [entry[10] for entry in entries]
+          self.assertEqual(len(set(layer_indices)), 2)
+          self.assertEqual(layer_indices[0] // 2, layer_indices[2] // 2)
+
+
 if __name__ == "__main__":
   absltest.main()

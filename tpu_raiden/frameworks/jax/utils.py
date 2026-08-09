@@ -222,34 +222,71 @@ def get_shard_sorting_permutation(arr: jax.Array) -> list[int]:
       host_axis_logical = d
       break
 
-  non_host_axes = [
-      d for d in range(len(logical_mesh_shape)) if d != host_axis_logical
-  ]
+  if host_axis_logical is not None:
+    non_host_axes = [
+        d for d in range(len(logical_mesh_shape)) if d != host_axis_logical
+    ]
 
-  controller_global_indices = []
-  for j in range(num_shards):
-    local_coords = {}
-    temp = j
-    for d in reversed(non_host_axes):
-      size = logical_mesh_shape[d]
-      local_coords[d] = temp % size
-      temp = temp // size
+    controller_global_indices = []
+    for j in range(num_shards):
+      local_coords = {}
+      temp = j
+      for d in reversed(non_host_axes):
+        size = logical_mesh_shape[d]
+        local_coords[d] = temp % size
+        temp = temp // size
 
-    full_coords = [0] * len(logical_mesh_shape)
-    for d in range(len(logical_mesh_shape)):
-      if d == host_axis_logical:
-        full_coords[d] = replica_id
-      else:
-        full_coords[d] = local_coords.get(d, 0)
+      full_coords = [0] * len(logical_mesh_shape)
+      for d in range(len(logical_mesh_shape)):
+        if d == host_axis_logical:
+          full_coords[d] = replica_id
+        else:
+          full_coords[d] = local_coords.get(d, 0)
 
-    tensor_coords = [full_coords[m_axis] for m_axis in major_to_minor]
+      tensor_coords = [full_coords[m_axis] for m_axis in major_to_minor]
 
-    global_idx = 0
-    stride = 1
-    for val, size in zip(reversed(tensor_coords), reversed(phys_mesh)):
-      global_idx += val * stride
-      stride *= size
-    controller_global_indices.append(global_idx)
+      global_idx = 0
+      stride = 1
+      for val, size in zip(reversed(tensor_coords), reversed(phys_mesh)):
+        global_idx += val * stride
+        stride *= size
+      controller_global_indices.append(global_idx)
+  else:
+    # Use physical mesh mapping when host_axis_logical is not found
+    devices_per_host = jax.local_device_count()
+    controller_global_indices = []
+    for j in range(num_shards):
+      global_device_id = replica_id * devices_per_host + j
+      if global_device_id >= mesh.devices.size:
+        raise ValueError(
+            f'global_device_id {global_device_id} out of bounds for mesh size'
+            f' {mesh.devices.size}'
+        )
+      device = mesh.devices.flat[global_device_id]
+      coords = np.argwhere(mesh.devices == device)
+      m_coords = coords[0]
+      full_coords = list(m_coords)
+
+      tensor_coords = []
+      tensor_shape = []
+      for axis in spec:
+        if axis is None:
+          tensor_coords.append(0)
+          tensor_shape.append(1)
+        elif isinstance(axis, str):
+          tensor_coords.append(full_coords[mesh.axis_names.index(axis)])
+          tensor_shape.append(mesh.shape[axis])
+        else:
+          for ax in axis:
+            tensor_coords.append(full_coords[mesh.axis_names.index(ax)])
+            tensor_shape.append(mesh.shape[ax])
+
+      global_idx = 0
+      stride = 1
+      for val, size in zip(reversed(tensor_coords), reversed(tensor_shape)):
+        global_idx += val * stride
+        stride *= size
+      controller_global_indices.append(global_idx)
 
   # 3. Compute ACTUAL JAX global shard indices
   jax_shard_global_indices = []

@@ -22,8 +22,8 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from tpu_raiden.frameworks.jax import utils
 from tpu_raiden.api.jax import weight_synchronizer
+from tpu_raiden.frameworks.jax import utils
 from tpu_raiden.rpc import raiden_service_pb2
 
 
@@ -314,7 +314,9 @@ class ShardSortingUtilTest(absltest.TestCase):
     )
     arr = jax.device_put(jnp.zeros((8, 8)), sharding)
     perm = utils.get_shard_sorting_permutation(arr)
-    self.assertEqual(perm, [0, 2, 1, 3])
+    # No permutation is needed because JAX device order matches the
+    # controller's physical mapping order for this transposed sharding.
+    self.assertEqual(perm, [])
 
   def test_replicated_sharding_permutation(self):
     sharding = jax.sharding.NamedSharding(

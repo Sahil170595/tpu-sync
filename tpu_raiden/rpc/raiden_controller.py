@@ -55,6 +55,7 @@ class _VariableMetadata:
   layout: list[int]
   item_size: int
   layer_idx: int
+  sharding_spec: list[str] = dataclasses.field(default_factory=list)
 
 
 def to_physical(logical_shape, logical_mesh_shape, minor_to_major):
@@ -125,6 +126,9 @@ def _get_global_indices(
     logical_mesh_shape: list[int],
     layout: list[int],
     num_physical_hosts: int,
+    sharding_spec: Optional[list[str]] = None,
+    mesh_axes: Optional[list[str]] = None,
+    physical_mesh_shape: Optional[list[int]] = None,
 ) -> list[tuple[int, int]]:
   """Maps local shard indices to global slice indices, handling replication."""
   num_shards = len(shards)
@@ -139,6 +143,9 @@ def _get_global_indices(
   if not logical_mesh_shape:
     return [(i, i) for i in range(num_shards)]
 
+  if all(d == 1 for d in logical_mesh_shape):
+    return [(i, 0) for i in range(num_shards)]
+
   major_to_minor = list(reversed(layout))
   phys_mesh = [logical_mesh_shape[d] for d in major_to_minor]
 
@@ -148,37 +155,93 @@ def _get_global_indices(
       host_axis_logical = d
       break
 
-  non_host_axes = [
-      d for d in range(len(logical_mesh_shape)) if d != host_axis_logical
-  ]
+  use_spec_mapping = (
+      host_axis_logical is None
+      and sharding_spec
+      and mesh_axes
+      and physical_mesh_shape
+  )
 
-  indices = []
-  for j in range(num_shards):
-    local_coords = {}
-    temp = j
-    for d in reversed(non_host_axes):
-      size = logical_mesh_shape[d]
-      local_coords[d] = temp % size
-      temp = temp // size
+  if use_spec_mapping:
+    # Use physical mesh mapping when host_axis_logical is not found
+    devices_per_host = num_shards
+    indices = []
+    for j in range(num_shards):
+      global_device_id = replica_id * devices_per_host + j
 
-    full_coords = [0] * len(logical_mesh_shape)
-    for d in range(len(logical_mesh_shape)):
-      if d == host_axis_logical:
-        full_coords[d] = replica_id
-      else:
-        full_coords[d] = local_coords[d]
+      # Reconstruct physical mesh coordinates from global_device_id (row-major)
+      phys_coords = []
+      temp = global_device_id
+      for size in reversed(physical_mesh_shape):
+        phys_coords.append(temp % size)
+        temp //= size
+      phys_coords.reverse()
 
-    tensor_coords = [full_coords[m_axis] for m_axis in major_to_minor]
+      # Map physical coordinates to tensor dimensions using sharding_spec
+      tensor_coords = []
+      for axis_name in sharding_spec:
+        if not axis_name:
+          tensor_coords.append(0)
+        else:
+          try:
+            phys_axis_idx = mesh_axes.index(axis_name)
+            tensor_coords.append(phys_coords[phys_axis_idx])
+          except ValueError:
+            logging.warning(
+                "Spec axis %s not found in mesh axes %s", axis_name, mesh_axes
+            )
+            tensor_coords.append(0)
 
-    global_idx = 0
-    stride = 1
-    for val, size in zip(reversed(tensor_coords), reversed(phys_mesh)):
-      global_idx += val * stride
-      stride *= size
-    indices.append((j, global_idx))
+      # Compute flat index in logical_mesh_shape (row-major)
+      global_idx = 0
+      stride = 1
+      for val, size in zip(
+          reversed(tensor_coords), reversed(logical_mesh_shape)
+      ):
+        global_idx += val * stride
+        stride *= size
+      indices.append((j, global_idx))
 
-  logging.info("_get_global_indices computed indices: %s", indices)
-  return indices
+    return indices
+
+  else:
+    if host_axis_logical is None:
+      logging.warning(
+          "host_axis_logical is None and sharding_spec, mesh_axes, or"
+          " physical_mesh_shape is missing for %s. Falling back to legacy"
+          " mapping.",
+          unit,
+      )
+
+    non_host_axes = [
+        d for d in range(len(logical_mesh_shape)) if d != host_axis_logical
+    ]
+
+    indices = []
+    for j in range(num_shards):
+      local_coords = {}
+      temp = j
+      for d in reversed(non_host_axes):
+        size = logical_mesh_shape[d]
+        local_coords[d] = temp % size
+        temp = temp // size
+
+      full_coords = [0] * len(logical_mesh_shape)
+      for d in range(len(logical_mesh_shape)):
+        if d == host_axis_logical:
+          full_coords[d] = replica_id
+        else:
+          full_coords[d] = local_coords[d]
+
+      tensor_coords = [full_coords[m_axis] for m_axis in major_to_minor]
+
+      global_idx = 0
+      stride = 1
+      for val, size in zip(reversed(tensor_coords), reversed(phys_mesh)):
+        global_idx += val * stride
+        stride *= size
+      indices.append((j, global_idx))
+    return indices
 
 
 @dataclasses.dataclass
@@ -629,7 +692,7 @@ class WorkerRpcClient:
     return await loop.run_in_executor(None, self._send_rpc_sync, addr, payload)
 
   def _send_rpc_sync(self, addr: str, payload: bytes) -> bytes:
-    sock = connect_socket(addr, timeout=60.0, resolver=self._name_resolver)
+    sock = connect_socket(addr, timeout=600.0, resolver=self._name_resolver)
     try:
       sock.sendall(len(payload).to_bytes(4, "big") + payload)
 
@@ -1130,6 +1193,7 @@ class RaidenController:
     self._active_tasks: dict[str, RaidenFuture] = {}
     self._registered_shards: dict[RaidenId, list[str]] = {}
     self._registered_mesh_shapes: dict[RaidenId, list[int]] = {}
+    self._registered_mesh_axes: dict[RaidenId, list[str]] = {}
     self._registered_layouts: dict[RaidenId, list[int]] = {}
     self._registered_global_shapes: dict[RaidenId, list[int]] = {}
     self._registered_itemsizes: dict[RaidenId, int] = {}
@@ -1178,12 +1242,30 @@ class RaidenController:
       transfer_parallelism: Optional[int] = None,
       transfer_rank: Optional[int] = None,
       variables: Optional[typing.Sequence[Any]] = None,
+      mesh_axes: Optional[typing.Sequence[str]] = None,
   ) -> None:
-    """Registers physical worker shard Data addresses and optional Control-Plane RPC endpoint."""
+    """Registers physical worker shard Data addresses and metadata.
+
+    Args:
+      unit: Work unit identifier owning the data shards.
+      shards: list of physical Data TCP addresses (e.g. 'IP:Port').
+      control_plane_rpc_address: Optional worker Control-Plane RPC endpoint.
+      mesh_shape: Optional logical mesh shape for reshard planning.
+      layout: Optional minor-to-major mapping layout.
+      global_shape: Optional global array shape.
+      itemsize: Optional item size in bytes.
+      pool_manifest: Optional manifest of memory pools.
+      layout_fingerprint: Optional layout fingerprint string.
+      page_tokens: Optional page token size.
+      transfer_parallelism: Optional transfer parallelism factor.
+      transfer_rank: Optional transfer rank.
+      variables: Optional list of registered variables metadata.
+      mesh_axes: Optional list of mesh axis names (e.g. ['fsdp', 'tp']).
+    """
     has_metadata = (
         mesh_shape is not None or layout is not None or global_shape is not None
     )
-    if has_metadata:
+    if has_metadata and not variables:
       if mesh_shape is None or layout is None or global_shape is None:
         raise ValueError(
             "If any of mesh_shape, layout, or global_shape is provided, "
@@ -1253,6 +1335,7 @@ class RaidenController:
       # must disappear when a unit restarts with a different payload.
       for registry in (
           self._registered_mesh_shapes,
+          self._registered_mesh_axes,
           self._registered_layouts,
           self._registered_global_shapes,
           self._registered_itemsizes,
@@ -1266,6 +1349,8 @@ class RaidenController:
         registry.pop(unit, None)
       if mesh_shape is not None:
         self._registered_mesh_shapes[unit] = list(mesh_shape)
+      if mesh_axes is not None:
+        self._registered_mesh_axes[unit] = list(mesh_axes)
       if layout is not None:
         self._registered_layouts[unit] = list(layout)
       if global_shape is not None:
@@ -1309,6 +1394,7 @@ class RaidenController:
         transfer_rank=self._registered_transfer_ranks.get(unit, 0),
     )
     reg_req.mesh_shape.extend(self._registered_mesh_shapes.get(unit, ()))
+    reg_req.mesh_axes.extend(self._registered_mesh_axes.get(unit, ()))
     reg_req.layout.extend(self._registered_layouts.get(unit, ()))
     reg_req.global_shape.extend(self._registered_global_shapes.get(unit, ()))
     for pool in self._registered_pool_manifests.get(unit, ()):
@@ -2358,103 +2444,148 @@ class RaidenController:
 
   async def _execute_slice_broadcast(
       self,
-      key: tuple,
-      targets: list[tuple],
+      keys_and_targets: list[tuple[tuple[Any, ...], list[tuple[Any, ...]]]],
       final_plan: TransferPlan,
       fanout_k: int,
       req_id: str,
-      uuid: int,
       dst_mem_type: int,
-      expected_block_count: int,
       dst_controller_address: Optional[str],
       src_controller_address: Optional[str] = None,
   ) -> None:
-    """Executes a decentralized, greedy K-ary tree broadcast for a slice of data across destination workers.
+    """Executes a pipelined tree broadcast for a group of variables.
 
-    Schedules tree hops dynamically by assigning idle destination workers that
-    have received
-    and unpacked their slice as active source nodes for subsequent downstream
-    destinations.
+    This method builds and executes a broadcast tree to distribute a group of
+    variables (represented by keys_and_targets) from a single source unit to
+    multiple destination units. It uses a greedy tree-building algorithm where
+    nodes that have received the data (destination units) are promoted to act as
+    new source nodes (available_sources) for subsequent hops, limited by the
+    maximum fanout (fanout_k).
+
+    The broadcast is pipelined such that the transfer for all variables in the
+    group targeting a specific destination unit is bundled into a single
+    TransferPlan (sub-schedule) per hop, minimizing coordination overhead.
 
     Args:
-      key: Tuple identifying the slice: (src_unit, shard_idx, src_block_id,
-        src_block_offset, size, src_stride, count).
-      targets: List of destination worker target tuples awaiting this slice.
-      final_plan: Reference to the global multi-host TransferPlan.
-      fanout_k: Maximum number of concurrent child transfers per active source
-        node.
-      req_id: Unique string identifier for this multi-hop transfer schedule.
-      uuid: Numerical transaction ID across all participating workers.
-      dst_mem_type: Memory tier destination (e.g. HBM / HOST).
-      expected_block_count: Total physical block pushes expected by each
-        destination worker.
-      dst_controller_address: BNS/IP network address of the destination
+      keys_and_targets: A list of tuples, where each tuple contains: - key: A
+        tuple describing the source slice metadata: (src_unit, shard_idx,
+        src_block_id, src_block_offset, size, src_stride, count, layer_idx,
+        pool_group) - targets: A list of tuples, where each tuple describes a
+        target device: (dst_unit, dst_peer, dst_shard_idx, dst_block_id,
+        dst_block_offset, dst_stride)
+      final_plan: The parent TransferPlan containing global configurations like
+        worker RPC/data addresses, skip_d2h, skip_tiling, etc.
+      fanout_k: The maximum number of simultaneous active pushes allowed per
+        source node (the fanout factor of the broadcast tree).
+      req_id: The base request ID for this transfer session.
+      dst_mem_type: The destination memory type (e.g. HBM, DRAM).
+      dst_controller_address: Optional BNS address of the destination-side
+        controller (used for remote coordination).
+      src_controller_address: Optional BNS address of the source-side
         controller.
-      src_controller_address: BNS/IP network address of the source controller.
     """
-    # key: (src_unit, shard_idx, src_block_id, src_block_offset, size,
-    #       src_stride, count, layer_idx, pool_group)
+    # Sort targets for each key to ensure consistent indexing
+    keys_and_sorted_targets = []
+    for key, targets in keys_and_targets:
+      sorted_t = sorted(targets, key=lambda t: (t[1], t[2]))
+      keys_and_sorted_targets.append((key, sorted_t))
+
+    ref_key, ref_targets = keys_and_sorted_targets[0]
     (
         src_unit,
         shard_idx,
-        src_block_id,
-        src_block_offset,
-        size,
-        src_stride,
-        count,
-        layer_idx,
-        pool_group,
-    ) = key
+        _,  # src_block_id
+        _,  # src_block_offset
+        _,  # size
+        _,  # src_stride
+        _,  # count
+        _,  # layer_idx
+        _,  # pool_group
+    ) = ref_key
 
     available_sources = [src_unit]
     node_slice_offsets = {
-        src_unit: (shard_idx, src_block_id, src_block_offset, src_stride)
+        src_unit: {
+            key: (shard_idx, key[2], key[3], key[5])
+            for key, _ in keys_and_sorted_targets
+        }
     }
 
-    pending_targets = list(targets)
-    active_pushes = {u: 0 for u in [src_unit] + [t[0] for t in targets]}
+    pending_indices = list(range(len(ref_targets)))
+    active_pushes = {u: 0 for u in [src_unit] + [t[0] for t in ref_targets]}
     transfers_in_progress = {}
 
-    while pending_targets or transfers_in_progress:
+    while pending_indices or transfers_in_progress:
       # 1. Greedy assignment step
       scheduled_any = False
       for s in list(available_sources):
-        while active_pushes[s] < fanout_k and pending_targets:
-          t = pending_targets.pop(0)
-          (
-              dst_unit,
-              dst_peer,
-              dst_shard_idx,
-              dst_block_id,
-              dst_block_offset,
-              dst_stride,
-          ) = t
+        while active_pushes[s] < fanout_k and pending_indices:
+          # Pick the first pending target index
+          first_idx = pending_indices[0]
+          first_target = ref_targets[first_idx]
+          dst_unit = first_target[0]
+
+          # Find all pending indices that target the same dst_unit
+          dst_indices = [
+              idx for idx in pending_indices if ref_targets[idx][0] == dst_unit
+          ]
+          # Remove them from pending_indices
+          pending_indices = [
+              idx for idx in pending_indices if idx not in dst_indices
+          ]
 
           active_pushes[s] += 1
           scheduled_any = True
 
-          s_shard_idx, s_block_id, s_block_offset, s_stride = (
-              node_slice_offsets[s]
-          )
+          ref_offset = node_slice_offsets[s][ref_key]
+          s_shard_idx = ref_offset[0]
 
-          entry = (
-              dst_peer,
-              dst_shard_idx,
-              dst_block_offset,
-              s_block_offset,
-              size,
-              s_block_id,
-              dst_block_id,
-              s_stride,
-              dst_stride,
-              count,
-              layer_idx,
-              pool_group,
-          )
+          # Build sub-schedule containing entries for all keys in the group
+          # and all target devices on dst_unit
+          sub_schedule = {s: {s_shard_idx: []}}
+          hop_expected_block_count = 0
+          for key, k_targets in keys_and_sorted_targets:
+            _, k_s_block_id, k_s_block_offset, k_s_stride = node_slice_offsets[
+                s
+            ][key]
+            k_size = key[4]
+            k_count = key[6]
+            k_layer_idx = key[7]
+            k_pool_group = key[8]
+
+            skip = final_plan.skip_tiling.get(k_layer_idx, False)
+            push_count = 1 if skip else k_count
+
+            for idx in dst_indices:
+              k_target = k_targets[idx]
+              (
+                  _,
+                  k_dst_peer,
+                  k_dst_shard_idx,
+                  k_dst_block_id,
+                  k_dst_block_offset,
+                  k_dst_stride,
+              ) = k_target
+
+              entry = (
+                  k_dst_peer,
+                  k_dst_shard_idx,
+                  k_dst_block_offset,
+                  k_s_block_offset,
+                  k_size,
+                  k_s_block_id,
+                  k_dst_block_id,
+                  k_s_stride,
+                  k_dst_stride,
+                  k_count,
+                  k_layer_idx,
+                  k_pool_group,
+              )
+              sub_schedule[s][s_shard_idx].append(entry)
+              hop_expected_block_count += push_count
 
           hop_uuid = random.randint(1, 2**63 - 1)
           hop_req_id = f"{req_id}_{hop_uuid}"
-          sub_schedule = {s: {s_shard_idx: [entry]}}
+
           sub_plan = TransferPlan(
               src_units=[s],
               dst_units=[dst_unit],
@@ -2466,7 +2597,7 @@ class RaidenController:
               dst_mem_type=dst_mem_type,
               use_block_chunks=True,
               is_sender=True,
-              expected_block_count=count,
+              expected_block_count=hop_expected_block_count,
               req_id=hop_req_id,
               skip_d2h=final_plan.skip_d2h or (s != src_unit),
               skip_tiling=final_plan.skip_tiling,
@@ -2510,22 +2641,15 @@ class RaidenController:
           task = asyncio.create_task(
               _run_single_transfer(s, dst_unit, sub_plan)
           )
-          transfers_in_progress[t] = (
-              s,
-              dst_unit,
-              dst_block_id,
-              dst_block_offset,
-              dst_stride,
-              task,
-          )
+          transfers_in_progress[dst_unit] = (s, dst_unit, dst_indices, task)
 
       # 2. Wait step
       if transfers_in_progress:
-        futures_to_targets = {
-            info[5]: t for t, info in transfers_in_progress.items()
+        futures_to_dsts = {
+            info[3]: dst for dst, info in transfers_in_progress.items()
         }
         done, _ = await asyncio.wait(
-            futures_to_targets.keys(), return_when=asyncio.FIRST_COMPLETED
+            futures_to_dsts.keys(), return_when=asyncio.FIRST_COMPLETED
         )
 
         # 3. Promotion step
@@ -2535,20 +2659,34 @@ class RaidenController:
                 "Slice transfer failed in broadcast tree: %s", fut.exception()
             )
             for info in transfers_in_progress.values():
-              info[5].cancel()
+              info[3].cancel()
             raise fut.exception()
-          t = futures_to_targets[fut]
-          s, dst_unit, dst_block_id, dst_block_offset, dst_stride, _ = (
-              transfers_in_progress.pop(t)
-          )
+          dst_unit = futures_to_dsts[fut]
+          s, _, dst_indices, _ = transfers_in_progress.pop(dst_unit)
           active_pushes[s] -= 1
           available_sources.append(dst_unit)
-          node_slice_offsets[dst_unit] = (
-              t[2],  # dst_shard_idx
-              dst_block_id,
-              dst_block_offset,
-              dst_stride,
-          )
+
+          # Add to node_slice_offsets for the new source for all keys.
+          # We use the first dst_index to populate the offsets for dst_unit.
+          # Since all dst_indices received the same shard, any of them is fine.
+          ref_idx = dst_indices[0]
+          node_slice_offsets[dst_unit] = {}
+          for key, k_targets in keys_and_sorted_targets:
+            k_target = k_targets[ref_idx]
+            (
+                _,
+                _,
+                k_dst_shard_idx,
+                k_dst_block_id,
+                k_dst_block_offset,
+                k_dst_stride,
+            ) = k_target
+            node_slice_offsets[dst_unit][key] = (
+                k_dst_shard_idx,
+                k_dst_block_id,
+                k_dst_block_offset,
+                k_dst_stride,
+            )
       elif not scheduled_any:
         break
 
@@ -2728,13 +2866,14 @@ class RaidenController:
       uuid: Optional[int] = None,
       is_sender: bool = True,
       expected_block_count: int = 0,
-      shard_push_schedules: Optional[dict] = None,
+      shard_push_schedules: Optional[dict[Any, Any]] = None,
       num_tokens: Optional[int] = None,
       transfer_pool_tags: Optional[typing.Sequence[str]] = None,
       parallelism: Optional[int] = None,
       skip_d2h: bool = False,
       dst_block_counts: Optional[typing.Sequence[int]] = None,
       skip_tiling: Optional[dict[int, bool]] = None,
+      group_size: int = 1,
   ) -> RaidenFuture:
     """For a requested data transfer, generates a transfer plan for the work units to carry out and start it.
 
@@ -2757,6 +2896,18 @@ class RaidenController:
         count.
       expected_block_count: The total number of physical block-pushes expected
         per destination rank (only applicable when is_sender=False).
+      shard_push_schedules: Optional dictionary containing pre-computed
+        schedules.
+      num_tokens: Optional number of tokens for resharding.
+      transfer_pool_tags: Optional sequence of tags for pool-based transfers.
+      parallelism: Optional parallelism factor.
+      skip_d2h: If True, skip the Device-to-Host copy.
+      dst_block_counts: Optional sequence of expected block counts per
+        destination.
+      skip_tiling: Optional dictionary specifying which layers to skip tiling
+        for.
+      group_size: Number of weights to group together for synchronization
+        (default 1).
 
     Returns:
       A Future for the call site to wait for the transfer to complete.
@@ -3148,6 +3299,10 @@ class RaidenController:
                       for u in self._registered_shards
                       if u.job_name == src_unit.job_name
                   }
+                  src_phys_mesh_shape = self._registered_mesh_shapes.get(
+                      src_unit
+                  )
+                  src_mesh_axes = self._registered_mesh_axes.get(src_unit)
                 num_src_physical_hosts = max(1, len(src_job_replicas))
                 src_logical_mesh = list(src_var.mesh_shape)
                 src_layout = list(src_var.layout)
@@ -3158,6 +3313,9 @@ class RaidenController:
                     src_logical_mesh,
                     src_layout,
                     num_src_physical_hosts,
+                    sharding_spec=list(src_var.sharding_spec),
+                    mesh_axes=src_mesh_axes,
+                    physical_mesh_shape=src_phys_mesh_shape,
                 )
 
                 for local_src_idx, global_src_idx in src_indices:
@@ -3196,11 +3354,16 @@ class RaidenController:
                     if not dst_shards:
                       dst_shards = ["127.0.0.1:8000"]  # fallback
 
-                    dst_job_replicas = {
-                        m.unit.job_replica_id
-                        for m in dst_metadata
-                        if m.unit.job_name == dst_unit.job_name
-                    }
+                    with self._lock:
+                      dst_job_replicas = {
+                          m.unit.job_replica_id
+                          for m in dst_metadata
+                          if m.unit.job_name == dst_unit.job_name
+                      }
+                      dst_phys_mesh_shape = self._registered_mesh_shapes.get(
+                          dst_unit
+                      )
+                      dst_mesh_axes = self._registered_mesh_axes.get(dst_unit)
                     num_dst_physical_hosts = max(1, len(dst_job_replicas))
 
                     dst_logical_mesh = list(dst_var.mesh_shape)
@@ -3212,6 +3375,9 @@ class RaidenController:
                         dst_logical_mesh,
                         dst_layout,
                         num_dst_physical_hosts,
+                        sharding_spec=list(dst_var.sharding_spec),
+                        mesh_axes=dst_mesh_axes,
+                        physical_mesh_shape=dst_phys_mesh_shape,
                     )
 
                     for local_dst_idx, global_dst_idx in dst_indices:
@@ -3458,20 +3624,22 @@ class RaidenController:
             direct_schedules = {}
             tree_broadcast_tasks = []
 
+            # Group broadcast tasks by routing compatibility and layer_group_idx
+            broadcast_groups = {}
             for key, targets in groups.items():
-              (
-                  src_unit,
-                  shard_idx,
-                  src_block_id,
-                  src_block_offset,
-                  size,
-                  src_stride,
-                  count,
-                  layer_idx,
-                  pool_group,
-              ) = key
               if len(targets) <= 1:
-                # Re-assemble entry for flat schedule
+                # Re-assemble entry for flat schedule (direct transfer)
+                (
+                    src_unit,
+                    shard_idx,
+                    src_block_id,
+                    src_block_offset,
+                    size,
+                    src_stride,
+                    count,
+                    layer_idx,
+                    pool_group,
+                ) = key
                 for (
                     dst_unit,
                     dst_peer,
@@ -3498,23 +3666,56 @@ class RaidenController:
                       shard_idx, []
                   ).append(entry)
               else:
-                # TODO(b/12345678): Optimize early stages with topology-aware
-                # branching based on IP/subnet closeness to minimize
-                # inter-switch DCN traffic.
-                slice_uuid = random.randint(1, 2**63 - 1)
-                task = self._execute_slice_broadcast(
-                    key=key,
-                    targets=targets,
-                    final_plan=final_plan,
-                    fanout_k=self.broadcast_k,
-                    req_id=req_id,
-                    uuid=slice_uuid,
-                    dst_mem_type=dst_mem_type,
-                    expected_block_count=1,
-                    dst_controller_address=dst_controller_address,
-                    src_controller_address=src_controller_address,
+                (
+                    src_unit,
+                    shard_idx,
+                    src_block_id,
+                    src_block_offset,
+                    size,
+                    src_stride,
+                    count,
+                    layer_idx,
+                    pool_group,
+                ) = key
+
+                layer_group_idx = (
+                    layer_idx // group_size if group_size > 1 else layer_idx
                 )
-                tree_broadcast_tasks.append(task)
+
+                # Routing key: same src_unit, shard_idx, pool_group,
+                # layer_group_idx and same set of destination units
+                # Sort targets by dst_peer to ensure consistent order.
+                # Compatibility key includes dst_unit, dst_peer, and
+                # dst_shard_idx to ensure identical routing and shard mapping
+                # at all hops.
+                sorted_targets = sorted(targets, key=lambda t: t[1])
+                targets_routing_key = tuple(
+                    (t[0], t[1], t[2]) for t in sorted_targets
+                )
+
+                group_key = (
+                    src_unit,
+                    shard_idx,
+                    pool_group,
+                    layer_group_idx,
+                    targets_routing_key,
+                )
+                broadcast_groups.setdefault(group_key, []).append(
+                    (key, targets)
+                )
+
+            # Trigger tree broadcasts for each group of compatible slices
+            for group_key, keys_and_targets in broadcast_groups.items():
+              task = self._execute_slice_broadcast(
+                  keys_and_targets=keys_and_targets,
+                  final_plan=final_plan,
+                  fanout_k=self.broadcast_k,
+                  req_id=req_id,
+                  dst_mem_type=dst_mem_type,
+                  dst_controller_address=dst_controller_address,
+                  src_controller_address=src_controller_address,
+              )
+              tree_broadcast_tasks.append(task)
 
             if expected_block_count == 0 and direct_schedules:
               dst_unit_counts = {}
@@ -4006,6 +4207,7 @@ class RaidenControllerServer:
                 else None
             )
             mesh_shape = list(reg.mesh_shape) if reg.mesh_shape else None
+            mesh_axes = list(reg.mesh_axes) if reg.mesh_axes else None
             layout = list(reg.layout) if reg.layout else None
             global_shape = list(reg.global_shape) if reg.global_shape else None
             itemsize = reg.itemsize if reg.itemsize > 0 else None
@@ -4038,6 +4240,7 @@ class RaidenControllerServer:
                 transfer_parallelism=transfer_parallelism,
                 transfer_rank=transfer_rank,
                 variables=variables,
+                mesh_axes=mesh_axes,
             )
             raiden_resp.success = True
           elif (
@@ -4274,6 +4477,7 @@ class RaidenControllerClientFacade:
       transfer_parallelism: Optional[int] = None,
       transfer_rank: Optional[int] = None,
       variables: Optional[typing.Sequence[Any]] = None,
+      mesh_axes: Optional[typing.Sequence[str]] = None,
   ) -> None:
     """Sends remote RPC to register a physical worker entity with the central RaidenControllerServer.
 
@@ -4291,6 +4495,8 @@ class RaidenControllerClientFacade:
       page_tokens: Optional page token size.
       transfer_parallelism: Optional transfer parallelism factor.
       transfer_rank: Optional transfer rank.
+      variables: Optional list of registered variables metadata.
+      mesh_axes: Optional list of mesh axis names (e.g. ['fsdp', 'tp']).
     """
     reg_req = self._raiden_proto_module.RegisterWorkUnitRequest(
         unit=self._raiden_id_to_proto(unit),
@@ -4320,6 +4526,8 @@ class RaidenControllerClientFacade:
       reg_req.transfer_rank = transfer_rank
     if variables is not None:
       reg_req.variables.extend(variables)
+    if mesh_axes is not None:
+      reg_req.mesh_axes.extend(mesh_axes)
 
     req = self._raiden_proto_module.ControlRequest(
         command=self._raiden_proto_module.ControlRequest.COMMAND_REGISTER_WORK_UNIT,

@@ -12,8 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# The store-owned reshard control plane (C++ port of the Python
-# rpc/raiden_controller.py pool-reshard path; migration plan §4.1).
+# Store-owned C++ implementation of the Python
+# rpc/raiden_controller.py pool-reshard control plane.
 
 load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library", "cc_test")
 
@@ -119,7 +119,10 @@ cc_library(
         ":pool_reshard_planner",
         ":request_block_registry",
         ":work_unit_directory",
+        "//tpu_raiden/core:transfer_program_reshard",
+        "//tpu_raiden/core/controller:raiden_controller",
         "//tpu_raiden/kv_cache:raiden_id",
+        "//tpu_raiden/proto:transfer_program_cc_proto",
         "//tpu_raiden/rpc:raiden_service_cc_proto",
         "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/status",
@@ -142,6 +145,9 @@ cc_library(
         ":request_block_registry",
         ":reshard_coordinator",
         ":work_unit_directory",
+        "//tpu_raiden/core:transfer_program_reshard",
+        "//tpu_raiden/core/controller:raiden_controller",
+        "//tpu_raiden/proto:transfer_program_cc_proto",
         "//tpu_raiden/rpc:controller_service_cc_proto",
         "//tpu_raiden/rpc:raiden_service_cc_proto",
         "@com_google_absl//absl/log",
@@ -175,6 +181,8 @@ cc_binary(
     deps = [
         ":framed_rpc",
         ":reshard_service",
+        "//tpu_raiden/core:transfer_program_reshard",
+        "//tpu_raiden/proto:transfer_program_cc_proto",
         "//tpu_raiden/rpc:controller_service_cc_proto",
         "//tpu_raiden/rpc:raiden_service_cc_proto",
         "@com_google_absl//absl/flags:flag",
@@ -193,7 +201,7 @@ cc_test(
     copts = RESHARD_COPTS,
     features = ["-use_header_modules"],
     # Standalone binary: runnable straight from bazel-out without the
-    # runfiles solib tree (the phase-A workflow executes it outside bazel).
+    # runfiles solib tree.
     linkstatic = True,
     deps = [
         ":declaration_types",

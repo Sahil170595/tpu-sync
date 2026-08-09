@@ -156,17 +156,27 @@ class KVCacheStore {
       std::optional<KVCacheMetadata> metadata = std::nullopt,
       absl::string_view store_server_ip = "");
 
-  // W1 (reshard migration plan §4.1): the reshard-only thin-store mode. The
-  // returned store owns nothing but a bound reshard::ReshardService — no
-  // offload backend, no global registry, no store gRPC server, and no
-  // RaidenController submodule. It is the phase-A sidecar substitution for
-  // the Python controller process; every full-store construction path above
-  // is untouched (their validation still requires backends + num_shards>=1).
+  // Constructs an engine-hosted thin store that owns both the reshard service
+  // in controller-delivery mode and the dispatch RaidenController its local
+  // workers register with. vLLM's transfer-rank-0 worker constructs this
+  // in-process, so no sidecar process is required.
+  // `dispatch_bind_address` is the host:port the RegisterWorker surface
+  // binds and advertises; the framed reshard surface binds `reshard_port`.
+  static absl::StatusOr<std::unique_ptr<KVCacheStore>> CreateReshardStore(
+      int reshard_port, double request_registry_ttl_s, const RaidenId& unit,
+      absl::string_view dispatch_bind_address);
+
+  // Constructs a reshard-only thin store that owns only a bound
+  // reshard::ReshardService: no offload backend, global registry, store gRPC
+  // server, or RaidenController. This is the C++ replacement for deployments
+  // that previously hosted the Python controller in a sidecar. The general
+  // full-store construction paths retain their existing validation.
   static absl::StatusOr<std::unique_ptr<KVCacheStore>> CreateReshardSidecar(
       int reshard_port, double request_registry_ttl_s);
 
-  // Non-null only for CreateReshardSidecar() stores in phase A (a full
-  // store gains the member when phase C constructs it co-hosted).
+  // Non-null for stores created by CreateReshardStore() or
+  // CreateReshardSidecar(). The general full-store construction paths leave
+  // this member null.
   reshard::ReshardService* reshard_service() { return reshard_service_.get(); }
 
   ~KVCacheStore();
@@ -433,7 +443,7 @@ class KVCacheStore {
   // constructor with the same parameters delegates to this one and then
   // wires+FATALs, for direct (non-Create()) callers.
   struct CreateTag {};
-  // Tag for the W1 reshard-only construction (no backends, no wiring).
+  // Tag for reshard-only construction with no backends or controller wiring.
   struct ReshardSidecarTag {};
   explicit KVCacheStore(ReshardSidecarTag);
   KVCacheStore(std::vector<std::shared_ptr<KVCacheStoreBackend>> backends,
@@ -513,8 +523,8 @@ class KVCacheStore {
   RaidenId raiden_id_;
   std::unique_ptr<tpu_raiden::controller::RaidenController> raiden_controller_;
 
-  // W1: the store-owned reshard control plane (thin sidecar mode in phase
-  // A). Never constructed by the full-store paths today.
+  // Store-owned reshard control plane for the reshard-only sidecar and
+  // engine-hosted modes. The general full-store paths leave this null.
   std::unique_ptr<reshard::ReshardService> reshard_service_;
 
   // The IP peers reach this node on. Never empty and never a wildcard --

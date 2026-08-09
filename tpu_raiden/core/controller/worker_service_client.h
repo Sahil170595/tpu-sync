@@ -46,6 +46,14 @@ class WorkerServiceClient {
   // (layers or blocks).
   tsl::Future<> TransferBuffers(const proto::TransferBuffersRequest& request);
 
+  // Submits a transfer program and resolves with the full response. The
+  // reshard coordinator needs success + message verbatim for its
+  // abandon-claim contract, so admission verdicts are not collapsed into a
+  // bare Status here. Transport/dispatch failures, including unsupported
+  // completion contracts, surface as error statuses.
+  tsl::Future<proto::TransferProgramResponse> SubmitTransferProgram(
+      const proto::TransferProgramRequest& request);
+
  private:
   std::unique_ptr<proto::WorkerService::Stub> stub_;
 };

@@ -12,10 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Reshard-controller sidecar (plan §4.3): a drop-in for the golden
-// launcher's inline Python controller. One thin KVCacheStore-owned
-// ReshardService per role host, speaking the framed ControllerRequest /
-// ControlRequest wire on --port, honoring the ready-file turnup contract:
+// Reshard-controller sidecar: a drop-in for the golden launcher's inline
+// Python controller. One thin KVCacheStore-owned ReshardService per role host,
+// speaking the framed ControllerRequest / ControlRequest wire on --port and
+// honoring the ready-file turnup contract:
 //
 //   1. bind the listener;
 //   2. atomically write --ready-file with the raiden_controller_ready JSON
@@ -77,9 +77,9 @@ std::string RenderHost(const std::string& raw) {
 }  // namespace
 
 int main(int argc, char** argv) {
-  // The launcher contract (§4.3) uses dashed flags — the Python
-  // controller's argparse spelling. Normalize them to absl's underscore
-  // form so the binary is a literal drop-in.
+  // The launcher uses the Python controller's dashed argparse spelling.
+  // Normalize it to absl's underscore form so the binary is a literal
+  // drop-in.
   std::vector<std::string> normalized_storage;
   normalized_storage.reserve(argc);
   std::vector<char*> normalized_argv;
@@ -119,9 +119,9 @@ int main(int argc, char** argv) {
   signal(SIGTERM, HandleSignal);
   signal(SIGPIPE, SIG_IGN);
 
-  // The sidecar hosts the reshard plane as a thin KVCacheStore capability
-  // (D8): the store owns the ReshardService; no offload backend, registry,
-  // or controller submodule exists in this mode (W1).
+  // The sidecar hosts the reshard plane as a thin KVCacheStore capability.
+  // The store owns the ReshardService; no offload backend, registry, or
+  // controller submodule exists in this mode.
   auto store_or = tpu_raiden::kv_cache::KVCacheStore::CreateReshardSidecar(
       port, ttl_s);
   if (!store_or.ok()) {

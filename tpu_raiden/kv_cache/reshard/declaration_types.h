@@ -28,7 +28,7 @@ namespace reshard {
 
 // Value-type mirrors of rpc/raiden_controller.py's declaration IR
 // dataclasses. Wire schema lives in rpc/controller_service.proto; these are
-// the planner-friendly PODs (§4.0: converted to protos only at emission).
+// planner-friendly PODs converted to protos only at emission.
 
 // One contiguous (or uniformly strided) byte copy between one source and
 // one destination block of the same pool. Ordinals index the owning

@@ -89,8 +89,7 @@ message PoolSpanRegistration {
   // block-local. 1: spans are destination-page-agnostic — dst_block_index
   // is 0 and dst_offset_bytes addresses the request-global compact live
   // byte space; the controller splits at destination page boundaries at
-  // plan build (T3.4: producers no longer know the destination page
-  // geometry).
+  // plan build because producers do not know the destination page geometry.
   int32 dst_space_version = 5;
 }
 

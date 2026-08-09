@@ -31,12 +31,11 @@ namespace tpu_raiden {
 namespace kv_cache {
 namespace reshard {
 
-// The aggregate reshard control plane (plan §4.1): owns the work-unit
-// directory, request-block registry, planner (stateless), and coordinator,
-// and speaks RaidenControllerServer's framed ControllerRequest /
-// ControlRequest surface verbatim. Owned by KVCacheStore (thin-store
-// sidecar in phase A; a full store in phase C); constructible standalone
-// for tests and replay.
+// The aggregate reshard control plane owns the work-unit directory,
+// request-block registry, stateless planner, and coordinator, and speaks
+// RaidenControllerServer's framed ControllerRequest / ControlRequest surface
+// verbatim. KVCacheStore owns it in both sidecar and engine-hosted modes; it
+// is also constructible standalone for tests and replay.
 class ReshardService {
  public:
   struct Options {
@@ -45,6 +44,12 @@ class ReshardService {
     // Injectable for replay/tests; defaults to the socket transport.
     FramedTransport* transport = nullptr;
     RequestBlockRegistry::Clock clock;  // defaults to steady_clock seconds
+    // Selects worker delivery. kController also enables the receiver-arm
+    // relay on this service's framed surface: an inbound pool START_TRANSFER
+    // receiver request is compiled to a transfer program and dispatched
+    // through delivery.controller to the locally registered destination
+    // worker.
+    WorkerDelivery delivery;
   };
 
   explicit ReshardService(const Options& options);
@@ -58,7 +63,7 @@ class ReshardService {
   // (RaidenControllerServer._handle_conn's dual-parse dispatch).
   std::string HandleFrame(const std::string& request_bytes);
 
-  // Framed-TCP hosting (phase A sidecar).
+  // Starts and stops the framed-TCP surface.
   absl::Status StartServer();
   void StopServer();
   int port() const;
@@ -87,6 +92,7 @@ class ReshardService {
   std::unique_ptr<FramedServer> server_;
   std::function<void()> shutdown_callback_;
   int requested_port_ = 0;
+  WorkerDelivery delivery_;
 };
 
 }  // namespace reshard

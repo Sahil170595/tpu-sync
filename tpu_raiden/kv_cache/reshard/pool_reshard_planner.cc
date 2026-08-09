@@ -14,7 +14,8 @@
 
 // Byte-exact port of rpc/raiden_controller.py::_build_byte_span_plan_claimed.
 // Validation order, emission order, and error strings mirror the Python
-// reference; gate G1 diffs the resulting wire bytes against it.
+// reference; the differential replay harness compares the resulting wire
+// bytes against it.
 
 #include "tpu_raiden/kv_cache/reshard/pool_reshard_planner.h"
 
@@ -496,9 +497,9 @@ absl::StatusOr<PoolReshardPlan> BuildPoolReshardPlan(
           ", req_id=", req_id, ", uuid=", uuid));
     }
 
-    // T3.4: destination-page-agnostic declarations (dst_space_version=1)
-    // split at destination page boundaries here, where the destination
-    // geometry is known.
+    // Destination-page-agnostic declarations (dst_space_version=1) split at
+    // destination page boundaries here, where the destination geometry is
+    // known.
     std::vector<PoolSpanRegistration> converted_storage;
     converted_storage.reserve(declared.size());
     std::vector<std::pair<RaidenId, const PoolSpanRegistration*>> converted;

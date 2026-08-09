@@ -33,8 +33,7 @@ namespace reshard {
 // Client side of the 4-byte big-endian length-framed proto wire spoken by
 // the Python RaidenController stack and the C++ KVCacheListener. One
 // connection per call, mirroring rpc/raiden_controller.py's
-// WorkerRpcClient._send_rpc_sync (phase-A wire freeze; connection reuse is
-// a phase-B concern).
+// WorkerRpcClient._send_rpc_sync behavior.
 class FramedTransport {
  public:
   virtual ~FramedTransport() = default;
@@ -54,10 +53,10 @@ class SocketFramedTransport final : public FramedTransport {
                                    absl::Duration timeout) override;
 };
 
-// Phase-A framed-TCP server: dual-stack listener, one thread per accepted
-// connection, one request/response exchange per connection (the accept
-// model of RaidenControllerServer and KVCacheListener). The handler
-// receives the raw request body and returns the raw response body.
+// Framed-TCP server with a dual-stack listener, one thread per accepted
+// connection, and one request/response exchange per connection (the accept
+// model of RaidenControllerServer and KVCacheListener). The handler receives
+// the raw request body and returns the raw response body.
 class FramedServer final {
  public:
   using Handler = std::function<std::string(const std::string&)>;

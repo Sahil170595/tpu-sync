@@ -4142,11 +4142,12 @@ class RaidenControllerServer:
               ]
 
             if start_req.transfer_pool_indices or start_req.pool_groups:
-              # Fail closed for pre-P2 peers: the planning controller now
-              # arms destination workers directly and the worker's executor
-              # owns receiver-side validation; there is no inter-controller
-              # receiver-plan registration to accept. (Same pool-plan
-              # discriminator as the worker listener's HasPoolReshardFields.)
+              # Fail closed for peers that still send pool-shaped schedule
+              # registrations. The planning controller arms destination
+              # workers directly, and the worker's executor owns receiver-side
+              # validation, so there is no inter-controller receiver plan to
+              # accept. This uses the same pool-plan discriminator as the
+              # worker listener's HasPoolReshardFields.
               raise ValueError(
                   "Inter-controller reshard schedule registration is "
                   "retired: the planning controller arms destination "

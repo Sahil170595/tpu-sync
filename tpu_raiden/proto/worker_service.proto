@@ -16,6 +16,7 @@ syntax = "proto3";
 
 package tpu_raiden.proto;
 
+import "tpu_raiden/proto/transfer_program.proto";
 import "tpu_raiden/rpc/raiden_service.proto";
 
 // Service providing a gRPC communication channel between Raiden Controller and
@@ -39,6 +40,20 @@ service WorkerService {
   // The transfer applies uniformly to all buffers, i.e., all shards across all
   // major dimensions (such as layers or blocks).
   rpc TransferBuffers(TransferBuffersRequest) returns (TransferBuffersResponse);
+
+  // Executes pool-reshard transfer programs. Programs whose completion
+  // contract is AwaitInline or Barrier are rejected as Unimplemented so
+  // unsupported programs fail closed. Admission verdicts ride the response
+  // body (success/message) with the framed entry's exact semantics; the gRPC
+  // status is reserved for transport or dispatch failures.
+  rpc SubmitTransferProgram(TransferProgramRequest)
+      returns (TransferProgramResponse);
+
+  // Uuid-keyed lifecycle companions of SubmitTransferProgram. Transfer
+  // completion remains on the connector's existing polling path; these RPCs
+  // return Unimplemented until their lifecycle semantics are implemented.
+  rpc PollTransfer(PollTransferRequest) returns (PollTransferResponse);
+  rpc AbortTransfer(AbortTransferRequest) returns (AbortTransferResponse);
 }
 
 // Transfer endpoint descriptor for worker sub-managers.

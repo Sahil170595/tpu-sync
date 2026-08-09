@@ -523,15 +523,15 @@ class RaidenControllerTest(absltest.TestCase):
     )
 
   def test_stage3_global_dst_space_reproduces_page_split_plan(self):
-    """T3.4: version-1 global-dst spans yield the legacy page-split plan."""
+    """Version-1 global-destination spans yield the page-split plan."""
     controller, client, src_units, dst_unit, dst_ids = self._stage3_fixture(
         src_page_slice_tokens=256, register_blocks=False
     )
     del client
     for rank, unit in enumerate(src_units):
-      # Producer view under T3.4: one contiguous global-destination span
-      # per owned 256-token interleave slice (slices never cross the
-      # 4096-token source pages) — no destination page arithmetic at all.
+      # Producer view: one contiguous global-destination span per owned
+      # 256-token interleave slice. Slices never cross the 4096-token source
+      # pages, and producers perform no destination page arithmetic.
       spans = []
       owned_tokens = 0
       local_cursor = 0
@@ -605,7 +605,7 @@ class RaidenControllerTest(absltest.TestCase):
       )
 
   def test_stage3_multi_tag_plan_groups_fa_and_state(self):
-    """T3.1: one transfer carries FA plus a state class as scoped groups."""
+    """One transfer carries FA plus a state class as scoped groups."""
     controller, client, src_units, dst_unit, dst_ids = self._stage3_fixture(
         src_page_slice_tokens=4096,
         include_gdn=True,
@@ -1253,8 +1253,8 @@ class RaidenControllerTest(absltest.TestCase):
         f"127.0.0.1:{server.port}"
     )
     try:
-      # A pre-P2 peer's pool-shaped registration hits the crafted fail-closed
-      # rejection (and must not trip over the P3-reserved scalar mirrors).
+      # A legacy peer's pool-shaped registration hits the crafted fail-closed
+      # rejection without tripping over the retired scalar mirrors.
       req = facade._raiden_proto_module.ControlRequest(
           command=(
               facade._raiden_proto_module.ControlRequest.COMMAND_REGISTER_TRANSFER_SCHEDULE

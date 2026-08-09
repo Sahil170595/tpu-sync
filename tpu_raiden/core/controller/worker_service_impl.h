@@ -69,6 +69,26 @@ class WorkerServiceImpl final : public proto::WorkerService::Service {
       const proto::TransferBuffersRequest* request,
       proto::TransferBuffersResponse* response) override;
 
+  // Normalizes a pool-reshard transfer program, lowers it to the
+  // byte-identical StartTransferRequest the framed entry would deliver, and
+  // drives the same pool executor operations. Unsupported completion
+  // contracts (AwaitInline/Barrier) return UNIMPLEMENTED as the gRPC status;
+  // admission verdicts for supported programs ride the response body with
+  // the framed entry's success/message semantics.
+  grpc::Status SubmitTransferProgram(
+      grpc::ServerContext* context,
+      const proto::TransferProgramRequest* request,
+      proto::TransferProgramResponse* response) override;
+
+  // Transfer-program completion remains on the connector's existing polling
+  // path. These lifecycle RPCs fail closed until they have implementations.
+  grpc::Status PollTransfer(grpc::ServerContext* context,
+                            const proto::PollTransferRequest* request,
+                            proto::PollTransferResponse* response) override;
+  grpc::Status AbortTransfer(grpc::ServerContext* context,
+                             const proto::AbortTransferRequest* request,
+                             proto::AbortTransferResponse* response) override;
+
   // Retrieves an allocated buffer shard for inspection or transfer operations.
   // Returns NotFoundError if the buffer handle is invalid.
   absl::StatusOr<HostBufferAllocation> GetBuffer(BufferHandle handle) const;

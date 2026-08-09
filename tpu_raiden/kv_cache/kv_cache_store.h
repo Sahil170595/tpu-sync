@@ -40,6 +40,7 @@
 #include "tpu_raiden/kv_cache/kv_cache_store_backend.h"
 #include "tpu_raiden/kv_cache/kv_cache_store_backend_factory.h"
 #include "tpu_raiden/kv_cache/kv_cache_store_server.h"
+#include "tpu_raiden/kv_cache/reshard/reshard_service.h"
 #include "tpu_raiden/kv_cache/lru_cache.h"
 #include "tpu_raiden/kv_cache/raiden_id.h"
 
@@ -154,6 +155,19 @@ class KVCacheStore {
       absl::string_view global_registry_address = "", RaidenId raiden_id = {},
       std::optional<KVCacheMetadata> metadata = std::nullopt,
       absl::string_view store_server_ip = "");
+
+  // W1 (reshard migration plan §4.1): the reshard-only thin-store mode. The
+  // returned store owns nothing but a bound reshard::ReshardService — no
+  // offload backend, no global registry, no store gRPC server, and no
+  // RaidenController submodule. It is the phase-A sidecar substitution for
+  // the Python controller process; every full-store construction path above
+  // is untouched (their validation still requires backends + num_shards>=1).
+  static absl::StatusOr<std::unique_ptr<KVCacheStore>> CreateReshardSidecar(
+      int reshard_port, double request_registry_ttl_s);
+
+  // Non-null only for CreateReshardSidecar() stores in phase A (a full
+  // store gains the member when phase C constructs it co-hosted).
+  reshard::ReshardService* reshard_service() { return reshard_service_.get(); }
 
   ~KVCacheStore();
 
@@ -419,6 +433,9 @@ class KVCacheStore {
   // constructor with the same parameters delegates to this one and then
   // wires+FATALs, for direct (non-Create()) callers.
   struct CreateTag {};
+  // Tag for the W1 reshard-only construction (no backends, no wiring).
+  struct ReshardSidecarTag {};
+  explicit KVCacheStore(ReshardSidecarTag);
   KVCacheStore(std::vector<std::shared_ptr<KVCacheStoreBackend>> backends,
                RaidenId raiden_id, int num_shards, int64_t shard_size_bytes,
                absl::string_view raiden_orchestrator_address,
@@ -495,6 +512,10 @@ class KVCacheStore {
   std::shared_ptr<global_registry::GlobalRegistryClient> registry_client_;
   RaidenId raiden_id_;
   std::unique_ptr<tpu_raiden::controller::RaidenController> raiden_controller_;
+
+  // W1: the store-owned reshard control plane (thin sidecar mode in phase
+  // A). Never constructed by the full-store paths today.
+  std::unique_ptr<reshard::ReshardService> reshard_service_;
 
   // The IP peers reach this node on. Never empty and never a wildcard --
   // construction rejects both.

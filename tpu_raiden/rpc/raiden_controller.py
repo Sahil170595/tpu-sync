@@ -28,6 +28,7 @@
 """Raiden Controller providing high-level transfer API and resharding plans."""
 
 import asyncio
+import base64
 import dataclasses
 import enum
 import functools
@@ -45,6 +46,62 @@ from typing import Any, Optional
 from tpu_raiden.kv_cache import nd_slice_math
 from tpu_raiden.rpc import controller_service_pb2
 from tpu_raiden.rpc import raiden_service_pb2
+
+
+class _PlanDumper:
+  """Env-gated raw-wire recorder for the C++ reshard port's differential gate.
+
+  When TPU_RAIDEN_PLAN_DUMP_DIR names a directory, every controller process
+  appends one JSON line per record to its own file there, capturing the raw
+  bytes of (a) each inbound framed RPC ("rpc_in"), (b) each outbound worker
+  dispatch ("worker_out"), and (c) each remote-metadata response consumed
+  during planning ("remote_metadata_in"). Together these determine an offline
+  replay: feeding the rpc_in stream to a ported controller must reproduce the
+  worker_out payloads byte-for-byte (with remote_metadata_in standing in for
+  the peer). Unset, the recorder is a no-op.
+  """
+
+  _instance: Optional["_PlanDumper"] = None
+  _instance_lock = threading.Lock()
+
+  @classmethod
+  def get(cls) -> "_PlanDumper":
+    if cls._instance is None:
+      with cls._instance_lock:
+        if cls._instance is None:
+          cls._instance = cls(os.environ.get("TPU_RAIDEN_PLAN_DUMP_DIR", ""))
+    return cls._instance
+
+  def __init__(self, root: str):
+    self._lock = threading.Lock()
+    self._seq = 0
+    self._file = None
+    if root:
+      os.makedirs(root, exist_ok=True)
+      path = os.path.join(
+          root, f"controller-{socket.gethostname()}-{os.getpid()}.jsonl"
+      )
+      self._file = open(path, "a", encoding="utf-8")
+
+  def record(self, kind: str, payload: bytes, addr: str = "") -> None:
+    if self._file is None:
+      return
+    with self._lock:
+      self._seq += 1
+      self._file.write(
+          json.dumps(
+              {
+                  "kind": kind,
+                  "seq": self._seq,
+                  "t_ns": time.monotonic_ns(),
+                  "addr": addr,
+                  "payload_b64": base64.b64encode(payload).decode("ascii"),
+              },
+              sort_keys=True,
+          )
+          + "\n"
+      )
+      self._file.flush()
 
 
 @dataclasses.dataclass
@@ -629,6 +686,7 @@ class WorkerRpcClient:
     return await loop.run_in_executor(None, self._send_rpc_sync, addr, payload)
 
   def _send_rpc_sync(self, addr: str, payload: bytes) -> bytes:
+    _PlanDumper.get().record("worker_out", payload, addr=addr)
     sock = connect_socket(addr, timeout=60.0, resolver=self._name_resolver)
     try:
       sock.sendall(len(payload).to_bytes(4, "big") + payload)
@@ -1736,6 +1794,7 @@ class RaidenController:
     resp_bytes = await self.worker_rpc_client._send_rpc(
         addr, req.SerializeToString()
     )
+    _PlanDumper.get().record("remote_metadata_in", resp_bytes, addr=addr)
     resp = raiden_service_pb2.ControlResponse()
     resp.ParseFromString(resp_bytes)
     if not resp.success:
@@ -3793,6 +3852,8 @@ class RaidenControllerServer:
       req_bytes = b""
       while len(req_bytes) < req_len:
         req_bytes += conn.recv(req_len - len(req_bytes))
+
+      _PlanDumper.get().record("rpc_in", req_bytes)
 
       req = self._proto_module.ControllerRequest()
       try:

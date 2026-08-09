@@ -379,6 +379,7 @@ cc_library(
         ":lru_cache",
         ":raiden_id",
         "//tpu_raiden/core:buffer",
+        "//tpu_raiden/kv_cache/reshard:reshard_service",
         "//tpu_raiden/core:numa_thread_pool",
         "//tpu_raiden/core:raw_transfer_core",
         "//tpu_raiden/core:status_macros",

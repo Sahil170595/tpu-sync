@@ -220,6 +220,30 @@ absl::StatusOr<std::unique_ptr<KVCacheStore>> KVCacheStore::Create(
                               std::move(metadata), expected_worker_count);
 }
 
+KVCacheStore::KVCacheStore(ReshardSidecarTag) {}
+
+absl::StatusOr<std::unique_ptr<KVCacheStore>>
+KVCacheStore::CreateReshardSidecar(int reshard_port,
+                                   double request_registry_ttl_s) {
+  // W1: reshard-only mode. Deliberately bypasses ValidateConstructionRules
+  // and ValidateBackends — this store serves no offload tier, publishes no
+  // registry record, and builds no controller submodule; its only surface
+  // is the reshard plane's framed listener. The full-store validation
+  // paths above stay byte-identical.
+  if (request_registry_ttl_s <= 0) {
+    return absl::InvalidArgumentError(
+        "request_registry_ttl_s must be positive");
+  }
+  auto store = absl::WrapUnique(new KVCacheStore(ReshardSidecarTag{}));
+  reshard::ReshardService::Options options;
+  options.port = reshard_port;
+  options.request_registry_ttl_s = request_registry_ttl_s;
+  store->reshard_service_ =
+      std::make_unique<reshard::ReshardService>(options);
+  RETURN_IF_ERROR(store->reshard_service_->StartServer());
+  return store;
+}
+
 KVCacheStore::KVCacheStore(
     std::vector<std::shared_ptr<KVCacheStoreBackend>> backends,
     RaidenId raiden_id, int num_shards, int64_t shard_size_bytes,

@@ -563,5 +563,56 @@ absl::StatusOr<PoolSpec> PoolSpecFromProto(
   return pool;
 }
 
+absl::StatusOr<std::vector<LiveCopyChunk>> TranslateLiveCopy(
+    absl::Span<const PoolLiveSegment> src_segments,
+    absl::Span<const PoolLiveSegment> dst_segments, int64_t src_offset,
+    int64_t dst_offset, int64_t size) {
+  if (src_offset < 0 || dst_offset < 0 || size <= 0) {
+    return absl::InvalidArgumentError(
+        "Compact-live copy offsets/size are invalid");
+  }
+  constexpr int64_t kMaxLiveSegments = int64_t{1} << 20;
+
+  // locate(): physical position and bytes available in the containing
+  // segment for one compact-live offset.
+  auto locate = [](absl::Span<const PoolLiveSegment> segments,
+                   int64_t logical)
+      -> absl::StatusOr<std::pair<int64_t, int64_t>> {
+    for (const PoolLiveSegment& segment : segments) {
+      if (segment.logical_offset <= logical &&
+          logical < segment.logical_offset + segment.size) {
+        return std::make_pair(
+            segment.physical_offset + logical - segment.logical_offset,
+            segment.logical_offset + segment.size - logical);
+      }
+    }
+    return absl::InvalidArgumentError(absl::StrCat(
+        "Compact-live offset ", logical, " is out of range"));
+  };
+
+  std::vector<LiveCopyChunk> chunks;
+  int64_t remaining = size;
+  int64_t src_cursor = src_offset;
+  int64_t dst_cursor = dst_offset;
+  while (remaining > 0) {
+    auto src_loc = locate(src_segments, src_cursor);
+    if (!src_loc.ok()) return src_loc.status();
+    auto dst_loc = locate(dst_segments, dst_cursor);
+    if (!dst_loc.ok()) return dst_loc.status();
+    const int64_t chunk_size =
+        std::min({remaining, src_loc->second, dst_loc->second});
+    chunks.push_back(LiveCopyChunk{src_loc->first, dst_loc->first,
+                                   chunk_size});
+    if (static_cast<int64_t>(chunks.size()) > kMaxLiveSegments) {
+      return absl::InvalidArgumentError(
+          "Compact-live copy exceeds the segment expansion bound");
+    }
+    src_cursor += chunk_size;
+    dst_cursor += chunk_size;
+    remaining -= chunk_size;
+  }
+  return chunks;
+}
+
 }  // namespace kv_cache
 }  // namespace tpu_raiden

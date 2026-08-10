@@ -82,3 +82,17 @@ py_binary(
         "@com_google_absl_py//absl/flags",
     ],
 )
+
+py_binary(
+    name = "h2h_multihost_gate",
+    testonly = True,
+    srcs = ["h2h_multihost_gate.py"],
+    data = [
+        "//examples/microbenchmarks:h2h_benchmark_runner",
+    ],
+    deps = [
+        ":bap_metrics",
+        "@com_google_absl_py//absl:app",
+        "@com_google_absl_py//absl/flags",
+    ],
+)

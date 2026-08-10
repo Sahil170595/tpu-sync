@@ -1,0 +1,16 @@
+benchmarks {
+  name: "h2h_multihost_record"
+  description: "Re-measure and emit h2h_multihost_baselines.json as a workload artifact. Large --iters on purpose: the floor is median - k*MAD_sigma and the sigma estimate is noisy from few samples."
+  owner: "raiden-dev"
+  workload {
+    action: "./ml_actions/actions/workload_executors/bazel"
+    action_inputs { key: "target" value: "//tpu_raiden/benchmarks:h2h_multihost_gate" }
+    action_inputs { key: "runtime_flags" value: "--record --suite=both --iters=500 --data_interface=eth0 --dump=h2h_multihost_record_samples.csv" }
+  }
+  environment_configs {
+    id: "tpu-v5e-16-multihost"
+    runner_label: "linux-x86-ct5lp-4tpu-x4"
+    container_image: "us-central1-docker.pkg.dev/wyzhang-dev/quickstart-docker-repo/ml-build:939285342"
+    workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=oss --config=ci" }
+  }
+}

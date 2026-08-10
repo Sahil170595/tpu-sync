@@ -37,6 +37,7 @@
 #include <vector>
 
 #include "absl/cleanup/cleanup.h"
+#include "absl/flags/flag.h"
 #include "absl/log/absl_check.h"
 #include "absl/log/log.h"
 #include "absl/status/status.h"
@@ -50,6 +51,10 @@
 #include "tpu_raiden/transport/lib/chunk.h"
 #include "tpu_raiden/transport/lib/raw_buffer_transport.h"
 #include "tpu_raiden/transport/peregrine/src/api/socket_util.h"
+
+ABSL_FLAG(size_t, raiden_transport_coalesce_window_bytes, 0,
+          "Maximum size in bytes of the host-side coalescing buffer used "
+          "for network transfers. Set to 0 to disable coalescing.");
 
 namespace tpu_raiden {
 namespace transport {
@@ -160,10 +165,12 @@ BlockTransport::BlockTransport(BlockTransportDelegate* delegate, int local_port,
       parallelism_(parallelism),
       rr_index_(0),
       scheduler_stopping_(false),
-      raw_transport_(delegate, local_port, local_ips,
-                     [this](int client_fd, const lib::ChunkHeader& header) {
-                       return HandleCustomRequest(client_fd, header);
-                     }) {
+      raw_transport_(
+          delegate, local_port, local_ips,
+          [this](int client_fd, const lib::ChunkHeader& header) {
+            return HandleCustomRequest(client_fd, header);
+          },
+          absl::GetFlag(FLAGS_raiden_transport_coalesce_window_bytes)) {
   socket_workers_.reserve(parallelism_);
   for (int i = 0; i < parallelism_; ++i) {
     socket_workers_.push_back(

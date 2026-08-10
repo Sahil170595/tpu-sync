@@ -146,9 +146,10 @@ inline bool IsValidSocket(int fd) { return fcntl(fd, F_GETFD) >= 0; }
 RawBufferTransport::RawBufferTransport(
     RawBufferTransportDelegate* delegate, int local_port,
     const std::vector<std::string>& local_ips,
-    CustomRequestHandler custom_request_handler)
+    CustomRequestHandler custom_request_handler, size_t coalesce_window_bytes)
     : raw_delegate_(delegate),
       custom_request_handler_(std::move(custom_request_handler)),
+      coalesce_window_bytes_(coalesce_window_bytes),
       bound_ip_(local_ips.empty() ? "127.0.0.1" : local_ips[0]),
       local_ips_(local_ips),
       local_port_(local_port),
@@ -338,7 +339,6 @@ absl::Status RawBufferTransport::ProcessPeerRequest(int client_fd) {
     const uint8_t ack = 1;
     RETURN_IF_ERROR(WriteExact(client_fd, &ack, 1));
     return absl::OkStatus();
-
   } else {
     if (custom_request_handler_) {
       return custom_request_handler_(client_fd, header);
@@ -364,7 +364,8 @@ void RawBufferTransport::ConnectionWorker(int client_fd) {
     }
     if (ret == 0) continue;
 
-    if (!ProcessPeerRequest(client_fd).ok()) {
+    if (absl::Status status = ProcessPeerRequest(client_fd); !status.ok()) {
+      LOG(ERROR) << "ProcessPeerRequest failed: " << status;
       break;
     }
   }
@@ -553,14 +554,40 @@ absl::Status RawBufferTransport::PushBuffers(
 
     const size_t p = std::max(1, parallelism);
     const size_t target_batch_size = (peer_task_count + p - 1) / p;
-    const size_t batch_size =
+    const size_t base_batch_size =
         std::clamp(target_batch_size, size_t{1}, static_cast<size_t>(IOV_MAX));
 
-    size_t tasks_added = 0;
-    while (tasks_added < peer_task_count) {
-      size_t count = std::min(batch_size, peer_task_count - tasks_added);
-      batches.push_back({peer, peer_start + tasks_added, count});
-      tasks_added += count;
+    size_t tasks_processed = 0;
+    while (tasks_processed < peer_task_count) {
+      const size_t chunk_size =
+          std::min(base_batch_size, peer_task_count - tasks_processed);
+      const size_t chunk_start = peer_start + tasks_processed;
+
+      if (coalesce_window_bytes_ > 0) {
+        // Coalescing enabled: split this chunk into sub-batches that fit in
+        // `coalesce_window_bytes_`.
+        size_t sub_tasks_added = 0;
+        while (sub_tasks_added < chunk_size) {
+          size_t sub_batch_bytes = 0;
+          size_t sub_batch_count = 0;
+          for (size_t j = sub_tasks_added; j < chunk_size; ++j) {
+            const size_t task_size = grouped_tasks[chunk_start + j].size_bytes;
+            if (sub_batch_count > 0 &&
+                sub_batch_bytes + task_size > coalesce_window_bytes_) {
+              break;
+            }
+            sub_batch_bytes += task_size;
+            sub_batch_count++;
+          }
+          batches.push_back(
+              {peer, chunk_start + sub_tasks_added, sub_batch_count});
+          sub_tasks_added += sub_batch_count;
+        }
+      } else {
+        // Coalescing disabled: keep the chunk as one batch fits in IOV_MAX.
+        batches.push_back({peer, chunk_start, chunk_size});
+      }
+      tasks_processed += chunk_size;
     }
   }
 
@@ -620,21 +647,9 @@ absl::Status RawBufferTransport::PushBatch(
   auto fd_cleaner =
       absl::MakeCleanup([&] { conn_pool_.Return(ok_to_pool, fd, peer); });
 
-  ChunkHeader header = {};
-  header.op = kOpBufferPushBatched;
-  header.buffer_id = 0;
-  header.remote_id = 0;
-  header.local_id = 0;
-  header.count_or_size = static_cast<uint32_t>(batch_size);
-  header.uuid = uuid;
-
-  VLOG(1) << "Pushing batch to peer=" << peer << " uuid=" << uuid
-          << " batch_size=" << batch_size;
-
-  RETURN_IF_ERROR(WriteExact(fd, &header, sizeof(header)));
-
   std::vector<ChunkMetadata> metadata;
   metadata.reserve(batch_size);
+  size_t total_bytes = 0;
   for (size_t i = 0; i < batch_size; ++i) {
     const auto& task = tasks[start_idx + i];
     metadata.push_back({
@@ -643,26 +658,49 @@ absl::Status RawBufferTransport::PushBatch(
         .dst_offset_bytes = static_cast<uint32_t>(task.dst_offset_bytes),
         .size_bytes = static_cast<uint32_t>(task.size_bytes),
     });
+    total_bytes += task.size_bytes;
   }
-  RETURN_IF_ERROR(
-      WriteExact(fd, metadata.data(), sizeof(ChunkMetadata) * batch_size));
 
-  std::vector<struct iovec> iovs;
-  iovs.reserve(batch_size);
-  size_t total_bytes = 0;
-  for (size_t i = 0; i < batch_size; ++i) {
-    const auto& task = tasks[start_idx + i];
-    if (task.size_bytes > 0) {
-      struct iovec iov;
-      iov.iov_base = const_cast<uint8_t*>(task.data_ptr);
-      iov.iov_len = task.size_bytes;
-      iovs.push_back(iov);
-      total_bytes += task.size_bytes;
+  ChunkHeader header = {};
+  header.op = kOpBufferPushBatched;
+  header.buffer_id = 0;
+  header.remote_id = 0;
+  header.local_id = 0;
+  header.count_or_size = static_cast<uint32_t>(batch_size);
+  header.uuid = uuid;
+  const std::array<struct iovec, 2> iovs = {
+      iovec(&header, sizeof(header)),
+      iovec(metadata.data(), batch_size * sizeof(ChunkMetadata)),
+  };
+  RETURN_IF_ERROR(WriteVExact(fd, iovs));
+
+  if (coalesce_window_bytes_ > 0) {
+    // Coalesced path: pack and write
+    std::vector<uint8_t> pack_buf(total_bytes);
+    size_t pack_offset = 0;
+    for (size_t i = 0; i < batch_size; ++i) {
+      const auto& task = tasks[start_idx + i];
+      std::memcpy(pack_buf.data() + pack_offset, task.data_ptr,
+                  task.size_bytes);
+      pack_offset += task.size_bytes;
     }
-  }
-
-  if (total_bytes > 0) {
-    RETURN_IF_ERROR(WriteVExact(fd, iovs));
+    RETURN_IF_ERROR(WriteExact(fd, pack_buf.data(), total_bytes));
+  } else {
+    // Uncoalesced path: gather write (writev) directly from task pointers
+    std::vector<struct iovec> iovs;
+    iovs.reserve(batch_size);
+    for (size_t i = 0; i < batch_size; ++i) {
+      const auto& task = tasks[start_idx + i];
+      if (task.size_bytes > 0) {
+        struct iovec iov;
+        iov.iov_base = const_cast<uint8_t*>(task.data_ptr);
+        iov.iov_len = task.size_bytes;
+        iovs.push_back(iov);
+      }
+    }
+    if (!iovs.empty()) {
+      RETURN_IF_ERROR(WriteVExact(fd, iovs));
+    }
   }
 
   uint8_t ack = 0;

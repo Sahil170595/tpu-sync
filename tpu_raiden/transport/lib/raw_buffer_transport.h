@@ -55,7 +55,8 @@ class RawBufferTransport final {
   // IPv6 is preferred with IPv4 as a fallback.
   RawBufferTransport(RawBufferTransportDelegate* delegate, int local_port,
                      const std::vector<std::string>& local_ips = {},
-                     CustomRequestHandler custom_request_handler = nullptr);
+                     CustomRequestHandler custom_request_handler = nullptr,
+                     size_t coalesce_window_bytes = 0);
 
   // Destructor closes all sockets and joins all threads.
   ~RawBufferTransport();
@@ -125,6 +126,7 @@ class RawBufferTransport final {
   RawBufferTransportDelegate* const raw_delegate_;
   CustomRequestHandler custom_request_handler_;
 
+  const size_t coalesce_window_bytes_;
   const std::string bound_ip_;
   const std::vector<std::string> local_ips_;
   int local_port_;

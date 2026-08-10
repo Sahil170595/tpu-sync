@@ -30,6 +30,7 @@
 #include "absl/status/statusor.h"
 #include "absl/strings/escaping.h"
 #include "absl/strings/str_cat.h"
+#include "absl/strings/str_join.h"
 #include "absl/strings/string_view.h"
 #include "absl/synchronization/mutex.h"
 #include "absl/time/time.h"
@@ -1160,6 +1161,64 @@ tsl::Future<> HostOffloadBackend::LoadLocalHostBlocks(
   }
 
   return ctrl->TransferBuffers(src_buffers, dst_buffers);
+}
+
+absl::StatusOr<KVTransferSpecConfig> HostOffloadBackend::ComposeKVTransferSpec(
+    absl::Span<const core::controller::WorkerRegistration> workers) {
+  if (workers.empty()) {
+    return absl::FailedPreconditionError(
+        "no registered workers to derive a KVTransferSpec from");
+  }
+  const core::controller::WorkerRegistration& reference = workers[0];
+  std::vector<int64_t> node_ids;
+  node_ids.reserve(workers.size());
+  for (const core::controller::WorkerRegistration& worker : workers) {
+    if (worker.block_array_bytes.empty() || worker.num_kv_shards <= 0) {
+      return absl::FailedPreconditionError(absl::StrCat(
+          "worker ", worker.worker_id,
+          " registered without its KV block geometry (block_array_bytes, "
+          "num_kv_shards); every worker must report it for the deployment's "
+          "KVTransferSpec"));
+    }
+    if (worker.block_array_bytes != reference.block_array_bytes ||
+        worker.num_kv_shards != reference.num_kv_shards) {
+      return absl::InvalidArgumentError(absl::StrCat(
+          "workers ", reference.worker_id, " and ", worker.worker_id,
+          " registered different KV block geometry; one KVTransferSpec must "
+          "describe every worker of the deployment"));
+    }
+    node_ids.push_back(worker.node_id);
+  }
+  std::sort(node_ids.begin(), node_ids.end());
+  for (size_t i = 0; i < node_ids.size(); ++i) {
+    if (node_ids[i] != static_cast<int64_t>(i)) {
+      return absl::InvalidArgumentError(absl::StrCat(
+          "worker node ids must form the dense range [0, ", workers.size(),
+          "); got [", absl::StrJoin(node_ids, ", "), "]"));
+    }
+  }
+  KVTransferSpecConfig spec;
+  spec.block_array_bytes = reference.block_array_bytes;
+  spec.num_kv_shards = reference.num_kv_shards;
+  spec.num_workers = static_cast<int>(workers.size());
+  return spec;
+}
+
+absl::Status HostOffloadBackend::RegisterKVTransferSpecFromWorkers() {
+  controller::RaidenController* ctrl = nullptr;
+  {
+    absl::MutexLock lock(mutex_);
+    ctrl = raiden_controller_;
+  }
+  if (ctrl == nullptr || ctrl->worker_registry() == nullptr) {
+    return absl::FailedPreconditionError(
+        "HostOffloadBackend has no RaidenController; there are no worker "
+        "registrations to derive a KVTransferSpec from.");
+  }
+  ASSIGN_OR_RETURN(
+      const KVTransferSpecConfig spec,
+      ComposeKVTransferSpec(ctrl->worker_registry()->GetRegisteredWorkers()));
+  return RegisterKVTransferSpec(spec);
 }
 
 absl::Status HostOffloadBackend::RegisterKVTransferSpec(

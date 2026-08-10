@@ -32,6 +32,7 @@
 #include "absl/synchronization/mutex.h"
 #include "absl/types/span.h"
 #include "xla/tsl/concurrency/future.h"
+#include "tpu_raiden/core/controller/worker_registry.h"
 #include "tpu_raiden/kv_cache/global_registry/global_registry_client.h"
 #include "tpu_raiden/kv_cache/kv_cache_metadata.h"
 #include "tpu_raiden/kv_cache/kv_cache_store_backend.h"
@@ -214,11 +215,27 @@ class HostOffloadBackend : public KVCacheStoreBackend {
   // is a cache with no invalidation of its own.
   void InvalidateStoreClient(const RaidenId& remote_id);
 
+  // Composes the KVTransferSpec from the workers currently registered with
+  // the RaidenController and registers it with the global registry
+  // (first-wins, idempotent; see global_registry.proto). FailedPrecondition
+  // without a controller or without a global registry.
+  absl::Status RegisterKVTransferSpecFromWorkers();
+
  private:
+  friend class HostOffloadBackendTest;
+
+  // Derives the deployment's KVTransferSpec from the given worker
+  // registrations: every worker must have reported the same KV block geometry
+  // (block_array_bytes, num_kv_shards), and the node ids must form the dense
+  // range [0, num_workers) -- peers pair transfers on node_id, so a gap or
+  // duplicate would break the pairing. Returns the composed config, or the
+  // violation as an error.
+  static absl::StatusOr<KVTransferSpecConfig> ComposeKVTransferSpec(
+      absl::Span<const core::controller::WorkerRegistration> workers);
+
   // Registers the deployment's KVTransferSpec with the global registry, or
   // validates it against the already-registered one (first-wins, idempotent;
-  // see global_registry.proto). Called by Create() when the BackendConfig
-  // carries a spec. Requires a global registry.
+  // see global_registry.proto). Requires a global registry.
   absl::Status RegisterKVTransferSpec(const KVTransferSpecConfig& spec_config);
 
   absl::StatusOr<std::shared_ptr<KVCacheStoreClient>> GetKVCacheStoreClient(

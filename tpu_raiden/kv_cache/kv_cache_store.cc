@@ -203,6 +203,26 @@ absl::StatusOr<std::unique_ptr<KVCacheStore>> KVCacheStore::Create(
         std::make_unique<std::thread>(&KVCacheStore::PollerLoop, store.get());
   }
 
+  // The constructor above returned, so the expected workers have all
+  // registered -- with their KV block geometry -- and the deployment's
+  // KVTransferSpec can be derived and published. The tier-0 backend does all
+  // of that: registry interaction is its job, and the registry side is
+  // first-wins idempotent, so every serving host running this same code is
+  // safe.
+  const bool tier0_has_registry =
+      !backend_configs[0].global_registry_address.empty() ||
+      !global_registry_address.empty();
+  if (expected_worker_count > 0 && tier0_has_registry) {
+    auto* host_backend =
+        dynamic_cast<HostOffloadBackend*>(store->backend().get());
+    if (host_backend == nullptr) {
+      return absl::FailedPreconditionError(
+          "registering the KVTransferSpec requires a HostOffloadBackend at "
+          "tier 0");
+    }
+    RETURN_IF_ERROR(host_backend->RegisterKVTransferSpecFromWorkers());
+  }
+
   return store;
 }
 

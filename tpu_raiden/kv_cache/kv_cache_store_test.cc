@@ -49,11 +49,13 @@
 #include "grpcpp/support/status.h"
 #include "grpcpp/support/sync_stream.h"
 #include "xla/tsl/concurrency/future.h"
+#include "tpu_raiden/core/controller/controller_client.h"
 #include "tpu_raiden/core/controller/orchestrator_service_client.h"
 #include "tpu_raiden/core/controller/raiden_controller.h"
 #include "tpu_raiden/core/controller/raiden_orchestrator.h"
 #include "tpu_raiden/core/controller/test_util.h"
 #include "tpu_raiden/core/kv_manager_holder.h"
+#include "tpu_raiden/core/raiden_transfer_endpoint.h"
 #include "tpu_raiden/kv_cache/global_registry/global_registry.grpc.pb.h"
 #include "tpu_raiden/kv_cache/global_registry/global_registry_client.h"
 #include "tpu_raiden/kv_cache/global_registry/global_registry_server.h"
@@ -4460,6 +4462,62 @@ TEST(KVCacheStoreTest, LookupAndPinCapacityTruncation) {
   EXPECT_EQ(b1->GetPinCount("h1"), 1);
   EXPECT_EQ(b1->GetPinCount("h2"), 1);
   EXPECT_EQ(b2->GetPinCount("h3"), 0);
+}
+
+// The expected_worker_count sequencing inside Create (construction returns
+// only once the workers have registered, then the spec is published) is
+// covered by the controller-level tests and the deployment e2e test; here a
+// worker registers against an already-constructed store, which exercises the
+// same snapshot -> validate -> compose -> publish pipeline synchronously.
+TEST(KVCacheStoreTest, RegisterKVTransferSpecFromWorkersPublishesToRegistry) {
+  auto registry_service =
+      std::make_unique<global_registry::GlobalRegistryServiceImpl>();
+  grpc::ServerBuilder registry_builder;
+  int registry_port = 0;
+  registry_builder.AddListeningPort(
+      "localhost:0", grpc::InsecureServerCredentials(), &registry_port);
+  registry_builder.RegisterService(registry_service.get());
+  auto registry_server = registry_builder.BuildAndStart();
+  ASSERT_NE(registry_server, nullptr);
+  std::string registry_address = absl::StrCat("localhost:", registry_port);
+
+  BackendConfig config;
+  config.type = "HostOffloadBackend";
+  auto store_or = KVCacheStore::Create(
+      config, /*capacity=*/4, registry_address, RaidenId{"job", "0", "data", 0},
+      /*num_shards=*/2, /*shard_size_bytes=*/512,
+      /*raiden_orchestrator_address=*/"",
+      /*store_server_ip=*/"127.0.0.1");
+  ASSERT_OK(store_or.status());
+  KVCacheStore& store = **store_or;
+
+  // A live WorkerService to register: registration probes the worker's
+  // endpoint with an empty CreateBuffers RPC and rejects an unreachable one.
+  auto worker_server = ::tpu_raiden::controller::CreateTestWorkerServer();
+  core::controller::RaidenControllerClient controller_client(
+      store.raiden_controller_address());
+  ASSERT_OK(controller_client.RegisterWorker(
+      "worker_0", worker_server->server_address,
+      {::tpu_raiden::RaidenTransferEndpoint{worker_server->server_address, {}}},
+      /*node_id=*/0, /*block_array_bytes=*/{4096, 512},
+      /*num_kv_shards=*/2));
+
+  auto* backend = dynamic_cast<HostOffloadBackend*>(store.backend().get());
+  ASSERT_NE(backend, nullptr);
+  ASSERT_OK(backend->RegisterKVTransferSpecFromWorkers());
+
+  global_registry::GlobalRegistryClient registry_client(grpc::CreateChannel(
+      registry_address, grpc::InsecureChannelCredentials()));
+  auto spec_or = registry_client.GetKVTransferSpec();
+  ASSERT_OK(spec_or.status());
+  ASSERT_EQ(spec_or->block_arrays_size(), 2);
+  EXPECT_EQ(spec_or->block_arrays(0).block_bytes(), 4096);
+  EXPECT_EQ(spec_or->block_arrays(1).block_bytes(), 512);
+  EXPECT_EQ(spec_or->num_kv_shards(), 2);
+  EXPECT_EQ(spec_or->num_workers(), 1);
+
+  store_or->reset();
+  registry_server->Shutdown();
 }
 
 }  // namespace

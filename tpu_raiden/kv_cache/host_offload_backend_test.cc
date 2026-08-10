@@ -19,6 +19,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <gmock/gmock.h>
@@ -36,6 +37,7 @@
 #include "tpu_raiden/core/controller/raiden_controller.h"
 #include "tpu_raiden/core/controller/raiden_orchestrator.h"
 #include "tpu_raiden/core/controller/test_util.h"
+#include "tpu_raiden/core/controller/worker_registry.h"
 #include "tpu_raiden/core/kv_manager_holder.h"
 #include "tpu_raiden/kv_cache/global_registry/global_registry_client.h"
 #include "tpu_raiden/kv_cache/global_registry/global_registry_server.h"
@@ -48,6 +50,15 @@
 
 namespace tpu_raiden {
 namespace kv_cache {
+
+class HostOffloadBackendTest {
+ public:
+  static absl::StatusOr<KVTransferSpecConfig> ComposeKVTransferSpec(
+      absl::Span<const core::controller::WorkerRegistration> workers) {
+    return HostOffloadBackend::ComposeKVTransferSpec(workers);
+  }
+};
+
 namespace {
 
 using ::testing::UnorderedElementsAre;
@@ -274,6 +285,72 @@ TEST(HostOffloadBackendTest, KVTransferSpecWithoutRegistryFailsCreation) {
       .block_array_bytes = {4096}, .num_kv_shards = 1, .num_workers = 1};
   EXPECT_TRUE(absl::IsFailedPrecondition(
       HostOffloadBackend::Create(config).status()));
+}
+
+core::controller::WorkerRegistration GeometryWorker(
+    const std::string& worker_id, int64_t node_id,
+    std::vector<uint64_t> block_array_bytes, int32_t num_kv_shards) {
+  core::controller::WorkerRegistration reg;
+  reg.worker_id = worker_id;
+  reg.node_id = node_id;
+  reg.block_array_bytes = std::move(block_array_bytes);
+  reg.num_kv_shards = num_kv_shards;
+  return reg;
+}
+
+TEST(HostOffloadBackendTest, ComposeKVTransferSpecFromUniformWorkers) {
+  std::vector<core::controller::WorkerRegistration> workers;
+  workers.push_back(GeometryWorker("w1", /*node_id=*/1, {4096, 512}, 2));
+  workers.push_back(GeometryWorker("w0", /*node_id=*/0, {4096, 512}, 2));
+
+  auto spec = HostOffloadBackendTest::ComposeKVTransferSpec(workers);
+  ASSERT_OK(spec.status());
+  EXPECT_EQ(spec->block_array_bytes, (std::vector<uint64_t>{4096, 512}));
+  EXPECT_EQ(spec->num_kv_shards, 2);
+  EXPECT_EQ(spec->num_workers, 2);
+}
+
+TEST(HostOffloadBackendTest, ComposeKVTransferSpecRejectsEmptyWorkerList) {
+  EXPECT_THAT(HostOffloadBackendTest::ComposeKVTransferSpec({}).status(),
+              ::absl_testing::StatusIs(absl::StatusCode::kFailedPrecondition));
+}
+
+TEST(HostOffloadBackendTest, ComposeKVTransferSpecRejectsMissingGeometry) {
+  std::vector<core::controller::WorkerRegistration> workers;
+  workers.push_back(GeometryWorker("w0", /*node_id=*/0, {4096}, 2));
+  workers.push_back(
+      GeometryWorker("w1", /*node_id=*/1, /*block_array_bytes=*/{},
+                     /*num_kv_shards=*/0));
+
+  EXPECT_THAT(HostOffloadBackendTest::ComposeKVTransferSpec(workers).status(),
+              ::absl_testing::StatusIs(absl::StatusCode::kFailedPrecondition));
+}
+
+TEST(HostOffloadBackendTest, ComposeKVTransferSpecRejectsMismatchedGeometry) {
+  std::vector<core::controller::WorkerRegistration> workers;
+  workers.push_back(GeometryWorker("w0", /*node_id=*/0, {4096, 512}, 2));
+  workers.push_back(GeometryWorker("w1", /*node_id=*/1, {4096, 1024}, 2));
+
+  EXPECT_THAT(HostOffloadBackendTest::ComposeKVTransferSpec(workers).status(),
+              ::absl_testing::StatusIs(absl::StatusCode::kInvalidArgument));
+}
+
+TEST(HostOffloadBackendTest, ComposeKVTransferSpecRejectsSparseNodeIds) {
+  std::vector<core::controller::WorkerRegistration> workers;
+  workers.push_back(GeometryWorker("w0", /*node_id=*/0, {4096}, 2));
+  workers.push_back(GeometryWorker("w2", /*node_id=*/2, {4096}, 2));
+
+  EXPECT_THAT(HostOffloadBackendTest::ComposeKVTransferSpec(workers).status(),
+              ::absl_testing::StatusIs(absl::StatusCode::kInvalidArgument));
+}
+
+TEST(HostOffloadBackendTest, ComposeKVTransferSpecRejectsDuplicateNodeIds) {
+  std::vector<core::controller::WorkerRegistration> workers;
+  workers.push_back(GeometryWorker("w0", /*node_id=*/0, {4096}, 2));
+  workers.push_back(GeometryWorker("w0b", /*node_id=*/0, {4096}, 2));
+
+  EXPECT_THAT(HostOffloadBackendTest::ComposeKVTransferSpec(workers).status(),
+              ::absl_testing::StatusIs(absl::StatusCode::kInvalidArgument));
 }
 
 TEST(HostOffloadBackendTest, ServerLifecycleAndControllerInitialization) {

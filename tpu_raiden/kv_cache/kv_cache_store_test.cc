@@ -31,6 +31,7 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include "absl/base/thread_annotations.h"
+#include "absl/log/check.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
@@ -4518,6 +4519,134 @@ TEST(KVCacheStoreTest, RegisterKVTransferSpecFromWorkersPublishesToRegistry) {
 
   store_or->reset();
   registry_server->Shutdown();
+}
+
+// ===========================================================================
+// Interleaved local/remote hits, seen through KVCacheStore::Lookup.
+// ===========================================================================
+
+// A store backed by a live registry, with two blocks cached locally and two
+// owned by a peer, so a lookup can alternate between the two sources.
+struct StoreInterleaveFixture {
+  std::unique_ptr<global_registry::TestGlobalRegistryServer> registry;
+  std::unique_ptr<KVCacheStore> store;
+  RaidenId store_id{"store_job", "0", "kv_cache", 0};
+  RaidenId peer_id{"peer_job", "0", "kv_cache", 0};
+};
+
+std::unique_ptr<StoreInterleaveFixture> MakeStoreInterleaveFixture(
+    size_t capacity = 50) {
+  auto f = std::make_unique<StoreInterleaveFixture>();
+  f->registry = global_registry::CreateTestGlobalRegistryServer();
+
+  CHECK_OK(f->registry->client->Register(
+      {{"r1", f->peer_id, 42}, {"r2", f->peer_id, 43}}));
+
+  f->store = std::make_unique<KVCacheStore>(
+      capacity, f->registry->server_address, f->store_id, /*num_shards=*/1,
+      /*shard_size_bytes=*/512, /*raiden_orchestrator_address=*/"",
+      /*store_server_ip=*/"127.0.0.1");
+
+  f->store->Insert({"l1", "l2"},
+                   {RaidenBlockID(f->store_id, 11, BlockStatus::HOST),
+                    RaidenBlockID(f->store_id, 12, BlockStatus::HOST)},
+                   /*on_host=*/true);
+  // Insert publishes what it caches. Withdrawing those registrations keeps the
+  // registry unable to answer for "l1"/"l2", which is what makes the source of
+  // each entry in the answer identifiable.
+  CHECK_OK(f->registry->client->Unregister({"l1", "l2"}, f->store_id));
+  return f;
+}
+
+TEST(KVCacheStoreTest, LookupInterleavesLocalAndRemoteThroughTheStore) {
+  auto f = MakeStoreInterleaveFixture();
+
+  auto res = f->store->Lookup({"r1", "l1", "r2", "l2", "nowhere"});
+  ASSERT_TRUE(res.ok());
+  ASSERT_EQ(res->size(), 4);
+
+  EXPECT_EQ((*res)[0].second.status, BlockStatus::REMOTE);
+  EXPECT_EQ((*res)[0].second.raiden_id, f->peer_id);
+  EXPECT_EQ((*res)[0].second.host_block_id, 42);
+
+  EXPECT_EQ((*res)[1].second.status, BlockStatus::HOST);
+  EXPECT_EQ((*res)[1].second.raiden_id, f->store_id);
+  EXPECT_EQ((*res)[1].second.host_block_id, 11);
+
+  EXPECT_EQ((*res)[2].second.status, BlockStatus::REMOTE);
+  EXPECT_EQ((*res)[2].second.host_block_id, 43);
+
+  EXPECT_EQ((*res)[3].second.status, BlockStatus::HOST);
+  EXPECT_EQ((*res)[3].second.host_block_id, 12);
+}
+
+TEST(KVCacheStoreTest, LookupInterleavedWithPinFoundPinsOnlyLocalEntries) {
+  auto f = MakeStoreInterleaveFixture();
+
+  auto res = f->store->Lookup({"r1", "l1", "r2", "l2", "nowhere"},
+                              LookupOptions{.pin_found = true});
+  ASSERT_TRUE(res.ok());
+  ASSERT_EQ(res->size(), 4);
+  EXPECT_EQ(f->store->GetPinCount("l1"), 1);
+  EXPECT_EQ(f->store->GetPinCount("l2"), 1);
+  // A registry descriptor has no local entry behind it, so there is nothing to
+  // pin -- and releasing the whole answer must stay safe despite that.
+  EXPECT_EQ(f->store->GetPinCount("r1"), 0);
+  EXPECT_EQ(f->store->GetPinCount("r2"), 0);
+
+  f->store->Release({"r1", "l1", "r2", "l2"});
+  EXPECT_EQ(f->store->GetPinCount("l1"), 0);
+  EXPECT_EQ(f->store->GetPinCount("l2"), 0);
+}
+
+TEST(KVCacheStoreTest, LookupInterleavedDisabledThroughTheStore) {
+  auto f = MakeStoreInterleaveFixture();
+
+  // The sweep stops at "r1", so "l1" can only be looked for in the registry,
+  // which no longer answers for it.
+  auto legacy = f->store->Lookup(
+      {"r1", "l1"}, LookupOptions{.enable_interleaved_lookup = false});
+  ASSERT_TRUE(legacy.ok());
+  ASSERT_EQ(legacy->size(), 1);
+  EXPECT_EQ((*legacy)[0].first, "r1");
+
+  auto interleaved = f->store->Lookup({"r1", "l1"});
+  ASSERT_TRUE(interleaved.ok());
+  ASSERT_EQ(interleaved->size(), 2);
+  EXPECT_EQ((*interleaved)[1].first, "l1");
+  EXPECT_EQ((*interleaved)[1].second.status, BlockStatus::HOST);
+}
+
+TEST(KVCacheStoreTest, LookupInterleavedWithoutGlobalStopsAtTheLocalMiss) {
+  auto f = MakeStoreInterleaveFixture();
+
+  for (bool interleaved : {true, false}) {
+    auto res = f->store->Lookup(
+        {"l1", "r1", "l2"},
+        LookupOptions{.enable_global = false,
+                      .enable_interleaved_lookup = interleaved});
+    ASSERT_TRUE(res.ok());
+    ASSERT_EQ(res->size(), 1) << "interleaved=" << interleaved;
+    EXPECT_EQ((*res)[0].first, "l1");
+  }
+}
+
+TEST(KVCacheStoreTest, LookupInterleavedTruncatesToCapacityAndUnwindsPins) {
+  // Capacity 2 cuts the four-entry interleaved answer in half, so the store has
+  // to release pins the backend took for entries it is dropping -- including
+  // for a registry descriptor it never pinned, which must stay harmless.
+  auto f = MakeStoreInterleaveFixture(/*capacity=*/2);
+
+  auto res = f->store->Lookup({"r1", "l1", "r2", "l2"},
+                              LookupOptions{.pin_found = true});
+  ASSERT_TRUE(res.ok());
+  ASSERT_EQ(res->size(), 2);
+  EXPECT_EQ((*res)[0].first, "r1");
+  EXPECT_EQ((*res)[1].first, "l1");
+
+  EXPECT_EQ(f->store->GetPinCount("l1"), 1);
+  EXPECT_EQ(f->store->GetPinCount("l2"), 0);
+  EXPECT_EQ(f->store->GetPinCount("r2"), 0);
 }
 
 }  // namespace

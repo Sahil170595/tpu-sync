@@ -660,6 +660,33 @@ py_test(
     ],
 )
 
+py_test(
+    name = "weight_synchronization_perf_gl",
+    timeout = "long",
+    srcs = ["weight_synchronization_perf_test.py"],
+    main = "weight_synchronization_perf_test.py",
+    tags = [
+        "cpu:8",
+        "notap",
+        "requires-accel-hbm",
+        "requires-ghostlite:8",
+        "requires-net:external",
+    ],
+    deps = [
+        ":jax_test_utils",
+        ":resharding_planner",
+        "//third_party/py/absl/logging",
+        "//tpu_raiden/api/jax:weight_synchronizer_jax_py",
+        "//tpu_raiden/rpc:raiden_controller",
+        "//tpu_raiden/rpc:raiden_service_py_pb2",
+        "@com_google_absl_py//absl/flags",
+        "@com_google_absl_py//absl/testing:absltest",
+        "@com_google_absl_py//absl/testing:parameterized",
+        "@jax//jax",
+        "@pypi//numpy",
+    ],
+)
+
 cc_library(
     name = "kv_cache_manager_core_lib",
     srcs = ["kv_cache_manager.cc"],

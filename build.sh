@@ -179,6 +179,82 @@ if [ "$BUILD_TORCH" = true ]; then
   fi
   TORCH_TPU_MODULE_PATH="$(cd "${TORCH_TPU_MODULE_PATH}" && pwd)"
   BAZEL_MODULE_FLAGS+=("--override_module=torch_tpu=${TORCH_TPU_MODULE_PATH}")
+
+  # The torch extension calls virtual methods on PJRT objects that torch_tpu
+  # constructs, so both binaries must be compiled from XLA revisions with the
+  # same C++ ABI on that surface. MODULE.bazel's xla pin follows JAX's and
+  # covers only the JAX leg; torch-only builds therefore compile against the
+  # exact XLA revision the torch_tpu checkout pins, materialized locally with
+  # this repo's xla patches applied (a path override bypasses git_override
+  # patching). RAIDEN_TORCH_XLA=<dir> supplies a pre-patched tree instead;
+  # RAIDEN_TORCH_XLA=module keeps MODULE.bazel's pin. A combined jax+torch
+  # invocation has a single xla module and cannot express both pins.
+  if [ "$BUILD_JAX" = true ]; then
+    echo "WARNING: combined jax+torch build uses MODULE.bazel's xla pin for" \
+         "both legs; the torch leg is NOT built against torch_tpu's XLA" \
+         "revision. Release torch builds must be torch-only." >&2
+  elif [[ "${RAIDEN_TORCH_XLA:-}" == "module" ]]; then
+    echo "RAIDEN_TORCH_XLA=module: torch leg uses MODULE.bazel's xla pin."
+  else
+    # Downloads <repo>/archive/<commit>.tar.gz into the bazel cache (keyed by
+    # commit, reused across builds) and applies every patch in <patches_dir>;
+    # a path override bypasses bzlmod's own patching, so the tree must be
+    # patched here. Sets MATERIALIZED_DIR to the result.
+    materialize_pinned_module() {
+      local repo="$1" commit="$2" patches_dir="$3"
+      local name; name="$(basename "${repo}")"
+      MATERIALIZED_DIR="${BAZEL_CACHE_BASE}/torch_leg_deps/${name}/${commit}"
+      if [[ ! -f "${MATERIALIZED_DIR}/MODULE.bazel" ]]; then
+        echo "Materializing ${name} @ ${commit} with patches..."
+        mkdir -p "${BAZEL_CACHE_BASE}"
+        local stage; stage="$(mktemp -d "${BAZEL_CACHE_BASE}/${name}_stage.XXXXXX")"
+        download_file "${repo}/archive/${commit}.tar.gz" "${stage}/src.tar.gz"
+        tar -xzf "${stage}/src.tar.gz" -C "${stage}"
+        if [[ -n "${patches_dir}" ]]; then
+          local p
+          for p in "${patches_dir}"/*.patch; do
+            patch -p1 -s -d "${stage}/${name}-${commit}" < "$p"
+          done
+        fi
+        mkdir -p "$(dirname "${MATERIALIZED_DIR}")"
+        mv "${stage}/${name}-${commit}" "${MATERIALIZED_DIR}"
+        rm -rf "${stage}"
+      fi
+    }
+
+    if [[ -n "${RAIDEN_TORCH_XLA:-}" ]]; then
+      TORCH_XLA_DIR="$(cd "${RAIDEN_TORCH_XLA}" && pwd)"
+    else
+      XLA_REVISION_FILE="${TORCH_TPU_MODULE_PATH}/bazel/xla_revision.bzl"
+      XLA_COMMIT="$(sed -n -E 's/^XLA_COMMIT = "([0-9a-f]{40})".*/\1/p' "${XLA_REVISION_FILE}")"
+      if [[ -z "${XLA_COMMIT}" ]]; then
+        echo "Error: could not read XLA_COMMIT from ${XLA_REVISION_FILE}." >&2
+        exit 1
+      fi
+      materialize_pinned_module "https://github.com/openxla/xla" \
+        "${XLA_COMMIT}" "${WORKSPACE_DIR}/third_party/xla"
+      TORCH_XLA_DIR="${MATERIALIZED_DIR}"
+    fi
+    echo "torch leg xla override: ${TORCH_XLA_DIR}"
+    BAZEL_MODULE_FLAGS+=("--override_module=xla=${TORCH_XLA_DIR}")
+
+    # xla's module extensions call rules_ml_toolchain rules and the two move
+    # together upstream, so the revision must match the xla override rather
+    # than MODULE.bazel's pin. The xla tree pins its compatible revision in
+    # its own MODULE.bazel; mirror that pin. Used unpatched: the load fix in
+    # third_party/rules_ml_toolchain/*.patch targets the older revision
+    # MODULE.bazel pins and is already upstream at the revisions xla pins.
+    RMT_COMMIT="$(sed -n -E 's/.*strip_prefix = "rules_ml_toolchain-([0-9a-f]{40})".*/\1/p' \
+      "${TORCH_XLA_DIR}/MODULE.bazel" | head -1)"
+    if [[ -z "${RMT_COMMIT}" ]]; then
+      echo "Error: could not read the rules_ml_toolchain pin from ${TORCH_XLA_DIR}/MODULE.bazel." >&2
+      exit 1
+    fi
+    materialize_pinned_module "https://github.com/google-ml-infra/rules_ml_toolchain" \
+      "${RMT_COMMIT}" ""
+    echo "torch leg rules_ml_toolchain override: ${MATERIALIZED_DIR}"
+    BAZEL_MODULE_FLAGS+=("--override_module=rules_ml_toolchain=${MATERIALIZED_DIR}")
+  fi
   if [[ -z "${TORCH_SOURCE:-}" ]]; then
     TORCH_SOURCE="$(python3 - <<'PY'
 import importlib.util

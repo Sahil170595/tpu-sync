@@ -35,10 +35,10 @@
 # This script installs clang-18 + CPU torch into the container, mounts a sibling
 # torch_tpu checkout, and runs build.sh for the wheel target.
 #
-# Usage:
-#   ci/build_wheel.sh                  # JAX + Torch (needs ../torch_tpu)
-#   WITH_TORCH=0 ci/build_wheel.sh     # JAX only
-#   TORCH_TPU_SRC=/path ci/build_wheel.sh
+# One wheel per invocation:
+#   ci/build_wheel.sh [jax]            # tpu_raiden_jax
+#   ci/build_wheel.sh torch            # tpu_raiden_torch (needs ../torch_tpu)
+#   TORCH_TPU_SRC=/path ci/build_wheel.sh torch
 
 set -exu -o pipefail
 
@@ -55,7 +55,12 @@ if [[ -n "$(git -C "${REPO_ROOT}" status --porcelain 2>/dev/null)" ]]; then
 fi
 echo "raiden source commit: ${RAIDEN_COMMIT}"
 
-WITH_TORCH="${WITH_TORCH:-1}"
+BUILD_MODE="${1:-jax}"
+if [[ "${BUILD_MODE}" != "torch" && "${BUILD_MODE}" != "jax" ]]; then
+  echo "Usage: ci/build_wheel.sh [torch|jax]" >&2
+  exit 1
+fi
+
 # Torch releases bundled as extra ABI variants next to the primary (the
 # container's torch). Mirrors torch_tpu's supported-torch glue set, limited to
 # releases installable from the PyTorch CPU wheel index (torch_tpu also carries
@@ -75,17 +80,19 @@ DOCKER_MOUNTS=(
   -v "${REPO_ROOT}:/workspace"
   -v "${CACHE_DIR}:/cache"
 )
-BUILD_MODE="jax"
-if [[ "${WITH_TORCH}" == "1" ]]; then
+# The torch wheel has no jax deps; a torch-only build.sh invocation also lets
+# the torch leg compile against the mounted torch_tpu's pinned XLA revision
+# (see the xla override in build.sh), which a combined jax+torch invocation
+# cannot do.
+if [[ "${BUILD_MODE}" == "torch" ]]; then
   if [[ ! -f "${TORCH_TPU_SRC}/MODULE.bazel" ]]; then
     echo "ERROR: torch build needs a torch_tpu checkout at ${TORCH_TPU_SRC}" >&2
-    echo "       set TORCH_TPU_SRC=<path> or WITH_TORCH=0 for a JAX-only wheel." >&2
+    echo "       set TORCH_TPU_SRC=<path> or build with 'ci/build_wheel.sh jax'." >&2
     exit 1
   fi
   TORCH_TPU_SRC="$(cd "${TORCH_TPU_SRC}" && pwd)"
   echo "torch_tpu source commit: $(git -C "${TORCH_TPU_SRC}" rev-parse HEAD 2>/dev/null || echo unknown)"
   DOCKER_MOUNTS+=(-v "${TORCH_TPU_SRC}:/torch_tpu")  # sibling ../torch_tpu == /torch_tpu
-  BUILD_MODE="both"
 fi
 
 # The in-container build: install clang-18 (XLA .ll targets) + CPU torch (shim
@@ -94,7 +101,7 @@ read -r -d '' INNER <<'INNER_EOF' || true
 set -exu -o pipefail
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y -qq wget gnupg ca-certificates patchelf >/dev/null
+apt-get install -y -qq wget gnupg ca-certificates patchelf patch >/dev/null
 # Add the LLVM jammy-18 apt repo manually (the container's add-apt-repository is
 # broken: python apt_pkg is missing for python3.12).
 wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | gpg --dearmor -o /usr/share/keyrings/llvm.gpg
@@ -106,7 +113,7 @@ ln -sf /usr/bin/clang-18 /usr/bin/clang
 ln -sf /usr/bin/clang++-18 /usr/bin/clang++
 clang --version | head -1
 
-if [[ "${WITH_TORCH}" == "1" ]]; then
+if [[ "${BUILD_MODE}" == "torch" ]]; then
   # raiden is built on top of torch_tpu: raiden's _tpu_raiden_torch.so and
   # torch_tpu's libpywrap_torch_tpu_common.so must resolve the SAME libtorch
   # symbols at runtime. So raiden MUST compile against the EXACT torch that
@@ -150,8 +157,8 @@ export BAZEL_CACHE_DIR=/cache
 export BAZEL_OUTPUT_BASE=/cache/output_base
 
 # Separate per-framework wheels: tpu_raiden_torch (no jax deps) vs
-# tpu_raiden_jax. Pick by WITH_TORCH.
-if [[ "${WITH_TORCH}" == "1" ]]; then
+# tpu_raiden_jax. Pick by BUILD_MODE.
+if [[ "${BUILD_MODE}" == "torch" ]]; then
   WHEEL_TARGET="//ci/wheel:raiden_torch_wheel"
   WHEEL_DIST="tpu_raiden_torch"
 else
@@ -184,7 +191,7 @@ cp /cache/output_base/execroot/_main/bazel-out/k8-opt/bin/ci/wheel/${WHEEL_GLOB}
 torch_suffix() {
   python3 -c 'import torch, re; v = re.match(r"(\d+)\.(\d+)\.(\d+)", torch.__version__); print(f"{v.group(1)}_{v.group(2)}_{v.group(3)}")'
 }
-if [[ "${WITH_TORCH}" == "1" ]]; then
+if [[ "${BUILD_MODE}" == "torch" ]]; then
   pip install -q wheel
   WHL="$(ls /workspace/dist/${WHEEL_GLOB} | head -1)"
   UNPACK_DIR="$(mktemp -d)"
@@ -230,7 +237,6 @@ docker run --rm \
   -w /workspace \
   -e WHEEL_VERSION_EXTRAS="${WHEEL_VERSION_EXTRAS}" \
   -e RAIDEN_EXTRA_TORCH_ABIS="${RAIDEN_EXTRA_TORCH_ABIS:-}" \
-  -e WITH_TORCH="${WITH_TORCH}" \
   -e BUILD_MODE="${BUILD_MODE}" \
   "${CONTAINER_IMAGE}" \
   bash -c "${INNER}"

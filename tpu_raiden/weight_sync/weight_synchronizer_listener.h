@@ -46,7 +46,7 @@ class WeightSynchronizerListener final {
 
   WeightSynchronizerBase* engine_;
   int listener_port_;
-  int server_fd_ = -1;
+  std::atomic<int> server_fd_{-1};
   std::atomic<bool> stopping_{false};
 
   std::thread listener_thread_;

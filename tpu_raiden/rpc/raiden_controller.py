@@ -1191,6 +1191,7 @@ class RaidenController:
     self.broadcast_k = int(os.environ.get("RAIDEN_BROADCAST_K", "2"))
     self._active_transfers: dict[str, TransferPlan] = {}
     self._active_tasks: dict[str, RaidenFuture] = {}
+    self._task_units: dict[str, list[RaidenId]] = {}
     self._registered_shards: dict[RaidenId, list[str]] = {}
     self._registered_mesh_shapes: dict[RaidenId, list[int]] = {}
     self._registered_mesh_axes: dict[RaidenId, list[str]] = {}
@@ -1326,6 +1327,15 @@ class RaidenController:
     # one-endpoint-per-unit contract at plan time.
 
     with self._lock:
+      if unit in self._registered_shards:
+        tasks_to_clear = []
+        for req_id, units in self._task_units.items():
+          if unit in units:
+            tasks_to_clear.append(req_id)
+        for req_id in tasks_to_clear:
+          self._active_tasks.pop(req_id, None)
+          self._task_units.pop(req_id, None)
+
       self._registered_shards[unit] = list(shards)
       # A worker restart invalidates every request-local physical block ID
       # previously reported by that identity.
@@ -2850,6 +2860,7 @@ class RaidenController:
     )
     with self._lock:
       self._active_tasks[req_id] = future
+      self._task_units[req_id] = list(src_units) + list(dst_units)
     return future
 
   def start_transfer(
@@ -3346,10 +3357,18 @@ class RaidenController:
                       continue
 
                     dst_shards = []
+                    dst_phys_mesh_shape = None
+                    dst_mesh_axes = None
                     for meta in dst_metadata:
                       meta_unit = _raiden_id_from_proto(meta.unit)
                       if meta_unit == dst_unit:
                         dst_shards = list(meta.shards)
+                        dst_phys_mesh_shape = (
+                            list(meta.mesh_shape) if meta.mesh_shape else None
+                        )
+                        dst_mesh_axes = (
+                            list(meta.mesh_axes) if meta.mesh_axes else None
+                        )
                         break
                     if not dst_shards:
                       dst_shards = ["127.0.0.1:8000"]  # fallback
@@ -3360,10 +3379,6 @@ class RaidenController:
                           for m in dst_metadata
                           if m.unit.job_name == dst_unit.job_name
                       }
-                      dst_phys_mesh_shape = self._registered_mesh_shapes.get(
-                          dst_unit
-                      )
-                      dst_mesh_axes = self._registered_mesh_axes.get(dst_unit)
                     num_dst_physical_hosts = max(1, len(dst_job_replicas))
 
                     dst_logical_mesh = list(dst_var.mesh_shape)
@@ -3877,6 +3892,7 @@ class RaidenController:
     future = RaidenFuture(session_id=session_id, transfer_task=transfer_task)
     with self._lock:
       self._active_tasks[req_id] = future
+      self._task_units[req_id] = list(src_units) + list(dst_units)
     return future
 
   def get_transfer_status(self, req_id: str) -> int:

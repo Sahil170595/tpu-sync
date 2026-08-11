@@ -38,14 +38,15 @@ namespace weight_sync {
 WeightSynchronizerListener::WeightSynchronizerListener(
     WeightSynchronizerBase* engine, int listener_port)
     : engine_(engine), listener_port_(listener_port) {
-  server_fd_ = socket(AF_INET6, SOCK_STREAM, 0);
-  if (server_fd_ < 0) {
+  int sock = socket(AF_INET6, SOCK_STREAM, 0);
+  server_fd_.store(sock);
+  if (sock < 0) {
     LOG(FATAL) << "Failed to create C++ Listener socket: "
                << std::strerror(errno);
   }
 
   int opt = 1;
-  if (setsockopt(server_fd_, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt))) {
+  if (setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt))) {
     LOG(WARNING) << "setsockopt SO_REUSEADDR failed";
   }
 
@@ -55,19 +56,18 @@ WeightSynchronizerListener::WeightSynchronizerListener(
   address.sin6_port = htons(listener_port_);
 
   // Bind to the requested port (0 for OS auto-allocation)
-  if (bind(server_fd_, reinterpret_cast<sockaddr*>(&address), sizeof(address)) <
-      0) {
+  if (bind(sock, reinterpret_cast<sockaddr*>(&address), sizeof(address)) < 0) {
     LOG(FATAL) << "C++ Listener bind failed on port " << listener_port_ << ": "
                << std::strerror(errno);
   }
 
-  if (listen(server_fd_, 128) < 0) {
+  if (listen(sock, 128) < 0) {
     LOG(FATAL) << "C++ Listener listen failed: " << std::strerror(errno);
   }
 
   socklen_t addr_len = sizeof(address);
-  if (getsockname(server_fd_, reinterpret_cast<sockaddr*>(&address),
-                  &addr_len) == 0) {
+  if (getsockname(sock, reinterpret_cast<sockaddr*>(&address), &addr_len) ==
+      0) {
     listener_port_ = ntohs(address.sin6_port);
   }
 
@@ -81,27 +81,10 @@ WeightSynchronizerListener::WeightSynchronizerListener(
 
 WeightSynchronizerListener::~WeightSynchronizerListener() {
   stopping_ = true;
-  if (server_fd_ >= 0) {
-    int sock = socket(AF_INET6, SOCK_STREAM, 0);
-    if (sock >= 0) {
-      sockaddr_in6 serv_addr{};
-      serv_addr.sin6_family = AF_INET6;
-      serv_addr.sin6_port = htons(listener_port_);
-      serv_addr.sin6_addr = in6addr_loopback;
-      if (connect(sock, reinterpret_cast<sockaddr*>(&serv_addr),
-                  sizeof(serv_addr)) == 0) {
-        tpu_raiden::rpc::ControlRequest req;
-        req.set_command(tpu_raiden::rpc::ControlRequest::COMMAND_SHUTDOWN);
-        std::string payload;
-        if (req.SerializeToString(&payload)) {
-          uint32_t net_len = htonl(payload.size());
-          write(sock, &net_len, sizeof(net_len));
-          write(sock, payload.data(), payload.size());
-        }
-      }
-      close(sock);
-    }
-    close(server_fd_);
+  int fd = server_fd_.exchange(-1);
+  if (fd >= 0) {
+    shutdown(fd, SHUT_RDWR);
+    close(fd);
   }
 
   if (listener_thread_.joinable()) {
@@ -119,8 +102,9 @@ void WeightSynchronizerListener::ListenerLoop() {
   while (!stopping_) {
     sockaddr_in6 client_addr{};
     socklen_t client_len = sizeof(client_addr);
-    int client_fd = accept(
-        server_fd_, reinterpret_cast<sockaddr*>(&client_addr), &client_len);
+    int client_fd =
+        accept(server_fd_.load(), reinterpret_cast<sockaddr*>(&client_addr),
+               &client_len);
     if (client_fd < 0) {
       if (stopping_) break;
       continue;
@@ -231,6 +215,11 @@ void WeightSynchronizerListener::ConnectionWorker(int client_fd) {
     LOG(INFO) << "C++ Listener received SHUTDOWN command. Initiating "
                  "clean exit.";
     stopping_ = true;
+    int fd = server_fd_.exchange(-1);
+    if (fd >= 0) {
+      shutdown(fd, SHUT_RDWR);
+      close(fd);
+    }
   } else {
     resp.set_success(false);
     resp.set_message("COMMAND_UNSPECIFIED");

@@ -18,6 +18,7 @@
 #include <cstdint>
 #include <memory>
 
+#include "absl/types/span.h"
 #include "xla/ffi/api/ffi.h"
 #include "xla/stream_executor/stream.h"
 
@@ -29,15 +30,18 @@ void ClearSharedWsMap();
 
 xla::ffi::Error TriggerWeightSynchronizerInitImpl(
     xla::ffi::AnyBuffer x, xla::ffi::AnyBuffer shard_idx_buf,
-    int64_t slice_byte_size, int32_t local_port, int32_t parallelism,
-    int32_t num_layers, int32_t listener_port,
-    xla::ffi::Result<xla::ffi::AnyBuffer> out);
+    xla::ffi::AnyBuffer slice_byte_sizes_buf, int32_t local_port,
+    int32_t parallelism, int32_t num_layers, int32_t listener_port,
+    int32_t num_shards, xla::ffi::Result<xla::ffi::AnyBuffer> out);
 
-xla::ffi::Error TriggerWeightSynchronizerInitAndD2hImpl(
-    xla::ffi::AnyBuffer x, xla::ffi::AnyBuffer shard_idx_buf,
-    int64_t slice_byte_size, int32_t local_port, int32_t parallelism,
-    int32_t num_layers, int32_t listener_port,
-    xla::ffi::Result<xla::ffi::AnyBuffer> out);
+xla::ffi::Error TriggerWeightSynchronizerInitAndD2hHelper(
+    xla::ffi::AnyBuffer shard_idx_buf, xla::ffi::AnyBuffer slice_byte_sizes_buf,
+    absl::Span<const xla::ffi::AnyBuffer> jax_arrays, int32_t local_port,
+    int32_t parallelism, int32_t num_layers, int32_t listener_port,
+    int32_t num_shards, xla::ffi::Result<xla::ffi::AnyBuffer> out);
+
+xla::ffi::Error TriggerMultiH2DImpl(xla::ffi::AnyBuffer shard_idx_buf,
+                                    xla::ffi::RemainingRets rets);
 
 }  // namespace weight_sync
 }  // namespace tpu_raiden

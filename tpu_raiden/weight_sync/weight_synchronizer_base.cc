@@ -18,10 +18,8 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
-#include <iostream>
 #include <memory>
 #include <optional>
-#include <ostream>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -202,9 +200,6 @@ WeightSynchronizerBase::WeightSynchronizerBase(
       size_t alloc_size =
           current_slice_byte_size +
           absl::GetFlag(FLAGS_raiden_weight_sync_host_buffer_scratchpad_size);
-      std::cerr << "[C++ WS] CPU-only constructor: layer=" << layer_idx
-                << ", device_size=" << current_slice_byte_size
-                << ", alloc_size=" << alloc_size << std::endl;
       void* ptr = nullptr;
       if (alloc_size > 0) {
         if (posix_memalign(&ptr, 64, alloc_size) != 0) {

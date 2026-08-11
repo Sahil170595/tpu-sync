@@ -140,6 +140,30 @@ absl::StatusOr<std::pair<int64_t, int64_t>> PhysicalLiveRangeToLogical(
     absl::Span<const PoolLiveSegment> segments, int64_t physical_offset,
     int64_t size);
 
+// One physical chunk of a compact-live copy split at source or destination
+// physical gaps (the forward direction of PhysicalLiveRangeToLogical; the
+// reshard planner's translation step).
+struct LiveCopyChunk {
+  int64_t src_physical = 0;
+  int64_t dst_physical = 0;
+  int64_t size = 0;
+
+  friend bool operator==(const LiveCopyChunk& lhs, const LiveCopyChunk& rhs) {
+    return lhs.src_physical == rhs.src_physical &&
+           lhs.dst_physical == rhs.dst_physical && lhs.size == rhs.size;
+  }
+};
+
+// Splits one compact-live copy of `size` bytes from src_offset/dst_offset
+// (both compact-live coordinates) into physical chunks, breaking at every
+// source or destination segment boundary. Port of
+// rpc/raiden_controller.py::_translate_live_copy, byte-identical semantics
+// including the 2^20 chunk expansion bound.
+absl::StatusOr<std::vector<LiveCopyChunk>> TranslateLiveCopy(
+    absl::Span<const PoolLiveSegment> src_segments,
+    absl::Span<const PoolLiveSegment> dst_segments, int64_t src_offset,
+    int64_t dst_offset, int64_t size);
+
 tpu_raiden::rpc::RegionSpecProto ToProto(const RegionSpec& region);
 absl::StatusOr<RegionSpec> RegionSpecFromProto(
     const tpu_raiden::rpc::RegionSpecProto& proto);

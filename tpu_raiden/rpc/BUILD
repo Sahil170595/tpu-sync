@@ -57,6 +57,12 @@ py_proto_library(
 )
 
 cc_proto_library(
+    name = "controller_service_cc_proto",
+    visibility = ["//visibility:public"],
+    deps = [":controller_service_proto"],
+)
+
+cc_proto_library(
     name = "coordination_cc_proto",
     deps = [":coordination_proto"],
 )

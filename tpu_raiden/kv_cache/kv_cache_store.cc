@@ -54,6 +54,7 @@
 #include "tpu_raiden/kv_cache/kv_cache_store_backend.h"
 #include "tpu_raiden/kv_cache/kv_cache_store_backend_factory.h"
 #include "tpu_raiden/kv_cache/raiden_id.h"
+#include "tpu_raiden/kv_cache/reshard/reshard_service.h"
 #include "tpu_raiden/rpc/raiden_service.pb.h"
 
 namespace tpu_raiden {
@@ -238,6 +239,29 @@ absl::StatusOr<std::unique_ptr<KVCacheStore>> KVCacheStore::Create(
                               shard_size_bytes, raiden_orchestrator_address,
                               store_server_ip, raiden_controller_port,
                               std::move(metadata), expected_worker_count);
+}
+
+KVCacheStore::KVCacheStore(ReshardSidecarTag) {}
+
+absl::StatusOr<std::unique_ptr<KVCacheStore>>
+KVCacheStore::CreateReshardSidecar(int reshard_port,
+                                   double request_registry_ttl_s) {
+  // W1: reshard-only mode. Deliberately bypasses ValidateConstructionRules
+  // and ValidateBackends — this store serves no offload tier, publishes no
+  // registry record, and builds no controller submodule; its only surface
+  // is the reshard plane's framed listener. The full-store validation
+  // paths above stay byte-identical.
+  if (request_registry_ttl_s <= 0) {
+    return absl::InvalidArgumentError(
+        "request_registry_ttl_s must be positive");
+  }
+  auto store = absl::WrapUnique(new KVCacheStore(ReshardSidecarTag{}));
+  reshard::ReshardService::Options options;
+  options.port = reshard_port;
+  options.request_registry_ttl_s = request_registry_ttl_s;
+  store->reshard_service_ = std::make_unique<reshard::ReshardService>(options);
+  RETURN_IF_ERROR(store->reshard_service_->StartServer());
+  return store;
 }
 
 KVCacheStore::KVCacheStore(

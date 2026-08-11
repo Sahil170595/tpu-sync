@@ -24,6 +24,8 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         "//tpu_raiden/transport/lib:raw_buffer_transport_delegate",
+        "@com_google_absl//absl/container:inlined_vector",
+        "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings:string_view",
@@ -99,7 +101,10 @@ cc_binary(
     ],
     features = ["-use_header_modules"],
     deps = [
+        "//tpu_raiden/transport/lib:chunk",
+        "//tpu_raiden/transport/lib:chunk_serializer",
         "//tpu_raiden/transport/peregrine/src/api:socket_util",
+        "@com_google_absl//absl/container:inlined_vector",
         "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings",

@@ -35,10 +35,10 @@ absl::InlinedVector<char, kChunkHeaderSize> SerializeHeaderV1(
   constexpr uint16_t kVer = 1;
   const flatbuf::ChunkHeader h(
       kRaidenMagic, kVer, header.op, header.flags, header.buffer_id,
-      header.reserved,
-      /*metadata_size=*/static_cast<uint16_t>(GetChunkMetadataSize(kVer)),
-      header.remote_id, header.local_id, header.count_or_size, header.uuid,
-      /*padding0=*/0, /*padding1=*/0, /*padding2=*/0, /*padding3=*/0);
+      header.reserved, header.metadata_size, header.remote_id, header.local_id,
+      header.count_or_size, header.uuid, /*padding0=*/0, /*padding1=*/0,
+      /*padding2=*/0, /*padding3=*/0);
+
   absl::InlinedVector<char, kChunkHeaderSize> bytes(sizeof(h));
   std::memcpy(bytes.data(), &h, sizeof(h));
   return bytes;
@@ -46,10 +46,12 @@ absl::InlinedVector<char, kChunkHeaderSize> SerializeHeaderV1(
 
 void DeserializeHeaderV1(const flatbuf::ChunkHeader& h, ChunkHeader& header) {
   DCHECK_EQ(h.ver(), 1);
+  header.version = h.ver();
   header.op = h.op();
   header.flags = h.flags();
   header.buffer_id = h.buffer_id();
   header.reserved = h.reserved();
+  header.metadata_size = h.metadata_size();
   header.remote_id = h.remote_id();
   header.local_id = h.local_id();
   header.count_or_size = h.count_or_size();

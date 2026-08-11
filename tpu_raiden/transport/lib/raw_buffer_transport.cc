@@ -44,6 +44,7 @@
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "absl/synchronization/mutex.h"
+#include "absl/types/span.h"
 #include "tpu_raiden/transport/buffer_push_task.h"
 
 #ifndef IOV_MAX
@@ -51,6 +52,7 @@
 #endif
 #include "tpu_raiden/core/status_macros.h"
 #include "tpu_raiden/transport/lib/chunk.h"
+#include "tpu_raiden/transport/lib/chunk_serializer.h"
 #include "tpu_raiden/transport/lib/conn/pool.h"
 #include "tpu_raiden/transport/lib/raw_buffer_transport_delegate.h"
 #include "tpu_raiden/transport/peregrine/src/api/socket_util.h"
@@ -213,8 +215,10 @@ RawBufferTransport::~RawBufferTransport() {
 }
 
 absl::Status RawBufferTransport::ProcessPeerRequest(int client_fd) {
-  ChunkHeader header = {};
-  RETURN_IF_ERROR(ReadExact(client_fd, &header, sizeof(header)));
+  char header_buf[kChunkHeaderSize];
+  RETURN_IF_ERROR(ReadExact(client_fd, header_buf, sizeof(header_buf)));
+  ASSIGN_OR_RETURN(const ChunkHeader header,
+                   DeserializeChunkHeader(header_buf));
 
   if ABSL_PREDICT_FALSE (header.op == kOpBufferPull) {  // peer pull request
     const uint32_t src_offset = header.remote_id;
@@ -281,9 +285,16 @@ absl::Status RawBufferTransport::ProcessPeerRequest(int client_fd) {
       return absl::InvalidArgumentError(absl::StrCat(
           "Batch size ", batch_size, " exceeds IOV_MAX (", IOV_MAX, ")"));
     }
+    const size_t m_size = GetChunkMetadataSize(header.version);
+    std::vector<char> meta_buf(m_size * batch_size);
+    RETURN_IF_ERROR(ReadExact(client_fd, meta_buf.data(), meta_buf.size()));
+
     std::vector<ChunkMetadata> metadata(batch_size);
-    RETURN_IF_ERROR(ReadExact(client_fd, metadata.data(),
-                              sizeof(ChunkMetadata) * batch_size));
+    for (uint32_t i = 0; i < batch_size; ++i) {
+      absl::Span<const char> item_bytes(meta_buf.data() + i * m_size, m_size);
+      ASSIGN_OR_RETURN(metadata[i],
+                       DeserializeChunkMetadata(item_bytes, header.version));
+    }
 
     std::vector<struct iovec> iovs;
     iovs.reserve(batch_size);
@@ -441,12 +452,14 @@ absl::Status RawBufferTransport::PullBuffer(
       absl::MakeCleanup([&] { conn_pool_.Return(ok_to_pool, fd, peer); });
 
   ChunkHeader header = {};
+  header.version = 1;
   header.op = kOpBufferPull;
   header.buffer_id = static_cast<uint16_t>(buffer_id);
   header.remote_id = static_cast<uint32_t>(src_offset_bytes);
   header.local_id = static_cast<uint32_t>(src_shard_idx);
   header.count_or_size = static_cast<uint32_t>(size_bytes);
-  RETURN_IF_ERROR(WriteExact(fd, &header, sizeof(header)));
+  const auto s_header = SerializeChunkHeader(header);
+  RETURN_IF_ERROR(WriteExact(fd, s_header.data(), s_header.size()));
 
   uint8_t* dest_ptr = raw_delegate_->GetHostPointer(buffer_id, dst_shard_idx) +
                       dst_offset_bytes;
@@ -501,6 +514,7 @@ absl::Status RawBufferTransport::PushBuffer(absl::string_view peer,
       absl::MakeCleanup([&] { conn_pool_.Return(ok_to_pool, fd, peer); });
 
   ChunkHeader header = {};
+  header.version = 1;
   header.op = kOpBufferPush;
   header.buffer_id = static_cast<uint16_t>(buffer_id);
   header.remote_id = static_cast<uint32_t>(dst_offset_bytes);
@@ -512,8 +526,9 @@ absl::Status RawBufferTransport::PushBuffer(absl::string_view peer,
           << " dst_shard=" << dst_shard_idx
           << " dst_offset=" << dst_offset_bytes << " size=" << size_bytes;
 
+  const auto s_header = SerializeChunkHeader(header);
   const std::array<struct iovec, 2> iovs = {
-      iovec(&header, sizeof(header)),
+      iovec(const_cast<char*>(s_header.data()), s_header.size()),
       iovec(const_cast<uint8_t*>(data_ptr), size_bytes),
   };
   RETURN_IF_ERROR(WriteVExact(fd, iovs));
@@ -647,30 +662,36 @@ absl::Status RawBufferTransport::PushBatch(
   auto fd_cleaner =
       absl::MakeCleanup([&] { conn_pool_.Return(ok_to_pool, fd, peer); });
 
-  std::vector<ChunkMetadata> metadata;
-  metadata.reserve(batch_size);
-  size_t total_bytes = 0;
-  for (size_t i = 0; i < batch_size; ++i) {
-    const auto& task = tasks[start_idx + i];
-    metadata.push_back({
-        .layer_idx = static_cast<uint32_t>(task.buffer_id),
-        .dst_shard_idx = static_cast<uint32_t>(task.dst_shard_idx),
-        .dst_offset_bytes = static_cast<uint32_t>(task.dst_offset_bytes),
-        .size_bytes = static_cast<uint32_t>(task.size_bytes),
-    });
-    total_bytes += task.size_bytes;
-  }
-
   ChunkHeader header = {};
+  header.version = 1;
   header.op = kOpBufferPushBatched;
   header.buffer_id = 0;
+  header.metadata_size = GetChunkMetadataSize(header.version);
   header.remote_id = 0;
   header.local_id = 0;
   header.count_or_size = static_cast<uint32_t>(batch_size);
   header.uuid = uuid;
+
+  std::vector<char> s_metadata_buf(batch_size * header.metadata_size);
+  size_t total_bytes = 0;
+  for (size_t i = 0; i < batch_size; ++i) {
+    const auto& task = tasks[start_idx + i];
+    ChunkMetadata meta = {
+        .layer_idx = static_cast<uint32_t>(task.buffer_id),
+        .dst_shard_idx = static_cast<uint32_t>(task.dst_shard_idx),
+        .dst_offset_bytes = static_cast<uint32_t>(task.dst_offset_bytes),
+        .size_bytes = static_cast<uint32_t>(task.size_bytes),
+    };
+    const auto s_meta = SerializeChunkMetadata(meta);
+    DCHECK_EQ(s_meta.size(), header.metadata_size);
+    std::memcpy(s_metadata_buf.data() + i * header.metadata_size, s_meta.data(),
+                s_meta.size());
+    total_bytes += task.size_bytes;
+  }
+  const auto s_header = SerializeChunkHeader(header);
   const std::array<struct iovec, 2> iovs = {
-      iovec(&header, sizeof(header)),
-      iovec(metadata.data(), batch_size * sizeof(ChunkMetadata)),
+      iovec(const_cast<char*>(s_header.data()), s_header.size()),
+      iovec(s_metadata_buf.data(), s_metadata_buf.size()),
   };
   RETURN_IF_ERROR(WriteVExact(fd, iovs));
 

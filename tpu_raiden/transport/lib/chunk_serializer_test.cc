@@ -32,10 +32,12 @@ using ::testing::ElementsAreArray;
 
 ChunkHeader MakeSampleHeaderV1() {
   return ChunkHeader{
+      .version = 1,
       .op = 0xAB,
       .flags = 0xCD,
       .buffer_id = 0x1234,
       .reserved = 0x5678,
+      .metadata_size = 16,
       .remote_id = 0x12345678,
       .local_id = 0x9ABCDEF0,
       .count_or_size = 0x11223344,

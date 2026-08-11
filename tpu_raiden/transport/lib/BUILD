@@ -84,6 +84,7 @@ cc_library(
     features = ["-use_header_modules"],
     deps = [
         ":chunk",
+        ":chunk_serializer",
         ":raw_buffer_transport_delegate",
         "//tpu_raiden/core:status_macros",
         "//tpu_raiden/transport:buffer_push_task",

@@ -45,6 +45,7 @@ namespace store_node {
 namespace {
 
 using ::testing::HasSubstr;
+using ::testing::UnorderedElementsAre;
 
 // Yields `status` until `failures` calls have been made, then the spec.
 class FlakyKVTransferSpecSource : public KVTransferSpecSource {
@@ -73,7 +74,7 @@ class FlakyKVTransferSpecSource : public KVTransferSpecSource {
 // Two block arrays of 256 bytes each on 1 shard: one block is 512 bytes.
 KVTransferSpec TestSpec() {
   return KVTransferSpec{/*block_array_bytes=*/{256, 256},
-                        /*num_kv_shards=*/1};
+                        /*num_kv_shards=*/1, /*num_workers=*/1};
 }
 
 KVCacheHostStoreNode::Options FastPollOptions() {
@@ -86,11 +87,13 @@ KVCacheHostStoreNode::Options FastPollOptions() {
 TEST(ValidateSpecTest, RejectsEmptyOrZeroQuantities) {
   EXPECT_TRUE(ValidateSpec(TestSpec()).ok());
   EXPECT_TRUE(absl::IsInvalidArgument(
-      ValidateSpec(KVTransferSpec{/*block_array_bytes=*/{}, 1})));
+      ValidateSpec(KVTransferSpec{/*block_array_bytes=*/{}, 1, 1})));
   EXPECT_TRUE(absl::IsInvalidArgument(
-      ValidateSpec(KVTransferSpec{{256, 256}, 0})));
+      ValidateSpec(KVTransferSpec{{256, 256}, 0, 1})));
   EXPECT_TRUE(absl::IsInvalidArgument(
-      ValidateSpec(KVTransferSpec{{256, 0}, 1})));
+      ValidateSpec(KVTransferSpec{{256, 0}, 1, 1})));
+  EXPECT_TRUE(absl::IsInvalidArgument(
+      ValidateSpec(KVTransferSpec{{256, 256}, 1, 0})));
 }
 
 TEST(WaitForSpecTest, RetriesNotFoundUntilPublished) {
@@ -141,7 +144,7 @@ TEST(WaitForSpecTest, TimesOut) {
 }
 
 TEST(NumBlocksForBudgetTest, FloorsToWholeBlocks) {
-  // One block of TestSpec() is 1 shard * (256 + 256) = 512 bytes.
+  // One block of TestSpec() is 1 worker * 1 shard * (256 + 256) = 512 bytes.
   absl::StatusOr<size_t> blocks =
       KVCacheHostStoreNode::NumBlocksForBudget(4096, TestSpec());
   ASSERT_TRUE(blocks.ok()) << blocks.status();
@@ -156,6 +159,19 @@ TEST(NumBlocksForBudgetTest, RejectsBudgetBelowOneBlock) {
       KVCacheHostStoreNode::NumBlocksForBudget(511, TestSpec());
   EXPECT_TRUE(absl::IsInvalidArgument(blocks.status()));
   EXPECT_THAT(blocks.status().message(), HasSubstr("single block"));
+}
+
+TEST(NumBlocksForBudgetTest, ChargesEveryWorkersPool) {
+  // Each worker's pool holds its own shards of every block, so doubling the
+  // workers doubles what one block costs the budget.
+  KVTransferSpec spec = TestSpec();
+  spec.num_workers = 2;
+  absl::StatusOr<size_t> blocks =
+      KVCacheHostStoreNode::NumBlocksForBudget(4096, spec);
+  ASSERT_TRUE(blocks.ok()) << blocks.status();
+  EXPECT_EQ(*blocks, 4u);
+  blocks = KVCacheHostStoreNode::NumBlocksForBudget(1023, spec);
+  EXPECT_TRUE(absl::IsInvalidArgument(blocks.status()));
 }
 
 // Boot tests stand up real (loopback) gRPC servers; the env var isolates
@@ -199,7 +215,8 @@ TEST_F(KVCacheHostStoreNodeBootTest, RejectsHeterogeneousBlockArraysForNow) {
   // spec, but the CPU-only manager cannot express it yet, so boot must fail
   // loudly instead of allocating a wrong-shaped pool.
   StaticKVTransferSpecSource source(
-      KVTransferSpec{/*block_array_bytes=*/{256, 512}, /*num_kv_shards=*/1});
+      KVTransferSpec{/*block_array_bytes=*/{256, 512}, /*num_kv_shards=*/1,
+                     /*num_workers=*/1});
   absl::StatusOr<std::unique_ptr<KVCacheHostStoreNode>> node =
       KVCacheHostStoreNode::Create(BootOptions(), &source);
   EXPECT_TRUE(absl::IsUnimplemented(node.status())) << node.status();
@@ -233,7 +250,41 @@ TEST_F(KVCacheHostStoreNodeBootTest, BootsWithoutRegistryButServesNoPeers) {
   EXPECT_EQ(workers[0].node_id, 0);
 
   // The manager opened its raw-transfer data endpoint.
-  EXPECT_FALSE((*node)->manager()->get_local_endpoints().empty());
+  ASSERT_EQ((*node)->managers().size(), 1u);
+  EXPECT_FALSE((*node)->managers()[0]->get_local_endpoints().empty());
+}
+
+TEST_F(KVCacheHostStoreNodeBootTest, MirrorsSpecWorkerTopology) {
+  // Two serving-host transfer ranks: the node must field one worker per
+  // rank with matching node_ids, or peers fail pairing with
+  // FailedPrecondition on their first transfer.
+  KVTransferSpec spec = TestSpec();
+  spec.num_workers = 2;
+  StaticKVTransferSpecSource source(spec);
+  absl::StatusOr<std::unique_ptr<KVCacheHostStoreNode>> node =
+      KVCacheHostStoreNode::Create(BootOptions(), &source);
+  ASSERT_TRUE(node.ok()) << node.status();
+
+  // The same budget now feeds two pools, so half the blocks fit; the block
+  // id space stays one flat [0, num_host_blocks) shared by both workers.
+  EXPECT_EQ((*node)->num_host_blocks(), 4u);
+  ASSERT_EQ((*node)->managers().size(), 2u);
+
+  auto workers = (*node)
+                     ->store()
+                     ->raiden_controller()
+                     ->worker_registry()
+                     ->GetRegisteredWorkers();
+  ASSERT_EQ(workers.size(), 2u);
+  std::vector<int64_t> node_ids = {workers[0].node_id, workers[1].node_id};
+  EXPECT_THAT(node_ids, UnorderedElementsAre(0, 1));
+
+  // Each rank owns its own data plane: distinct managers, distinct
+  // registered transfer endpoints.
+  ASSERT_FALSE(workers[0].raiden_transfer_endpoints.empty());
+  ASSERT_FALSE(workers[1].raiden_transfer_endpoints.empty());
+  EXPECT_NE(workers[0].raiden_transfer_endpoints[0].endpoint,
+            workers[1].raiden_transfer_endpoints[0].endpoint);
 }
 
 TEST_F(KVCacheHostStoreNodeBootTest, BootsServesAndPublishesWithRegistry) {

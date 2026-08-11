@@ -18,6 +18,7 @@
 #include <cstddef>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "absl/status/statusor.h"
 #include "absl/time/time.h"
@@ -50,15 +51,18 @@ namespace store_node {
 //     runtime truth and must come from them.
 //
 //   Phase B (spec in hand): run the same assembly a serving host runs,
-//     with a CPU-backed manager:
-//       1. KVCacheManagerWithTransfer (CPU-only): allocates the actual DRAM
-//          pool up front and opens the raw-transfer data endpoint.
+//     with CPU-backed managers:
+//       1. One KVCacheManagerWithTransfer (CPU-only) per spec worker rank,
+//          mirroring the serving hosts' transfer topology: each allocates
+//          its own DRAM pool up front and opens its own raw-transfer data
+//          endpoint.
 //       2. KVCacheStore: builds the RaidenController, the LRU cache and the
 //          peer-facing store server, and publishes this node to the global
 //          registry (RegisterStore), so registration happens exactly when
 //          the node can actually serve.
-//       3. WorkerService + worker registration: makes the manager reachable
-//          from the controller, completing the transfer path.
+//       3. WorkerService + worker registration, one per manager: makes each
+//          manager reachable from the controller under its rank's node_id,
+//          completing the transfer path.
 //
 // After Create() returns, the node is discoverable and serves peers; there is
 // no separate Start(). Destruction tears down in reverse: the store first
@@ -130,15 +134,22 @@ class KVCacheHostStoreNode {
       KVTransferSpecSource& source, const Options& options);
 
   // Whole blocks of `spec`'s block geometry that fit in `dram_budget_bytes`.
+  // Every worker's pool holds its own shards of every block, so one block
+  // costs num_workers x num_kv_shards x (sum of block_array_bytes).
   // InvalidArgument if the budget does not cover even one block.
   static absl::StatusOr<size_t> NumBlocksForBudget(size_t dram_budget_bytes,
                                                    const KVTransferSpec& spec);
 
   const KVTransferSpec& spec() const { return spec_; }
+  // Blocks in each worker's pool -- one flat block id space shared by all
+  // workers, not a partition.
   size_t num_host_blocks() const { return num_host_blocks_; }
 
   kv_cache::KVCacheStore* store() const { return store_.get(); }
-  KVCacheManagerWithTransfer* manager() const { return manager_.get(); }
+  const std::vector<std::unique_ptr<KVCacheManagerWithTransfer>>& managers()
+      const {
+    return managers_;
+  }
 
   // Advertised "host:port" of the peer-facing store server / the controller.
   std::string store_server_address() const {
@@ -149,23 +160,24 @@ class KVCacheHostStoreNode {
   }
 
  private:
-  KVCacheHostStoreNode(const KVTransferSpec& spec, size_t num_host_blocks,
-                   std::unique_ptr<KVCacheManagerWithTransfer> manager,
-                   std::unique_ptr<controller::WorkerServiceServer>
-                       worker_server,
-                   std::unique_ptr<kv_cache::KVCacheStore> store)
+  KVCacheHostStoreNode(
+      const KVTransferSpec& spec, size_t num_host_blocks,
+      std::vector<std::unique_ptr<KVCacheManagerWithTransfer>> managers,
+      std::vector<std::unique_ptr<controller::WorkerServiceServer>>
+          worker_servers,
+      std::unique_ptr<kv_cache::KVCacheStore> store)
       : spec_(spec),
         num_host_blocks_(num_host_blocks),
-        manager_(std::move(manager)),
-        worker_server_(std::move(worker_server)),
+        managers_(std::move(managers)),
+        worker_servers_(std::move(worker_servers)),
         store_(std::move(store)) {}
 
   KVTransferSpec spec_;
   size_t num_host_blocks_ = 0;
 
   // Declaration order is teardown order reversed: store_ goes down first.
-  std::unique_ptr<KVCacheManagerWithTransfer> manager_;
-  std::unique_ptr<controller::WorkerServiceServer> worker_server_;
+  std::vector<std::unique_ptr<KVCacheManagerWithTransfer>> managers_;
+  std::vector<std::unique_ptr<controller::WorkerServiceServer>> worker_servers_;
   std::unique_ptr<kv_cache::KVCacheStore> store_;
 };
 

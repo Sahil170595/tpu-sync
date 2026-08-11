@@ -36,6 +36,8 @@ struct KVTransferSpec {
   std::vector<uint64_t> block_array_bytes;
   // Device shards each block array is split across.
   size_t num_kv_shards = 0;
+  // Transfer workers on the serving hosts, node ids densely [0, num_workers).
+  size_t num_workers = 0;
 };
 
 // Returns InvalidArgument unless the spec describes at least one block array
@@ -54,6 +56,10 @@ inline absl::Status ValidateSpec(const KVTransferSpec& spec) {
   if (spec.num_kv_shards == 0) {
     return absl::InvalidArgumentError(
         "KVTransferSpec num_kv_shards must be positive");
+  }
+  if (spec.num_workers == 0) {
+    return absl::InvalidArgumentError(
+        "KVTransferSpec num_workers must be positive");
   }
   return absl::OkStatus();
 }
@@ -76,10 +82,9 @@ class KVTransferSpecSource {
   virtual absl::StatusOr<KVTransferSpec> Get() = 0;
 };
 
-// KVTransferSpec fixed at construction, e.g. from flags. Stopgap until the
-// global-registry-backed source lands: the registry will hold the spec
-// published by the serving hosts at their own registration, and a source
-// implementation will poll it here through the same interface.
+// KVTransferSpec fixed at construction. The production source is
+// GrsKVTransferSpecSource, which polls the spec the serving hosts publish
+// in the global registry; this one serves tests and registry-less runs.
 class StaticKVTransferSpecSource : public KVTransferSpecSource {
  public:
   explicit StaticKVTransferSpecSource(KVTransferSpec spec) : spec_(spec) {}

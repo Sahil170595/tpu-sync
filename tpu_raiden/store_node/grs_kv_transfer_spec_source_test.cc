@@ -84,6 +84,7 @@ TEST_F(GrsKVTransferSpecSourceTest, RoundTripsPublishedSpec) {
   ASSERT_TRUE(spec.ok()) << spec.status();
   EXPECT_EQ(spec->block_array_bytes, (std::vector<uint64_t>{4096, 512}));
   EXPECT_EQ(spec->num_kv_shards, 2u);
+  EXPECT_EQ(spec->num_workers, 1u);
 }
 
 TEST_F(GrsKVTransferSpecSourceTest, UnavailableWhenRegistryUnreachable) {

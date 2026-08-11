@@ -44,6 +44,7 @@ absl::StatusOr<KVTransferSpec> GrsKVTransferSpecSource::Get() {
         static_cast<uint64_t>(array.block_bytes()));
   }
   spec.num_kv_shards = static_cast<size_t>(proto.num_kv_shards());
+  spec.num_workers = static_cast<size_t>(proto.num_workers());
   return spec;
 }
 

@@ -75,6 +75,7 @@ cc_library(
         "//tpu_raiden/core/controller:controller_client",
         "//tpu_raiden/core/controller:worker_service_server",
         "//tpu_raiden/kv_cache:kv_cache_store",
+        "//tpu_raiden/kv_cache:kv_cache_store_backend_factory",
         "//tpu_raiden/kv_cache:raiden_id",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/memory",

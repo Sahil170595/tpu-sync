@@ -59,8 +59,8 @@ std::string MetadataShmKey() {
 KVCacheStoreWrapper::KVCacheStoreWrapper(
     size_t lru_capacity, std::string global_registry_address,
     RaidenId raiden_id, int num_shards, int64_t shard_size_bytes,
-    std::string raiden_orchestrator_address, std::string store_server_ip,
-    int raiden_controller_port, int expected_worker_count) {
+    std::string store_server_ip, int raiden_controller_port,
+    int expected_worker_count) {
   std::optional<KVCacheMetadata> metadata;
   if (num_shards > 0) {
     std::string shm_key = MetadataShmKey();
@@ -88,8 +88,8 @@ KVCacheStoreWrapper::KVCacheStoreWrapper(
   config.capacity = lru_capacity;
   auto store_or = KVCacheStore::Create(
       config, /*capacity=*/lru_capacity, global_registry_address, raiden_id,
-      num_shards, shard_size_bytes, raiden_orchestrator_address,
-      store_server_ip, raiden_controller_port, metadata, expected_worker_count);
+      num_shards, shard_size_bytes, store_server_ip, raiden_controller_port,
+      metadata, expected_worker_count);
   if (!store_or.ok()) {
     throw std::invalid_argument(std::string(store_or.status().message()));
   }

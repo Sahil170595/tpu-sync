@@ -50,13 +50,11 @@
 #include "xla/tsl/concurrency/future.h"
 #include "tpu_raiden/core/buffer.h"
 #include "tpu_raiden/core/controller/controller_server.h"
-#include "tpu_raiden/core/controller/orchestrator_service_client.h"
 #include "tpu_raiden/core/controller/worker_registry.h"
 #include "tpu_raiden/core/controller/worker_service_client.h"
 #include "tpu_raiden/core/raiden_transfer_endpoint.h"
 #include "tpu_raiden/core/status_macros.h"
 #include "tpu_raiden/kv_cache/logical_block_manager.h"
-#include "tpu_raiden/kv_cache/raiden_id.h"
 #include "tpu_sync/proto/controller_service.grpc.pb.h"
 #include "tpu_sync/proto/controller_service.pb.h"
 #include "tpu_sync/proto/worker_service.pb.h"
@@ -77,15 +75,6 @@ bool CompareWorkerIds(absl::string_view a, absl::string_view b) {
     }
   }
   return a < b;
-}
-
-rpc::RaidenIdProto ToProto(const kv_cache::RaidenId& id) {
-  rpc::RaidenIdProto proto;
-  proto.set_job_name(id.job_name);
-  proto.set_job_replica_id(id.job_replica_id);
-  proto.set_data_name(id.data_name);
-  proto.set_data_replica_idx(id.data_replica_idx);
-  return proto;
 }
 
 absl::StatusOr<proto::CreateBuffersResponse> CreateBuffersForWorker(
@@ -146,13 +135,13 @@ bool LeaseTraceEnabled() {
   return on;
 }
 
-#define RAIDEN_LEASE_TRACE(...)                                    \
-  do {                                                             \
-    if (LeaseTraceEnabled()) {                                     \
-      LOG(INFO) << "RAIDEN_LEASE " << absl::StrCat(__VA_ARGS__);    \
-      std::fprintf(stderr, "RAIDEN_LEASE %s\n",                    \
-                   absl::StrCat(__VA_ARGS__).c_str());             \
-    }                                                              \
+#define RAIDEN_LEASE_TRACE(...)                                  \
+  do {                                                           \
+    if (LeaseTraceEnabled()) {                                   \
+      LOG(INFO) << "RAIDEN_LEASE " << absl::StrCat(__VA_ARGS__); \
+      std::fprintf(stderr, "RAIDEN_LEASE %s\n",                  \
+                   absl::StrCat(__VA_ARGS__).c_str());           \
+    }                                                            \
   } while (0)
 
 // Validates the timing triple once per process. An incoherent set does not
@@ -163,7 +152,8 @@ bool LeaseTraceEnabled() {
 void CheckTimingTripleOnce() {
   static const bool checked = [] {
     namespace svc = ::tpu_raiden::core::controller;
-    const absl::Duration ttl = svc::RaidenControllerServiceImpl::DefaultLeaseTtl();
+    const absl::Duration ttl =
+        svc::RaidenControllerServiceImpl::DefaultLeaseTtl();
     const absl::Duration deadline = RemoteReadDeadline();
     const absl::Duration retention =
         svc::RaidenControllerServiceImpl::RevokedLeaseRetention();
@@ -182,11 +172,10 @@ void CheckTimingTripleOnce() {
 }  // namespace
 
 void RaidenController::Init(absl::Span<const std::string> worker_addresses,
-                            absl::string_view raiden_orchestrator_address,
                             absl::string_view raiden_controller_address,
                             int expected_worker_count) {
-  // If Init fails (e.g. timeout or exception during worker/orchestrator
-  // registration), ensure any registered callbacks and singleton references
+  // If Init fails (e.g. timeout or exception during worker registration),
+  // ensure any registered callbacks and singleton references
   // are detached so late registrations or in-flight operations do not invoke
   // callbacks on a destroyed RaidenController.
   absl::Cleanup init_cleanup = [this] { Cleanup(); };
@@ -261,20 +250,7 @@ void RaidenController::Init(absl::Span<const std::string> worker_addresses,
     }
   }
 
-  // 4. Register with Orchestrator (if address is provided)
-  if (!raiden_orchestrator_address.empty()) {
-    orchestrator_client_ = std::make_unique<OrchestratorServiceClient>(
-        grpc::CreateChannel(std::string(raiden_orchestrator_address),
-                            grpc::InsecureChannelCredentials()));
-    absl::Status status = orchestrator_client_->RegisterController(
-        unit_, raiden_controller_address_);
-    if (!status.ok()) {
-      throw std::runtime_error(absl::StrCat(
-          "Failed to register with orchestrator: ", status.message()));
-    }
-  }
-
-  // 5. Wait for expected workers to register (if requested)
+  // 4. Wait for expected workers to register (if requested)
   if (expected_worker_count > 0) {
     int timeout_s = 120;
     if (const char* env_timeout =
@@ -298,11 +274,12 @@ void RaidenController::Init(absl::Span<const std::string> worker_addresses,
   std::move(init_cleanup).Cancel();
 }
 
-RaidenController::RaidenController(
-    const rpc::RaidenIdProto& unit, int num_blocks, int num_shards,
-    int64_t shard_size_bytes, absl::string_view raiden_orchestrator_address,
-    absl::string_view raiden_controller_address,
-    bool preprovision_worker_buffers, int expected_worker_count)
+RaidenController::RaidenController(const rpc::RaidenIdProto& unit,
+                                   int num_blocks, int num_shards,
+                                   int64_t shard_size_bytes,
+                                   absl::string_view raiden_controller_address,
+                                   bool preprovision_worker_buffers,
+                                   int expected_worker_count)
     : unit_(unit),
       num_shards_(num_shards),
       shard_size_bytes_(shard_size_bytes),
@@ -311,15 +288,14 @@ RaidenController::RaidenController(
       worker_registry_(std::make_shared<core::controller::WorkerRegistry>()),
       block_manager_(
           std::make_unique<kv_cache::LogicalBlockManager>(num_blocks)) {
-  Init(/*worker_addresses=*/{}, raiden_orchestrator_address,
-       raiden_controller_address, expected_worker_count);
+  Init(/*worker_addresses=*/{}, raiden_controller_address,
+       expected_worker_count);
 }
 
 RaidenController::RaidenController(
     const rpc::RaidenIdProto& unit,
     absl::Span<const std::string> worker_addresses, int num_blocks,
     int num_shards, int64_t shard_size_bytes,
-    absl::string_view raiden_orchestrator_address,
     absl::string_view raiden_controller_address,
     bool preprovision_worker_buffers, int expected_worker_count)
     : unit_(unit),
@@ -330,8 +306,7 @@ RaidenController::RaidenController(
       worker_registry_(std::make_shared<core::controller::WorkerRegistry>()),
       block_manager_(
           std::make_unique<kv_cache::LogicalBlockManager>(num_blocks)) {
-  Init(worker_addresses, raiden_orchestrator_address, raiden_controller_address,
-       expected_worker_count);
+  Init(worker_addresses, raiden_controller_address, expected_worker_count);
 }
 
 void RaidenController::Cleanup() {
@@ -607,13 +582,15 @@ tsl::Future<> RaidenController::TransferBuffers(
   bool is_src_remote = false;
   bool is_dst_remote = false;
   for (const auto& buf : src_buffers) {
-    if (!buf.remote_worker_endpoints().empty() || buf.remote_address().has_value()) {
+    if (!buf.remote_worker_endpoints().empty() ||
+        buf.remote_address().has_value()) {
       is_src_remote = true;
       break;
     }
   }
   for (const auto& buf : dst_buffers) {
-    if (!buf.remote_worker_endpoints().empty() || buf.remote_address().has_value()) {
+    if (!buf.remote_worker_endpoints().empty() ||
+        buf.remote_address().has_value()) {
       is_dst_remote = true;
       break;
     }
@@ -629,21 +606,26 @@ tsl::Future<> RaidenController::TransferBuffers(
     bool dst_is_hbm = dst_buffers.front().memory_type() == rpc::MEMORY_TYPE_HBM;
 
     // 2. Determine if a staging host block is required.
-    //    For cross-node transfers involving TPU HBM (High Bandwidth Memory), direct
-    //    HBM-to-HBM transfers across the network are not supported. Thus, the node
-    //    must stage data in its host DRAM before sending or after receiving.
-    //    - If the source is local and resides in HBM, or the destination is local
+    //    For cross-node transfers involving TPU HBM (High Bandwidth Memory),
+    //    direct HBM-to-HBM transfers across the network are not supported.
+    //    Thus, the node must stage data in its host DRAM before sending or
+    //    after receiving.
+    //    - If the source is local and resides in HBM, or the destination is
+    //    local
     //      and resides in HBM, we need a local host staging buffer.
-    //    - Conversely, if the source is remote and in HBM, or the destination is
+    //    - Conversely, if the source is remote and in HBM, or the destination
+    //    is
     //      remote and in HBM, the remote node will need a host staging buffer.
-    bool local_host_staging_required = (!is_src_remote && src_is_hbm) || (!is_dst_remote && dst_is_hbm);
-    bool remote_host_staging_required = (is_src_remote && src_is_hbm) || (is_dst_remote && dst_is_hbm);
+    bool local_host_staging_required =
+        (!is_src_remote && src_is_hbm) || (!is_dst_remote && dst_is_hbm);
+    bool remote_host_staging_required =
+        (is_src_remote && src_is_hbm) || (is_dst_remote && dst_is_hbm);
 
     if (local_host_staging_required && request_staging.empty()) {
       // 3a. Safeguard logic: Auto-allocating local staging blocks.
-      //     If local staging blocks are required but none were explicitly provided,
-      //     we can safely auto-allocate them from the controller's pool because
-      //     this controller manages the local resources.
+      //     If local staging blocks are required but none were explicitly
+      //     provided, we can safely auto-allocate them from the controller's
+      //     pool because this controller manages the local resources.
       auto host_blocks_or = this->AllocateBlockIds(src_buffers.size());
       if (!host_blocks_or.ok()) {
         return tsl::Future<>(host_blocks_or.status());
@@ -651,20 +633,22 @@ tsl::Future<> RaidenController::TransferBuffers(
       auto_allocated_staging_ids = *host_blocks_or;
       local_staging_buffers.reserve(auto_allocated_staging_ids->size());
       for (int id : *auto_allocated_staging_ids) {
-        local_staging_buffers.emplace_back(
-            id, std::vector<BufferShard>{}, std::nullopt, rpc::MEMORY_TYPE_DRAM);
+        local_staging_buffers.emplace_back(id, std::vector<BufferShard>{},
+                                           std::nullopt, rpc::MEMORY_TYPE_DRAM);
       }
       request_staging = local_staging_buffers;
     }
 
     if (remote_host_staging_required && request_staging.empty()) {
       // 3b. Safeguard logic: Returning error for missing remote blocks.
-      //     If remote staging blocks are required but none were provided, we must
-      //     return an error. We cannot auto-allocate them from here because this
-      //     controller doesn't manage the remote peer's block IDs and memory pool.
-      //     The caller must pre-allocate them on the remote worker and supply them.
+      //     If remote staging blocks are required but none were provided, we
+      //     must return an error. We cannot auto-allocate them from here
+      //     because this controller doesn't manage the remote peer's block IDs
+      //     and memory pool. The caller must pre-allocate them on the remote
+      //     worker and supply them.
       return tsl::Future<>(absl::InvalidArgumentError(
-          "Remote transfer requires remote host staging blocks, but none were provided."));
+          "Remote transfer requires remote host staging blocks, but none were "
+          "provided."));
     }
   }
 
@@ -745,9 +729,10 @@ tsl::Future<> RaidenController::TransferBuffers(
       } else if (dst_buf.remote_descriptors().empty() &&
                  !dst_buf.remote_address().has_value() &&
                  !workers[w].raiden_transfer_endpoints.empty()) {
-        // Default fallback for local (intra-node / single-host) buffer transfers
-        // where remote_worker_endpoints was omitted. Inject local worker w's
-        // registered sub-manager transfer endpoints into remote_descriptors.
+        // Default fallback for local (intra-node / single-host) buffer
+        // transfers where remote_worker_endpoints was omitted. Inject local
+        // worker w's registered sub-manager transfer endpoints into
+        // remote_descriptors.
         dst_buf.set_remote_descriptors(workers[w].raiden_transfer_endpoints);
       }
       worker_dst.push_back(std::move(dst_buf));
@@ -780,7 +765,8 @@ tsl::Future<> RaidenController::TransferBuffers(
   if (auto_allocated_staging_ids.has_value()) {
     auto [promise, future] = tsl::MakePromise<>();
     aggregate_future.OnReady(
-        [this, promise = std::move(promise), ids = *auto_allocated_staging_ids](absl::Status status) mutable {
+        [this, promise = std::move(promise),
+         ids = *auto_allocated_staging_ids](absl::Status status) mutable {
           (void)this->DeallocateBlockIds(ids);
           promise.Set(std::move(status));
         });
@@ -788,16 +774,6 @@ tsl::Future<> RaidenController::TransferBuffers(
   }
 
   return aggregate_future;
-}
-
-absl::StatusOr<std::string> RaidenController::ResolvePeerController(
-    const rpc::RaidenIdProto& peer_id) {
-  if (!orchestrator_client_) {
-    return absl::FailedPreconditionError(
-        "Orchestrator client is not initialized. Peer resolution is disabled "
-        "when raiden_orchestrator_address is empty.");
-  }
-  return orchestrator_client_->ResolveController(peer_id);
 }
 
 void RaidenController::SetReadRemoteHooks(
@@ -809,7 +785,6 @@ void RaidenController::SetReadRemoteHooks(
                                        std::move(unpin));
   }
 }
-
 
 // Everything a single in-flight read needs, owned by a shared_ptr so the
 // acquire callback, the transfer future, and the release callback can chain
@@ -836,7 +811,7 @@ struct RemoteReadState {
 };
 
 tsl::Future<> RaidenController::ReadRemote(
-    const kv_cache::RaidenId& src_raiden_id,
+    absl::string_view src_controller_address,
     const std::vector<int32_t>& src_host_block_ids,
     const std::vector<int32_t>& dst_host_block_ids,
     const std::vector<std::string>& block_hashes,
@@ -856,19 +831,18 @@ tsl::Future<> RaidenController::ReadRemote(
         "ReadRemote requires block_hashes to validate at the source"));
   }
   if (block_hashes.size() != dst_host_block_ids.size()) {
-    return tsl::Future<>(absl::InvalidArgumentError(
-        absl::StrCat("block_hashes size ", block_hashes.size(),
-                     " does not match block id count ",
-                     dst_host_block_ids.size())));
+    return tsl::Future<>(absl::InvalidArgumentError(absl::StrCat(
+        "block_hashes size ", block_hashes.size(),
+        " does not match block id count ", dst_host_block_ids.size())));
   }
   // Reject a wrong-sized device list BEFORE acquiring, so a caller error never
   // pins anything at the source.
   const bool to_hbm = !dst_device_block_ids.empty();
   if (to_hbm && dst_device_block_ids.size() != dst_host_block_ids.size()) {
-    return tsl::Future<>(absl::InvalidArgumentError(absl::StrCat(
-        "dst_device_block_ids size ", dst_device_block_ids.size(),
-        " must be empty (read to host) or match the block count ",
-        dst_host_block_ids.size())));
+    return tsl::Future<>(absl::InvalidArgumentError(
+        absl::StrCat("dst_device_block_ids size ", dst_device_block_ids.size(),
+                     " must be empty (read to host) or match the block count ",
+                     dst_host_block_ids.size())));
   }
 
   if (worker_registry_->GetRegisteredWorkers().empty()) {
@@ -876,26 +850,15 @@ tsl::Future<> RaidenController::ReadRemote(
         "No registered workers available for ReadRemote"));
   }
 
-  std::string controller_address;
-  {
-    absl::MutexLock lock(mutex_);
-    auto it = resolved_controllers_.find(src_raiden_id);
-    if (it != resolved_controllers_.end()) {
-      controller_address = it->second;
-    }
+  // The caller owns peer resolution; this controller keeps no directory. Reject
+  // an empty address here rather than letting gRPC fail on it, which reports a
+  // parse error naming nothing.
+  if (src_controller_address.empty()) {
+    return tsl::Future<>(absl::InvalidArgumentError(
+        "ReadRemote requires the source's controller address; the caller "
+        "resolves it (KVCacheStore reads it from the global registry)"));
   }
-  if (controller_address.empty()) {
-    rpc::RaidenIdProto src_proto = ToProto(src_raiden_id);
-    auto address_or = ResolvePeerController(src_proto);
-    if (!address_or.ok()) {
-      return tsl::Future<>(address_or.status());
-    }
-    controller_address = *address_or;
-    {
-      absl::MutexLock lock(mutex_);
-      resolved_controllers_[src_raiden_id] = controller_address;
-    }
-  }
+  const std::string controller_address(src_controller_address);
 
   std::shared_ptr<cproto::RaidenControllerService::Stub> stub;
   {
@@ -909,7 +872,19 @@ tsl::Future<> RaidenController::ReadRemote(
     stub = cproto::RaidenControllerService::NewStub(channel);
     {
       absl::MutexLock lock(mutex_);
-      stubs_[controller_address] = stub;
+      if (stubs_.emplace(controller_address, stub).second) {
+        stub_order_.push_back(controller_address);
+        // Bounded: every peer restart mints one address that is never dialled
+        // again (see the header). Oldest-first, so what ages out is what
+        // stopped being used.
+        while (stub_order_.size() > kMaxCachedStubs) {
+          stubs_.erase(stub_order_.front());
+          stub_order_.pop_front();
+        }
+      } else {
+        // Another thread got there first; use its stub so both share a channel.
+        stub = stubs_[controller_address];
+      }
     }
   }
 
@@ -944,16 +919,18 @@ tsl::Future<> RaidenController::ReadRemote(
           // loop would turn a fast failure into unbounded TTFT.
           RAIDEN_LEASE_TRACE("acquire FAILED code=", status.error_code(), " ",
                              status.error_message());
-          state->Settle(absl::Status(
-              static_cast<absl::StatusCode>(status.error_code()),
-              absl::StrCat("AcquireReadLease failed: ", status.error_message())));
+          state->Settle(
+              absl::Status(static_cast<absl::StatusCode>(status.error_code()),
+                           absl::StrCat("AcquireReadLease failed: ",
+                                        status.error_message())));
           return;
         }
         state->lease_id = acquire_resp->lease_id();
-        RAIDEN_LEASE_TRACE("acquired lease=", state->lease_id, " src_ids=",
-                           acquire_resp->src_host_block_ids_size(), " groups=",
-                           acquire_resp->src_worker_endpoints_size(),
-                           " ttl_ms=", acquire_resp->granted_ttl_ms());
+        RAIDEN_LEASE_TRACE(
+            "acquired lease=", state->lease_id,
+            " src_ids=", acquire_resp->src_host_block_ids_size(),
+            " groups=", acquire_resp->src_worker_endpoints_size(),
+            " ttl_ms=", acquire_resp->granted_ttl_ms());
 
         // ---- Phase 2: Work -- our own workers pull the bytes. -------------
         // Use the source's AUTHORITATIVE ids, not the advisory ones we sent.
@@ -965,9 +942,9 @@ tsl::Future<> RaidenController::ReadRemote(
           std::vector<::tpu_raiden::RaidenTransferEndpoint> eps;
           eps.reserve(group.endpoints_size());
           for (const auto& ep : group.endpoints()) {
-            eps.push_back({ep.endpoint(), std::vector<int64_t>(
-                                              ep.shards().begin(),
-                                              ep.shards().end())});
+            eps.push_back(
+                {ep.endpoint(),
+                 std::vector<int64_t>(ep.shards().begin(), ep.shards().end())});
           }
           src_groups.push_back(
               {group.node_id(), group.worker_id(), std::move(eps)});
@@ -1008,12 +985,13 @@ tsl::Future<> RaidenController::ReadRemote(
       // Best-effort, fire-and-forget: let the source reclaim early rather than
       // wait out the TTL.
       auto ctx = std::make_shared<grpc::ClientContext>();
-      auto req = std::make_shared<::tpu_raiden::proto::ReleaseReadLeaseRequest>();
+      auto req =
+          std::make_shared<::tpu_raiden::proto::ReleaseReadLeaseRequest>();
       req->set_lease_id(state->lease_id);
       auto resp =
           std::make_shared<::tpu_raiden::proto::ReleaseReadLeaseResponse>();
-      state->stub->async()->ReleaseReadLease(
-          ctx.get(), req.get(), resp.get(), [ctx, req, resp](grpc::Status) {});
+      state->stub->async()->ReleaseReadLease(ctx.get(), req.get(), resp.get(),
+                                             [ctx, req, resp](grpc::Status) {});
     }
     RAIDEN_LEASE_TRACE("DEADLINE lease=", state->lease_id);
     state->Settle(absl::DeadlineExceededError(absl::StrCat(
@@ -1022,7 +1000,6 @@ tsl::Future<> RaidenController::ReadRemote(
 
   return future;
 }
-
 
 void RaidenController::PullAndRelease(
     const std::vector<int32_t>& src_host_block_ids,
@@ -1122,26 +1099,24 @@ void RaidenController::PullAndRelease(
 
 tsl::Future<proto::TransferProgramResponse>
 RaidenController::SubmitTransferProgram(
-    absl::string_view worker_id,
-    const proto::TransferProgramRequest& request) {
+    absl::string_view worker_id, const proto::TransferProgramRequest& request) {
   auto fail = [](absl::Status status) {
-    auto [promise, future] =
-        tsl::MakePromise<proto::TransferProgramResponse>();
+    auto [promise, future] = tsl::MakePromise<proto::TransferProgramResponse>();
     std::move(promise).ToShared()->Set(std::move(status));
     return future;
   };
   absl::StatusOr<core::controller::WorkerRegistration> registration =
       worker_registry_->GetWorker(worker_id);
   if (!registration.ok()) {
-    return fail(absl::UnavailableError(absl::StrCat(
-        "SubmitTransferProgram: worker '", worker_id,
-        "' is not registered with this controller: ",
-        registration.status().message())));
+    return fail(absl::UnavailableError(
+        absl::StrCat("SubmitTransferProgram: worker '", worker_id,
+                     "' is not registered with this controller: ",
+                     registration.status().message())));
   }
   if (registration->worker_service_client == nullptr) {
-    return fail(absl::UnavailableError(absl::StrCat(
-        "SubmitTransferProgram: worker '", worker_id,
-        "' has no WorkerService channel")));
+    return fail(absl::UnavailableError(
+        absl::StrCat("SubmitTransferProgram: worker '", worker_id,
+                     "' has no WorkerService channel")));
   }
   return registration->worker_service_client->SubmitTransferProgram(request);
 }

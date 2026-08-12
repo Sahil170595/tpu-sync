@@ -67,9 +67,6 @@ ABSL_FLAG(std::string, global_registry_address, "",
           "GlobalRegistry host:port. Supplies the deployment's "
           "KVTransferSpec and is where this node publishes itself. "
           "Required.");
-ABSL_FLAG(std::string, raiden_orchestrator_address, "",
-          "Orchestrator host:port to register the controller with.");
-
 // Capacity.
 ABSL_FLAG(size_t, dram_budget_bytes, 0,
           "Host DRAM lent to the pool, in bytes. Required.");
@@ -104,8 +101,6 @@ int Run() {
   options.raiden_controller_port = absl::GetFlag(FLAGS_raiden_controller_port);
   options.global_registry_address =
       absl::GetFlag(FLAGS_global_registry_address);
-  options.raiden_orchestrator_address =
-      absl::GetFlag(FLAGS_raiden_orchestrator_address);
   options.dram_budget_bytes = absl::GetFlag(FLAGS_dram_budget_bytes);
   options.parallelism = absl::GetFlag(FLAGS_parallelism);
 

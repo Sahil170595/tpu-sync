@@ -300,9 +300,9 @@ class RaidenControllerTest(absltest.TestCase):
     class MockWorkerClient(raiden_controller.WorkerRpcClient):
 
       async def start_transfer(
-          self, orchestrator_id, plan, address=None
+          self, target_id, transfer_plan, address=None
       ) -> None:
-        recorded_actions.append(("start", [orchestrator_id]))
+        recorded_actions.append(("start", [target_id]))
 
     mock_client = MockWorkerClient()
     controller = raiden_controller.RaidenController(

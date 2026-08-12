@@ -195,10 +195,13 @@ message StoreInfo {
   // Required.
   string store_server_address = 2;
 
-  // "host:port" of this store's RaidenController service, if it has one.
-  // Optional today: peer controller resolution still goes through the Raiden
-  // orchestrator. Carried here so that role can move to this registry later
-  // without another proto revision.
+  // "host:port" of this store's RaidenController service.
+  //
+  // This is how a peer reaches this store to acquire a read lease, so a store
+  // that publishes it empty cannot serve a remote read: the reader fails with
+  // FailedPrecondition naming this store rather than dialling "". Not enforced
+  // at registration -- the failure belongs at resolve time, where the caller
+  // knows which peer it was trying to reach.
   string controller_address = 3;
 
   // Time-to-live in seconds.

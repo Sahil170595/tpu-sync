@@ -86,30 +86,17 @@ def get_local_ip() -> str:
 
 
 # Global variables for subprocesses
-_orchestrator_process = None
 _registry_process = None
-_orchestrator_port = None
 _registry_port = None
 
 
 def start_servers():
-  global _orchestrator_process, _registry_process
-  global _orchestrator_port, _registry_port
+  global _registry_process
+  global _registry_port
 
-  _orchestrator_port = _pick_unused_port()
   _registry_port = _pick_unused_port()
 
   this_dir = os.path.dirname(os.path.abspath(__file__))
-  orchestrator_binary = os.path.abspath(
-      os.path.join(
-          this_dir,
-          "..",
-          "..",
-          "core",
-          "controller",
-          "raiden_orchestrator_main",
-      )
-  )
   registry_binary = os.path.abspath(
       os.path.join(
           this_dir,
@@ -121,18 +108,6 @@ def start_servers():
       )
   )
   extra_flags = []
-
-  print(f"Starting Orchestrator on port {_orchestrator_port}")
-  orch_log = open("/tmp/raiden_orchestrator.log", "w")
-  _orchestrator_process = subprocess.Popen(
-      [
-          orchestrator_binary,
-          f"--port={_orchestrator_port}",
-      ]
-      + extra_flags,
-      stdout=orch_log,
-      stderr=subprocess.STDOUT,
-  )
 
   print(f"Starting Registry on port {_registry_port}")
   reg_log = open("/tmp/raiden_registry.log", "w")
@@ -151,19 +126,7 @@ def start_servers():
 
 
 def stop_servers():
-  global _orchestrator_process, _registry_process
-  if _orchestrator_process:
-    code = _orchestrator_process.poll()
-    if code is not None and code != 0:
-      print(f"--- Orchestrator exited with {code} ---")
-      try:
-        with open("/tmp/raiden_orchestrator.log", "r") as f:
-          print(f.read())
-      except OSError as e:
-        print(f"Failed to read orchestrator log: {e}")
-    _orchestrator_process.terminate()
-    _orchestrator_process.wait()
-    _orchestrator_process = None
+  global _registry_process
   if _registry_process:
     code = _registry_process.poll()
     if code is not None and code != 0:
@@ -462,7 +425,6 @@ class KVCacheStoreE2ETest(parameterized.TestCase):
         raiden_id=rid_a,
         num_shards=num_shards,
         shard_size_bytes=shard_size_bytes,
-        raiden_orchestrator_address=f"localhost:{_orchestrator_port}",
         store_server_ip="localhost",
         raiden_controller_port=controller_port,
     )
@@ -487,7 +449,6 @@ class KVCacheStoreE2ETest(parameterized.TestCase):
         raiden_id=rid_b,
         num_shards=num_shards,
         shard_size_bytes=shard_size_bytes,
-        raiden_orchestrator_address=f"localhost:{_orchestrator_port}",
         store_server_ip="localhost",
         raiden_controller_port=controller_port_b,
     )
@@ -725,7 +686,6 @@ class KVCacheStoreE2ETest(parameterized.TestCase):
         raiden_id=rid_a,
         num_shards=num_shards,
         shard_size_bytes=shard_size_bytes,
-        raiden_orchestrator_address=f"localhost:{_orchestrator_port}",
         store_server_ip="localhost",
         raiden_controller_port=controller_port,
     )
@@ -748,7 +708,6 @@ class KVCacheStoreE2ETest(parameterized.TestCase):
         raiden_id=rid_b,
         num_shards=num_shards,
         shard_size_bytes=shard_size_bytes,
-        raiden_orchestrator_address=f"localhost:{_orchestrator_port}",
         store_server_ip="localhost",
         raiden_controller_port=controller_port_b,
     )
@@ -939,7 +898,6 @@ class KVCacheStoreE2ETest(parameterized.TestCase):
         raiden_id=rid_a,
         num_shards=num_shards,
         shard_size_bytes=shard_size_bytes,
-        raiden_orchestrator_address=f"localhost:{_orchestrator_port}",
         store_server_ip="localhost",
         raiden_controller_port=controller_port,
     )
@@ -963,7 +921,6 @@ class KVCacheStoreE2ETest(parameterized.TestCase):
         raiden_id=rid_b,
         num_shards=num_shards,
         shard_size_bytes=shard_size_bytes,
-        raiden_orchestrator_address=f"localhost:{_orchestrator_port}",
         store_server_ip="localhost",
         raiden_controller_port=controller_port_b,
     )
@@ -1167,7 +1124,6 @@ class KVCacheStoreE2ETest(parameterized.TestCase):
         raiden_id=rid_a,
         num_shards=num_shards,
         shard_size_bytes=shard_size_bytes,
-        raiden_orchestrator_address=f"localhost:{_orchestrator_port}",
         store_server_ip="localhost",
         raiden_controller_port=controller_port_a,
     )
@@ -1190,7 +1146,6 @@ class KVCacheStoreE2ETest(parameterized.TestCase):
         raiden_id=rid_b,
         num_shards=num_shards,
         shard_size_bytes=shard_size_bytes,
-        raiden_orchestrator_address=f"localhost:{_orchestrator_port}",
         store_server_ip="localhost",
         raiden_controller_port=controller_port_b,
     )
@@ -1266,7 +1221,6 @@ class KVCacheStoreE2ETest(parameterized.TestCase):
         raiden_id=rid_a,
         num_shards=num_shards,
         shard_size_bytes=shard_size_bytes,
-        raiden_orchestrator_address=f"localhost:{_orchestrator_port}",
         store_server_ip="localhost",
         raiden_controller_port=controller_port_a,
     )
@@ -1304,7 +1258,6 @@ class KVCacheStoreE2ETest(parameterized.TestCase):
         raiden_id=rid_b,
         num_shards=num_shards,
         shard_size_bytes=shard_size_bytes,
-        raiden_orchestrator_address=f"localhost:{_orchestrator_port}",
         store_server_ip="localhost",
         raiden_controller_port=controller_port_b,
     )

@@ -45,9 +45,7 @@ def _pick_unused_port():
 
 
 # Global variables for subprocesses
-_orchestrator_process = None
 _registry_process = None
-_orchestrator_port = None
 _registry_port = None
 
 
@@ -77,23 +75,11 @@ def _registry_binary_path():
 
 
 def setUpModule():
-  global _orchestrator_process, _registry_process
-  global _orchestrator_port, _registry_port
-
-  _orchestrator_port = _pick_unused_port()
+  global _registry_process
+  global _registry_port
   _registry_port = _pick_unused_port()
 
   this_dir = os.path.dirname(os.path.abspath(__file__))
-  orchestrator_binary = os.path.abspath(
-      os.path.join(
-          this_dir,
-          "..",
-          "..",
-          "core",
-          "controller",
-          "raiden_orchestrator_main",
-      )
-  )
   registry_binary = os.path.abspath(
       os.path.join(
           this_dir,
@@ -105,18 +91,6 @@ def setUpModule():
       )
   )
   extra_flags = []
-
-  print(f"Starting Orchestrator on port {_orchestrator_port}")
-  orch_log = open("/tmp/raiden_orchestrator.log", "w")
-  _orchestrator_process = subprocess.Popen(
-      [
-          orchestrator_binary,
-          f"--port={_orchestrator_port}",
-      ]
-      + extra_flags,
-      stdout=orch_log,
-      stderr=subprocess.STDOUT,
-  )
 
   print(f"Starting Registry on port {_registry_port}")
   reg_log = open("/tmp/raiden_registry.log", "w")
@@ -135,17 +109,6 @@ def setUpModule():
 
 
 def tearDownModule():
-  if _orchestrator_process:
-    code = _orchestrator_process.poll()
-    if code is not None and code != 0:
-      print(f"--- Orchestrator exited with {code} ---")
-      try:
-        with open("/tmp/raiden_orchestrator.log", "r") as f:
-          print(f.read())
-      except OSError as e:
-        print(f"Failed to read orchestrator log: {e}")
-    _orchestrator_process.terminate()
-    _orchestrator_process.wait()
   if _registry_process:
     code = _registry_process.poll()
     if code is not None and code != 0:
@@ -531,7 +494,6 @@ class KVCacheStoreTest(absltest.TestCase):
         raiden_id=store_id,
         num_shards=len(devices),
         shard_size_bytes=local_bytes_per_block,
-        raiden_orchestrator_address=f"localhost:{_orchestrator_port}",
         store_server_ip="localhost",
     )
 
@@ -639,7 +601,6 @@ class KVCacheStoreTest(absltest.TestCase):
         raiden_id=store_id,
         num_shards=len(devices),
         shard_size_bytes=local_bytes_per_block,
-        raiden_orchestrator_address=f"localhost:{_orchestrator_port}",
         store_server_ip="localhost",
     )
 

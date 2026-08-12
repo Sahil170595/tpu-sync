@@ -166,7 +166,6 @@ class KVCacheStore:
       num_shards: int,
       store_server_ip: str,
       shard_size_bytes: int = 0,
-      raiden_orchestrator_address: str = "",
       raiden_controller_port: int = 0,
   ):
     """Creates a KVCacheStore.
@@ -199,7 +198,6 @@ class KVCacheStore:
         raiden_id=raw_raiden_id,
         num_shards=num_shards,
         shard_size_bytes=shard_size_bytes,
-        raiden_orchestrator_address=raiden_orchestrator_address,
         store_server_ip=store_server_ip,
         raiden_controller_port=raiden_controller_port,
     )
@@ -338,6 +336,10 @@ class KVCacheStore:
 
     Returns as soon as the reads are issued; poll with
     poll_remote_read_status().
+
+    Requires a global registry: it is what maps the owning peer to the
+    controller address this store acquires its read lease from. A store built
+    without a global_registry_address fails every read.
 
     Args:
       block_hashes: Block hashes to read. Each must already be pinned, and must

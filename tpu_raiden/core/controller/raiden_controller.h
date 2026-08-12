@@ -16,6 +16,7 @@
 #define THIRD_PARTY_TPU_RAIDEN_CORE_CONTROLLER_RAIDEN_CONTROLLER_H_
 
 #include <cstdint>
+#include <deque>
 #include <memory>
 #include <string>
 #include <vector>
@@ -40,10 +41,6 @@
 #include "tpu_sync/rpc/raiden_service.pb.h"
 
 namespace tpu_raiden {
-namespace controller {
-class OrchestratorServiceClient;
-}  // namespace controller
-
 namespace core {
 namespace controller {
 class RaidenControllerServiceImpl;
@@ -64,11 +61,10 @@ class RaidenController {
   // The RaidenController sets up its own ControllerService and local
   // LogicalBlockManager. Workers will dynamically register with it.
   //
-  // If `raiden_orchestrator_address` is empty, this controller will run without
-  // registering itself with the orchestrator. In this mode, peer resolution is
-  // disabled (ResolvePeerController will fail), but local transfers (H2D, D2H)
-  // and H2H transfers where the peer address is provided directly will function
-  // normally.
+  // This controller resolves no peers of its own: every address it dials is
+  // handed to it (ReadRemote takes the source's controller address). Mapping a
+  // peer's identity to that address belongs to whoever owns the directory --
+  // for KVCacheStore, the global registry.
   //
   // `num_blocks` drives two independent things: the size of the logical-block
   // ledger (AllocateBlockIds), and how many physical buffers are pre-created
@@ -90,18 +86,15 @@ class RaidenController {
   // Physical/BufferProto mode.
   RaidenController(const rpc::RaidenIdProto& unit, int num_blocks,
                    int num_shards, int64_t shard_size_bytes,
-                   absl::string_view raiden_orchestrator_address = "",
                    absl::string_view raiden_controller_address = "",
                    bool preprovision_worker_buffers = true,
                    int expected_worker_count = 0);
 
   // Constructs a RaidenController for multiple worker addresses.
-  // It will also start the ControllerServer to allow dynamic registrations
-  // and resolve peers.
+  // It will also start the ControllerServer to allow dynamic registrations.
   RaidenController(const rpc::RaidenIdProto& unit,
                    absl::Span<const std::string> worker_addresses,
                    int num_blocks, int num_shards, int64_t shard_size_bytes,
-                   absl::string_view raiden_orchestrator_address = "",
                    absl::string_view raiden_controller_address = "",
                    bool preprovision_worker_buffers = true,
                    int expected_worker_count = 0);
@@ -184,13 +177,18 @@ class RaidenController {
   // src_host_block_ids is ADVISORY (registry-derived, possibly stale); the
   // source re-derives the authoritative ids while validating the hashes.
   //
+  // src_controller_address is the source's ControllerService address, supplied
+  // by the caller -- this controller holds no directory and resolves nothing.
+  // An empty address is InvalidArgument, rejected before the source is asked to
+  // pin anything.
+  //
   // In HBM mode the caller's device blocks are written before the verdict is
   // known, so a discarded read leaves them holding undefined bytes. That is by
   // design: nothing in the LRU ever points at them (failed hashes are never
   // promoted), and callers overwrite device blocks when they reuse them.
   // Treat supplied device blocks as scratch until the read reports success.
   tsl::Future<> ReadRemote(
-      const kv_cache::RaidenId& src_raiden_id,
+      absl::string_view src_controller_address,
       const std::vector<int32_t>& src_host_block_ids,
       const std::vector<int32_t>& dst_host_block_ids,
       const std::vector<std::string>& block_hashes = {},
@@ -209,17 +207,12 @@ class RaidenController {
   };
 
   // Registers the ReadRemote step-6a verify/pin and unpin hooks (invoked when
-  // this controller acts as the SOURCE of a remote read). Forwards to the hosted
-  // ControllerService.
+  // this controller acts as the SOURCE of a remote read). Forwards to the
+  // hosted ControllerService.
   void SetReadRemoteHooks(
       core::controller::RaidenControllerServiceImpl::ValidateAndPinCallback
           validate_and_pin,
       core::controller::RaidenControllerServiceImpl::UnpinCallback unpin);
-
-  // Resolves a peer controller's ControllerService address via the
-  // orchestrator.
-  absl::StatusOr<std::string> ResolvePeerController(
-      const rpc::RaidenIdProto& peer_id);
 
   // Forwards an opaque transfer program to the named registered worker over
   // its persistent WorkerService channel. The controller does not interpret
@@ -228,6 +221,14 @@ class RaidenController {
   tsl::Future<proto::TransferProgramResponse> SubmitTransferProgram(
       absl::string_view worker_id,
       const proto::TransferProgramRequest& request);
+
+  // Cached peer-controller channels. Test observability only: what it pins is
+  // that the cache stays bounded as peers restart onto new addresses.
+  size_t CachedStubCountForTest() const {
+    absl::MutexLock lock(mutex_);
+    return stubs_.size();
+  }
+  static size_t MaxCachedStubsForTest() { return kMaxCachedStubs; }
 
   // Accessors for state inspection and testing.
   const rpc::RaidenIdProto& unit() const { return unit_; }
@@ -253,7 +254,6 @@ class RaidenController {
       absl::Span<const int64_t> copy_sizes = {});
 
   void Init(absl::Span<const std::string> worker_addresses,
-            absl::string_view raiden_orchestrator_address,
             absl::string_view raiden_controller_address,
             int expected_worker_count);
 
@@ -289,14 +289,31 @@ class RaidenController {
   // private_controller_server_ or the shared singleton). Used to register the
   // ReadRemote step-6a hooks after construction. Not owned.
   core::controller::ControllerServer* active_server_ = nullptr;
-  std::unique_ptr<OrchestratorServiceClient> orchestrator_client_;
-  absl::flat_hash_map<kv_cache::RaidenId, std::string, kv_cache::RaidenIdHash>
-      resolved_controllers_ ABSL_GUARDED_BY(mutex_);
+
+  // Channel cache, keyed by address -- not a directory. A peer that restarts on
+  // a new address is simply a new key, and its old entry is never looked up
+  // again.
+  //
+  // Which is why this is BOUNDED. While the caller cached peer addresses
+  // forever, a restarted peer's new address was never learned, so this map
+  // could not grow past one entry per peer; resolving per read removed that
+  // accidental bound and made every peer restart leave a dead channel behind.
+  // Eviction is oldest-first: in steady state one address per peer stays
+  // resident, so the entries that age out are the ones that stopped being
+  // dialled -- the dead ones. An evicted stub that is still mid-read stays
+  // alive through the shared_ptr its RemoteReadState holds.
+  //
+  // The precise version of this would drop a stub when a read against it fails
+  // to connect (as the store does for its own peer clients). That needs the
+  // failing address plumbed back through the acquire callback; the bound is
+  // what makes the growth safe without it.
+  static constexpr size_t kMaxCachedStubs = 256;
   absl::flat_hash_map<
       std::string,
-      std::shared_ptr<
-          ::tpu_raiden::proto::RaidenControllerService::Stub>>
+      std::shared_ptr<::tpu_raiden::proto::RaidenControllerService::Stub>>
       stubs_ ABSL_GUARDED_BY(mutex_);
+  // Insertion order for the bound above.
+  std::deque<std::string> stub_order_ ABSL_GUARDED_BY(mutex_);
 };
 
 }  // namespace controller

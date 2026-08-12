@@ -35,25 +35,25 @@
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
+#include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
+#include "absl/status/statusor.h"
+#include "absl/types/span.h"
 #include "grpcpp/grpcpp.h"
+#include "grpcpp/security/credentials.h"
 #include "tpu_raiden/core/controller/controller_client.h"
-#include "tpu_raiden/core/controller/orchestrator_service_client.h"
 #include "tpu_raiden/core/controller/raiden_controller.h"
-#include "tpu_raiden/core/controller/raiden_orchestrator.h"
 #include "tpu_raiden/core/controller/test_util.h"
 #include "tpu_raiden/core/kv_manager_holder.h"
-#include "tpu_raiden/kv_cache/host_offload_backend.h"
-#include "tpu_raiden/kv_cache/kv_cache_metadata.h"
 #include "tpu_raiden/kv_cache/kv_cache_store.h"
+#include "tpu_raiden/kv_cache/kv_cache_store_backend.h"
 #include "tpu_raiden/kv_cache/kv_cache_store_client.h"
+#include "tpu_raiden/kv_cache/raiden_id.h"
 
 namespace tpu_raiden {
 namespace kv_cache {
 namespace {
 
-using ::absl_testing::IsOkAndHolds;
-using ::absl_testing::StatusIs;
 using ::testing::UnorderedElementsAre;
 
 class KVCacheStoreServerTest : public ::testing::Test {
@@ -66,34 +66,11 @@ class KVCacheStoreServerTest : public ::testing::Test {
     test_worker_server_->service->SetTransferManager(
         ::tpu_raiden::KVManagerHolder(dst_transfer_mock_.get()));
 
-    // 2. Setup orchestrator server
-    orchestrator_service_ =
-        std::make_unique<::tpu_raiden::RaidenOrchestrator>();
-    ::grpc::ServerBuilder orch_builder;
-    int orch_port = 0;
-    orch_builder.AddListeningPort(
-        "0.0.0.0:0", ::grpc::InsecureServerCredentials(), &orch_port);
-    orch_builder.RegisterService(orchestrator_service_.get());
-    orchestrator_server_ = orch_builder.BuildAndStart();
-    orchestrator_address_ = "localhost:" + std::to_string(orch_port);
-
-    // 3. Setup src controller server
+    // 2. Setup src controller server
     src_controller_server_ = core::controller::CreateTestControllerServer();
 
     RaidenId src_raiden_id{"src_job", "0", "src_data", 0};
     RaidenId dst_raiden_id{"dst_job", "0", "dst_data", 0};
-
-    rpc::RaidenIdProto src_unit;
-    src_unit.set_job_name(src_raiden_id.job_name);
-    src_unit.set_job_replica_id(src_raiden_id.job_replica_id);
-    src_unit.set_data_name(src_raiden_id.data_name);
-    src_unit.set_data_replica_idx(src_raiden_id.data_replica_idx);
-
-    ::tpu_raiden::controller::OrchestratorServiceClient orchestrator_client(
-        ::grpc::CreateChannel(orchestrator_address_,
-                              ::grpc::InsecureChannelCredentials()));
-    ASSERT_OK(orchestrator_client.RegisterController(
-        src_unit, src_controller_server_->server_address));
 
     ASSERT_OK(src_controller_server_->client->RegisterWorker(
         "worker_0", test_worker_server_->server_address,
@@ -106,12 +83,12 @@ class KVCacheStoreServerTest : public ::testing::Test {
         },
         [&](absl::Span<const std::string> /*h*/) {});
 
-    // 4. Create destination KVCacheStore. No global registry: the
-    // orchestrator address used to be (mis)passed in the registry slot.
+    // 3. Create destination KVCacheStore. These cases drive the store server
+    // directly, so no global registry is needed.
     store_ = std::make_unique<KVCacheStore>(
         /*capacity=*/100, /*global_registry_address=*/"", dst_raiden_id,
         /*num_shards=*/1,
-        /*shard_size_bytes=*/1024, orchestrator_address_,
+        /*shard_size_bytes=*/1024,
         /*store_server_ip=*/"127.0.0.1");
 
     ::tpu_raiden::core::controller::RaidenControllerClient
@@ -133,18 +110,12 @@ class KVCacheStoreServerTest : public ::testing::Test {
     if (server_) {
       server_->Shutdown();
     }
-    if (orchestrator_server_) {
-      orchestrator_server_->Shutdown();
-    }
   }
 
   std::unique_ptr<::tpu_raiden::controller::TestWorkerServer>
       test_worker_server_;
   std::unique_ptr<::tpu_raiden::controller::ShardAwareMockTransferManager>
       dst_transfer_mock_;
-  std::unique_ptr<::tpu_raiden::RaidenOrchestrator> orchestrator_service_;
-  std::unique_ptr<::grpc::Server> orchestrator_server_;
-  std::string orchestrator_address_;
   std::unique_ptr<::tpu_raiden::core::controller::TestControllerServer>
       src_controller_server_;
   std::unique_ptr<KVCacheStore> store_;

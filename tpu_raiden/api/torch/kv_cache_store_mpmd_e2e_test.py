@@ -50,7 +50,6 @@ flags.DEFINE_integer("world_size", 0, "")
 flags.DEFINE_integer("master_port", 0, "")
 flags.DEFINE_integer("controller_port", 0, "")
 flags.DEFINE_integer("controller_port_b", 0, "")
-flags.DEFINE_integer("orchestrator_port", 0, "")
 flags.DEFINE_integer("registry_port", 0, "")
 
 _GOOGLE_PCI_VENDOR_ID = "0x1ae0"
@@ -117,37 +116,23 @@ def prepare_tpu_environment(world_size: int) -> None:
   if "TORCH_TPU_TOPOLOGY" not in os.environ:
     os.environ["TORCH_TPU_TOPOLOGY"] = get_tpu_topology(world_size)
 
-_orchestrator_process = None
 _registry_process = None
-_orchestrator_port = None
 _registry_port = None
 
 def start_servers():
-  global _orchestrator_process, _registry_process
-  global _orchestrator_port, _registry_port
-  _orchestrator_port = pick_unused_ports(1)[0]
+  global _registry_process
+  global _registry_port
   _registry_port = pick_unused_ports(1)[0]
   if resources:
-    orchestrator_binary = resources.GetResourceFilename(
-        "google3/third_party/tpu_raiden/tpu_raiden/core/controller/raiden_orchestrator_main"
-    )
     registry_binary = resources.GetResourceFilename(
         "google3/third_party/tpu_raiden/tpu_raiden/kv_cache/global_registry/global_registry_server"
     )
     extra_flags = ["--alsologtostderr"]
   else:
     this_dir = os.path.dirname(os.path.abspath(__file__))
-    orchestrator_binary = os.path.abspath(os.path.join(this_dir, "..", "..", "core", "controller", "raiden_orchestrator_main"))
     registry_binary = os.path.abspath(os.path.join(this_dir, "..", "..", "kv_cache", "global_registry", "global_registry_server"))
     extra_flags = []
 
-  print(f"Starting Orchestrator on port {_orchestrator_port}")
-  orch_log = open("/tmp/raiden_orchestrator_mpmd.log", "w")
-  _orchestrator_process = subprocess.Popen(
-      [orchestrator_binary, f"--port={_orchestrator_port}"] + extra_flags,
-      stdout=orch_log,
-      stderr=subprocess.STDOUT,
-  )
   print(f"Starting Registry on port {_registry_port}")
   reg_log = open("/tmp/raiden_registry_mpmd.log", "w")
   _registry_process = subprocess.Popen(
@@ -158,19 +143,7 @@ def start_servers():
   time.sleep(2)
 
 def stop_servers():
-  global _orchestrator_process, _registry_process
-  if _orchestrator_process:
-    code = _orchestrator_process.poll()
-    if code is not None and code != 0:
-      print(f"--- Orchestrator exited with {code} ---")
-      try:
-        with open("/tmp/raiden_orchestrator_mpmd.log", "r") as f:
-          print(f.read())
-      except OSError as e:
-        print(f"Failed to read orchestrator log: {e}")
-    _orchestrator_process.terminate()
-    _orchestrator_process.wait()
-    _orchestrator_process = None
+  global _registry_process
   if _registry_process:
     code = _registry_process.poll()
     if code is not None and code != 0:
@@ -196,7 +169,6 @@ def _worker_save_load_main(argv):
   world_size = FLAGS.world_size
   master_port = FLAGS.master_port
   controller_port = FLAGS.controller_port
-  orchestrator_port = FLAGS.orchestrator_port
   registry_port = FLAGS.registry_port
 
   os.environ["MASTER_ADDR"] = "localhost"
@@ -240,7 +212,6 @@ def _worker_save_load_main(argv):
           shard_size_bytes=shard_size_bytes,
           store_server_ip="127.0.0.1",
           raiden_controller_port=controller_port,
-          raiden_orchestrator_address=f"localhost:{orchestrator_port}",
       )
 
       slices = [
@@ -320,7 +291,6 @@ def _worker_read_remote_main(argv):
   master_port = FLAGS.master_port
   controller_port_a = FLAGS.controller_port
   controller_port_b = FLAGS.controller_port_b
-  orchestrator_port = FLAGS.orchestrator_port
   registry_port = FLAGS.registry_port
 
   os.environ["MASTER_ADDR"] = "localhost"
@@ -372,7 +342,6 @@ def _worker_read_remote_main(argv):
           shard_size_bytes=shard_size_bytes,
           store_server_ip="127.0.0.1",
           raiden_controller_port=controller_port_a,
-          raiden_orchestrator_address=f"localhost:{orchestrator_port}",
       )
 
       rid_b = kv_cache_store.RaidenId(
@@ -386,7 +355,6 @@ def _worker_read_remote_main(argv):
           shard_size_bytes=shard_size_bytes,
           store_server_ip="127.0.0.1",
           raiden_controller_port=controller_port_b,
-          raiden_orchestrator_address=f"localhost:{orchestrator_port}",
       )
 
       slices_a = [
@@ -525,7 +493,6 @@ def _worker_write_remote_main(argv):
   master_port = FLAGS.master_port
   controller_port_a = FLAGS.controller_port
   controller_port_b = FLAGS.controller_port_b
-  orchestrator_port = FLAGS.orchestrator_port
   registry_port = FLAGS.registry_port
 
   os.environ["MASTER_ADDR"] = "localhost"
@@ -576,7 +543,6 @@ def _worker_write_remote_main(argv):
           shard_size_bytes=shard_size_bytes,
           store_server_ip="127.0.0.1",
           raiden_controller_port=controller_port_a,
-          raiden_orchestrator_address=f"localhost:{orchestrator_port}",
       )
 
       rid_b = kv_cache_store.RaidenId(
@@ -590,7 +556,6 @@ def _worker_write_remote_main(argv):
           shard_size_bytes=shard_size_bytes,
           store_server_ip="127.0.0.1",
           raiden_controller_port=controller_port_b,
-          raiden_orchestrator_address=f"localhost:{orchestrator_port}",
       )
 
       slices_a = [
@@ -755,7 +720,6 @@ class KVCacheStoreMpmdE2ETest(absltest.TestCase):
           f"--world_size={world_size}",
           f"--master_port={master_port}",
           f"--controller_port={controller_port}",
-          f"--orchestrator_port={_orchestrator_port}",
           f"--registry_port={_registry_port}",
       ]
       procs.append(subprocess.Popen(cmd, env=env))
@@ -788,7 +752,6 @@ class KVCacheStoreMpmdE2ETest(absltest.TestCase):
           f"--master_port={master_port}",
           f"--controller_port={controller_port_a}",
           f"--controller_port_b={controller_port_b}",
-          f"--orchestrator_port={_orchestrator_port}",
           f"--registry_port={_registry_port}",
       ]
       procs.append(subprocess.Popen(cmd, env=env))
@@ -821,7 +784,6 @@ class KVCacheStoreMpmdE2ETest(absltest.TestCase):
           f"--master_port={master_port}",
           f"--controller_port={controller_port_a}",
           f"--controller_port_b={controller_port_b}",
-          f"--orchestrator_port={_orchestrator_port}",
           f"--registry_port={_registry_port}",
       ]
       procs.append(subprocess.Popen(cmd, env=env))

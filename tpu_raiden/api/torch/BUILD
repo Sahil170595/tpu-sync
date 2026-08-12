@@ -126,7 +126,6 @@ py_test(
     name = "kv_cache_store_test",
     srcs = ["kv_cache_store_test.py"],
     data = [
-        "//tpu_raiden/core/controller:raiden_orchestrator_main",
         "//tpu_raiden/kv_cache/global_registry:global_registry_server",
     ],
     deps = [

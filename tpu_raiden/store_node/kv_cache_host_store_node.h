@@ -71,8 +71,8 @@ namespace store_node {
 class KVCacheHostStoreNode {
  public:
   struct Options {
-    // Identity this node registers under, in the global registry and the
-    // orchestrator alike. The four fields form one opaque composite key --
+    // Identity this node registers under in the global registry. The four
+    // fields form one opaque composite key --
     // raiden never matches a field individually -- so all that matters is
     // that the tuple is unique within the deployment and stable across
     // restarts (re-registering the same id is how a restarted node replaces
@@ -94,10 +94,6 @@ class KVCacheHostStoreNode {
     // controller and worker still boot (useful in tests), but peers can
     // neither discover nor dial this node.
     std::string global_registry_address;
-
-    // Orchestrator to register the controller with. Empty skips registration
-    // (peer controller resolution is then unavailable; useful in tests).
-    std::string raiden_orchestrator_address;
 
     // Host DRAM lent to the pool. Converted to whole blocks of the received
     // spec's block geometry; the remainder below one block is not allocated.

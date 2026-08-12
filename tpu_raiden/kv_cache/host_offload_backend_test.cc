@@ -32,17 +32,12 @@
 #include "absl/types/span.h"
 #include "grpcpp/create_channel.h"
 #include "grpcpp/security/credentials.h"
-#include "grpcpp/security/server_credentials.h"
-#include "grpcpp/server_builder.h"
 #include "tpu_raiden/core/controller/controller_client.h"
-#include "tpu_raiden/core/controller/orchestrator_service_client.h"
 #include "tpu_raiden/core/controller/raiden_controller.h"
-#include "tpu_raiden/core/controller/raiden_orchestrator.h"
 #include "tpu_raiden/core/controller/test_util.h"
 #include "tpu_raiden/core/controller/worker_registry.h"
 #include "tpu_raiden/core/kv_manager_holder.h"
 #include "tpu_raiden/kv_cache/global_registry/global_registry_client.h"
-#include "tpu_raiden/kv_cache/global_registry/global_registry_server.h"
 #include "tpu_raiden/kv_cache/global_registry/test_util.h"
 #include "tpu_raiden/kv_cache/kv_cache_store_backend.h"
 #include "tpu_raiden/kv_cache/kv_cache_store_backend_factory.h"
@@ -238,7 +233,6 @@ TEST(HostOffloadBackendTest,
   auto lookup_res = backend->Lookup({"local_g_hash"});
   ASSERT_TRUE(lookup_res.ok());
   EXPECT_EQ(lookup_res->size(), 0);
-
 }
 
 TEST(HostOffloadBackendTest, CreateRegistersKVTransferSpecFromConfig) {
@@ -352,9 +346,9 @@ TEST(HostOffloadBackendTest, ComposeKVTransferSpecRejectsEmptyWorkerList) {
 TEST(HostOffloadBackendTest, ComposeKVTransferSpecRejectsMissingGeometry) {
   std::vector<core::controller::WorkerRegistration> workers;
   workers.push_back(GeometryWorker("w0", /*node_id=*/0, {4096}, 2));
-  workers.push_back(
-      GeometryWorker("w1", /*node_id=*/1, /*block_array_bytes=*/{},
-                     /*num_kv_shards=*/0));
+  workers.push_back(GeometryWorker("w1", /*node_id=*/1,
+                                   /*block_array_bytes=*/{},
+                                   /*num_kv_shards=*/0));
 
   EXPECT_THAT(HostOffloadBackendTest::ComposeKVTransferSpec(workers).status(),
               ::absl_testing::StatusIs(absl::StatusCode::kFailedPrecondition));
@@ -433,7 +427,7 @@ TEST(HostOffloadBackendTest, StartServerStripsControllerPort) {
 
   controller::RaidenController controller(
       unit_proto, /*num_blocks=*/100, /*num_shards=*/1,
-      /*shard_size_bytes=*/1024, /*raiden_orchestrator_address=*/"",
+      /*shard_size_bytes=*/1024,
       /*raiden_controller_address=*/"127.0.0.1:12345");
 
   BackendConfig config;
@@ -469,32 +463,11 @@ TEST(HostOffloadBackendTest, EndToEndFetchRPC) {
   test_worker_server->service->SetTransferManager(
       KVManagerHolder(dst_transfer_mock.get()));
 
-  // 3. Setup orchestrator server
-  auto orchestrator_service = std::make_unique<RaidenOrchestrator>();
-  grpc::ServerBuilder orch_builder;
-  int orch_port = 0;
-  orch_builder.AddListeningPort("0.0.0.0:0", grpc::InsecureServerCredentials(),
-                                &orch_port);
-  orch_builder.RegisterService(orchestrator_service.get());
-  auto orchestrator_server = orch_builder.BuildAndStart();
-  std::string orchestrator_address = "localhost:" + std::to_string(orch_port);
-
-  // 4. Setup src controller server
+  // 3. Setup src controller server
   auto src_controller_server = core::controller::CreateTestControllerServer();
 
   RaidenId src_raiden_id{"src_job", "0", "src_data", 0};
   RaidenId dst_raiden_id{"dst_job", "0", "dst_data", 0};
-
-  rpc::RaidenIdProto src_unit;
-  src_unit.set_job_name(src_raiden_id.job_name);
-  src_unit.set_job_replica_id(src_raiden_id.job_replica_id);
-  src_unit.set_data_name(src_raiden_id.data_name);
-  src_unit.set_data_replica_idx(src_raiden_id.data_replica_idx);
-
-  controller::OrchestratorServiceClient orchestrator_client(grpc::CreateChannel(
-      orchestrator_address, grpc::InsecureChannelCredentials()));
-  ASSERT_OK(orchestrator_client.RegisterController(
-      src_unit, src_controller_server->server_address));
 
   ASSERT_OK(src_controller_server->client->RegisterWorker(
       "worker_0", test_worker_server->server_address,
@@ -527,7 +500,7 @@ TEST(HostOffloadBackendTest, EndToEndFetchRPC) {
 
   controller::RaidenController dst_controller(
       dst_unit_proto, /*num_blocks=*/100, /*num_shards=*/1,
-      /*shard_size_bytes=*/1024, orchestrator_address,
+      /*shard_size_bytes=*/1024,
       /*raiden_controller_address=*/"");
 
   BackendConfig dst_config;
@@ -576,7 +549,6 @@ TEST(HostOffloadBackendTest, EndToEndFetchRPC) {
               UnorderedElementsAre("fetch_hash_1", "fetch_hash_2"));
 
   store_server->Shutdown();
-  orchestrator_server->Shutdown();
 }
 
 TEST(HostOffloadBackendTest, LoadMismatchedDeviceBlockCount) {
@@ -616,16 +588,6 @@ TEST(HostOffloadBackendTest, LoadSuccess) {
   auto reg_server = global_registry::CreateTestGlobalRegistryServer();
   std::string server_address = reg_server->server_address;
 
-  // Setup orchestrator server
-  auto orchestrator_service = std::make_unique<RaidenOrchestrator>();
-  grpc::ServerBuilder orch_builder;
-  int orch_port = 0;
-  orch_builder.AddListeningPort("0.0.0.0:0", grpc::InsecureServerCredentials(),
-                                &orch_port);
-  orch_builder.RegisterService(orchestrator_service.get());
-  auto orchestrator_server = orch_builder.BuildAndStart();
-  std::string orchestrator_address = "localhost:" + std::to_string(orch_port);
-
   auto channel =
       grpc::CreateChannel(server_address, grpc::InsecureChannelCredentials());
   auto registry_client =
@@ -648,10 +610,10 @@ TEST(HostOffloadBackendTest, LoadSuccess) {
   local_unit.set_data_name(local_node_id.data_name);
   local_unit.set_data_replica_idx(local_node_id.data_replica_idx);
 
-  controller::RaidenController controller(
-      local_unit, /*num_blocks=*/100, /*num_shards=*/1,
-      /*shard_size_bytes=*/1024, orchestrator_address,
-      /*raiden_controller_address=*/"");
+  controller::RaidenController controller(local_unit, /*num_blocks=*/100,
+                                          /*num_shards=*/1,
+                                          /*shard_size_bytes=*/1024,
+                                          /*raiden_controller_address=*/"");
 
   // Setup fake server for remote node to process Fetch
   BackendConfig remote_config;
@@ -678,8 +640,9 @@ TEST(HostOffloadBackendTest, LoadSuccess) {
   ASSERT_OK(remote_server->StartServer(remote_backend.get(), &controller,
                                        "127.0.0.1"));
 
-  ASSERT_OK(registry_client->RegisterStore(
-      remote_node_id, remote_server->GetServerAddress(), orchestrator_address));
+  ASSERT_OK(registry_client->RegisterStore(remote_node_id,
+                                           remote_server->GetServerAddress(),
+                                           controller.controller_address()));
 
   BackendConfig local_config;
   local_config.type = "HostOffloadBackend";
@@ -713,7 +676,6 @@ TEST(HostOffloadBackendTest, LoadSuccess) {
   EXPECT_OK(load_future.Await());
 
   remote_server->Shutdown();
-  orchestrator_server->Shutdown();
 }
 
 TEST(HostOffloadBackendTest, LoadLocalSuccess) {
@@ -822,10 +784,10 @@ TEST(HostOffloadBackendTest, StoreServerOverride) {
   local_unit.set_data_name(local_node_id.data_name);
   local_unit.set_data_replica_idx(local_node_id.data_replica_idx);
 
-  controller::RaidenController controller(
-      local_unit, /*num_blocks=*/100, /*num_shards=*/1,
-      /*shard_size_bytes=*/1024, /*raiden_orchestrator_address=*/"",
-      /*raiden_controller_address=*/"");
+  controller::RaidenController controller(local_unit, /*num_blocks=*/100,
+                                          /*num_shards=*/1,
+                                          /*shard_size_bytes=*/1024,
+                                          /*raiden_controller_address=*/"");
 
   BackendConfig config;
   config.type = "HostOffloadBackend";
@@ -1131,8 +1093,8 @@ std::unique_ptr<InterleavedFixture> MakeInterleavedFixture(
 // Caches `hash` in the local index at `host_block_id`.
 void InsertLocal(KVCacheStoreBackend* backend, const RaidenId& local_id,
                  const std::string& hash, int host_block_id) {
-  backend->Insert({hash}, {RaidenBlockID(local_id, host_block_id,
-                                         BlockStatus::HOST)},
+  backend->Insert({hash},
+                  {RaidenBlockID(local_id, host_block_id, BlockStatus::HOST)},
                   /*on_host=*/true);
 }
 
@@ -1140,9 +1102,8 @@ void InsertLocal(KVCacheStoreBackend* backend, const RaidenId& local_id,
 void RegisterGlobal(global_registry::GlobalRegistryClient* client,
                     const RaidenId& owner, const std::string& hash,
                     int block_id) {
-  ASSERT_OK(client->Register({{.prefix_hash = hash,
-                               .raiden_id = owner,
-                               .block_id = block_id}}));
+  ASSERT_OK(client->Register(
+      {{.prefix_hash = hash, .raiden_id = owner, .block_id = block_id}}));
 }
 
 // Withdraws this node's own registration for `hash`. Insert() publishes
@@ -1187,7 +1148,8 @@ TEST(HostOffloadBackendTest, LookupInterleavesLocalAndRemoteHits) {
   EXPECT_EQ((*res)[3].second.host_block_id, 12);
 }
 
-TEST(HostOffloadBackendTest, LookupInterleavedResolvesLocalHitsAfterARemoteRun) {
+TEST(HostOffloadBackendTest,
+     LookupInterleavedResolvesLocalHitsAfterARemoteRun) {
   auto f = MakeInterleavedFixture();
   // The case the old two-phase logic could not express at all: the sequence
   // opens with blocks only a peer has, and continues into blocks we hold.
@@ -1204,7 +1166,8 @@ TEST(HostOffloadBackendTest, LookupInterleavedResolvesLocalHitsAfterARemoteRun) 
   EXPECT_EQ((*res)[3].second.host_block_id, 12);
 }
 
-TEST(HostOffloadBackendTest, LookupInterleavedPrefersTheLocalIndexOverRegistry) {
+TEST(HostOffloadBackendTest,
+     LookupInterleavedPrefersTheLocalIndexOverRegistry) {
   auto f = MakeInterleavedFixture();
   RegisterGlobal(f->registry->client.get(), f->peer_id, "r1", 42);
   InsertLocal(f->backend.get(), f->local_id, "l1", 11);
@@ -1284,14 +1247,14 @@ TEST(HostOffloadBackendTest, LookupInterleavedWithoutGlobalStopsAtLocalMiss) {
   RegisterGlobal(f->registry->client.get(), f->peer_id, "r1", 42);
   InsertLocal(f->backend.get(), f->local_id, "l1", 11);
 
-  auto res = f->backend->Lookup({"r1", "l1"},
-                                LookupOptions{.enable_global = false});
+  auto res =
+      f->backend->Lookup({"r1", "l1"}, LookupOptions{.enable_global = false});
   ASSERT_OK(res.status());
   EXPECT_TRUE(res->empty()) << "with no registry to consult, a local miss "
                                "still ends the answer";
 
-  auto res2 = f->backend->Lookup({"l1", "r1"},
-                                 LookupOptions{.enable_global = false});
+  auto res2 =
+      f->backend->Lookup({"l1", "r1"}, LookupOptions{.enable_global = false});
   ASSERT_OK(res2.status());
   ASSERT_EQ(res2->size(), 1);
   EXPECT_EQ((*res2)[0].first, "l1");
@@ -1307,8 +1270,8 @@ TEST(HostOffloadBackendTest, LookupInterleavedWithoutRegistryClient) {
                   RaidenBlockID(id, 12, BlockStatus::HOST)},
                  /*on_host=*/true);
 
-  auto res = backend.Lookup({"l1", "gap", "l2"},
-                            LookupOptions{.pin_found = true});
+  auto res =
+      backend.Lookup({"l1", "gap", "l2"}, LookupOptions{.pin_found = true});
   ASSERT_OK(res.status());
   ASSERT_EQ(res->size(), 1);
   EXPECT_EQ((*res)[0].first, "l1");

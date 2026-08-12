@@ -154,7 +154,6 @@ BAZEL_TARGETS=(
   "//tpu_sync/rpc:controller_service_py_pb2"
   # C++ control-plane service binaries. These do not depend on JAX or Torch,
   # so they are always built.
-  "//tpu_raiden/core/controller:raiden_orchestrator_main"
   "//tpu_raiden/kv_cache/global_registry:global_registry_server"
 )
 DEFINE_FLAGS=""
@@ -335,7 +334,6 @@ link_service_binary() {
     ln -sf "${src}" "${dst}"
   fi
 }
-link_service_binary "tpu_raiden/core/controller/raiden_orchestrator_main"
 link_service_binary "tpu_raiden/kv_cache/global_registry/global_registry_server"
 
 echo "=== Copying compiled shared libraries to source directory ==="

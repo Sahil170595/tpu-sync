@@ -99,26 +99,6 @@ cc_grpc_library(
 )
 
 proto_library(
-    name = "orchestrator_service_proto",
-    srcs = ["orchestrator_service.proto"],
-    deps = ["//tpu_sync/rpc:raiden_service_proto"],
-)
-
-cc_proto_library(
-    name = "orchestrator_service_cc_proto",
-    visibility = ["//visibility:public"],
-    deps = [":orchestrator_service_proto"],
-)
-
-cc_grpc_library(
-    name = "orchestrator_service_cc_grpc",
-    srcs = [":orchestrator_service_proto"],
-    grpc_only = True,
-    visibility = ["//visibility:public"],
-    deps = [":orchestrator_service_cc_proto"],
-)
-
-proto_library(
     name = "kv_cache_store_service_proto",
     srcs = ["kv_cache_store_service.proto"],
     deps = [

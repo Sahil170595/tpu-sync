@@ -90,7 +90,6 @@ class KVCacheStore {
       const BackendConfig& config, size_t capacity = 0,
       absl::string_view global_registry_address = "", RaidenId raiden_id = {},
       int num_shards = 0, int64_t shard_size_bytes = 0,
-      absl::string_view raiden_orchestrator_address = "",
       absl::string_view store_server_ip = "", int raiden_controller_port = 0,
       std::optional<KVCacheMetadata> metadata = std::nullopt,
       int expected_worker_count = 0);
@@ -100,7 +99,6 @@ class KVCacheStore {
       absl::Span<const BackendConfig> backend_configs, size_t capacity = 0,
       absl::string_view global_registry_address = "", RaidenId raiden_id = {},
       int num_shards = 0, int64_t shard_size_bytes = 0,
-      absl::string_view raiden_orchestrator_address = "",
       absl::string_view store_server_ip = "", int raiden_controller_port = 0,
       std::optional<KVCacheMetadata> metadata = std::nullopt,
       int expected_worker_count = 0);
@@ -113,15 +111,12 @@ class KVCacheStore {
   // programs over persistent gRPC channels directly to them.
   static absl::StatusOr<std::unique_ptr<KVCacheStore>> CreateReshardStore(
       RaidenId raiden_id, absl::string_view store_server_ip,
-      int raiden_controller_port = 0,
-      absl::string_view raiden_orchestrator_address = "",
-      int reshard_service_port = 0);
+      int raiden_controller_port = 0, int reshard_service_port = 0);
 
   // Flexible constructor accepting a custom root backend
   explicit KVCacheStore(std::shared_ptr<KVCacheStoreBackend> backend,
                         RaidenId raiden_id = {}, int num_shards = 0,
                         int64_t shard_size_bytes = 0,
-                        absl::string_view raiden_orchestrator_address = "",
                         absl::string_view store_server_ip = "",
                         int raiden_controller_port = 0,
                         absl::string_view global_registry_address = "",
@@ -134,7 +129,6 @@ class KVCacheStore {
   explicit KVCacheStore(
       std::vector<std::shared_ptr<KVCacheStoreBackend>> backends,
       RaidenId raiden_id = {}, int num_shards = 0, int64_t shard_size_bytes = 0,
-      absl::string_view raiden_orchestrator_address = "",
       absl::string_view store_server_ip = "", int raiden_controller_port = 0,
       absl::string_view global_registry_address = "",
       int expected_worker_count = 0);
@@ -153,7 +147,6 @@ class KVCacheStore {
                         absl::string_view global_registry_address = "",
                         RaidenId raiden_id = {}, int num_shards = 0,
                         int64_t shard_size_bytes = 0,
-                        absl::string_view raiden_orchestrator_address = "",
                         absl::string_view store_server_ip = "",
                         int raiden_controller_port = 0,
                         std::optional<KVCacheMetadata> metadata = std::nullopt,
@@ -367,6 +360,10 @@ class KVCacheStore {
   // verdict is known, so on failure their contents are UNDEFINED -- treat
   // supplied device blocks as scratch until the read reports success. Nothing
   // in the cache ever points at them unless the read commits.
+  //
+  // Requires a global registry: it is what maps the owning peer to the
+  // controller address this store acquires its read lease from. A store built
+  // without one fails every read with FailedPrecondition.
   absl::Status ReadRemote(const std::vector<std::string>& block_hashes,
                           const std::vector<int32_t>& device_block_ids = {});
 
@@ -479,6 +476,10 @@ class KVCacheStore {
 
   struct RemoteReadState {
     std::vector<std::string> block_hashes;
+    // The peers this batch read from. Carried so a failed read can drop their
+    // cached controller addresses -- the poller is where failure is observed,
+    // and by then the grouping is gone.
+    std::vector<RaidenId> src_raiden_ids;
     // The local landing blocks. These live HERE and nowhere else until the
     // poller commits -- stamping them into the LRU entry at issue time would
     // destroy the peer coordinate the entry needs for a retry.
@@ -568,6 +569,23 @@ class KVCacheStore {
 
   absl::flat_hash_set<std::string> saving_hashes_ ABSL_GUARDED_BY(mutex_);
   absl::flat_hash_set<std::string> loading_hashes_ ABSL_GUARDED_BY(mutex_);
+  // Peer -> its RaidenController address, as last resolved from the global
+  // registry. Read on the prefill path, so it is worth not paying a registry
+  // round trip per read.
+  //
+  // Every entry is dropped as soon as a read against that peer FAILS, for any
+  // reason. That looks over-broad -- a revoked lease or a transfer error says
+  // nothing about the address -- and it is deliberate: an unnecessary
+  // invalidation costs one resolve on the next read, while a missed one leaves
+  // a peer that restarted on a new port unreachable for the life of this
+  // process. That was the shape of the bug this cache replaced, and it is the
+  // reason the old one had to go.
+  //
+  // Consequence worth knowing: the first read after a peer restarts still
+  // fails, on the stale address, and the retry is what succeeds.
+  absl::flat_hash_map<RaidenId, std::string, RaidenIdHash>
+      resolved_peer_controllers_ ABSL_GUARDED_BY(mutex_);
+
   absl::flat_hash_set<std::string> reading_hashes_ ABSL_GUARDED_BY(mutex_);
   absl::flat_hash_set<std::string> writing_hashes_ ABSL_GUARDED_BY(mutex_);
 

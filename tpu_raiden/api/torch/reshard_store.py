@@ -41,7 +41,6 @@ class ReshardStore:
       raiden_id: kv_cache_store.RaidenId,
       store_server_ip: str,
       raiden_controller_port: int = 0,
-      raiden_orchestrator_address: str = "",
       reshard_service_port: int = 0,
   ):
     # The extension exposes the reshard-store factory as a free function
@@ -52,7 +51,6 @@ class ReshardStore:
         raiden_id._impl,
         store_server_ip,
         raiden_controller_port,
-        raiden_orchestrator_address,
         reshard_service_port,
     )
 

@@ -28,6 +28,7 @@
 #include <gtest/gtest.h>
 #include "absl/strings/str_cat.h"
 #include "tpu_raiden/kv_cache/kv_cache_store.h"
+#include "tpu_raiden/kv_cache/kv_cache_store_backend.h"
 #include "tpu_raiden/kv_cache/raiden_id.h"
 
 namespace tpu_raiden {
@@ -64,7 +65,7 @@ class KVCacheStoreWrapperTest : public ::testing::Test {
     RaidenId rid{"wrapper_test_job", "0", "wrapper_test_cache", 0};
     return std::make_unique<KVCacheStoreWrapper>(
         capacity, /*global_registry_address=*/"", rid, num_shards,
-        /*shard_size_bytes=*/512, /*raiden_orchestrator_address=*/"",
+        /*shard_size_bytes=*/512,
         /*store_server_ip=*/"127.0.0.1");
   }
 
@@ -111,7 +112,8 @@ TEST_F(KVCacheStoreWrapperTest, NoShmKeySkipsMetadataTable) {
 // caller gets a catchable exception, not a process abort.
 TEST_F(KVCacheStoreWrapperTest, NumShardsZeroThrows) {
   EXPECT_THROW(
-      { MakeWrapper(/*capacity=*/4, /*num_shards=*/0); }, std::invalid_argument);
+      { MakeWrapper(/*capacity=*/4, /*num_shards=*/0); },
+      std::invalid_argument);
 }
 
 TEST_F(KVCacheStoreWrapperTest, ColdStartCreatesMetadataTable) {

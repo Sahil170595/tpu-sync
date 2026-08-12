@@ -610,14 +610,13 @@ NB_MODULE(_tpu_raiden_torch, m) {
 
   nb::class_<tpu_raiden::kv_cache::KVCacheStoreWrapper>(m, "KVCacheStore")
       .def(nb::init<size_t, std::string, tpu_raiden::kv_cache::RaidenId, int,
-                    int64_t, std::string, std::string, int, int>(),
+                    int64_t, std::string, int, int>(),
            nb::arg("capacity"), nb::arg("global_registry_address") = "",
            nb::arg("raiden_id") = tpu_raiden::kv_cache::RaidenId(),
            // No defaults: every KVCacheStore has a controller and a
            // publishable address, so 0/"" are not
            // valid values a caller can fall into by omission.
            nb::arg("num_shards"), nb::arg("shard_size_bytes") = 0,
-           nb::arg("raiden_orchestrator_address") = "",
            nb::arg("store_server_ip"), nb::arg("raiden_controller_port") = 0,
            // When expected_worker_count > 0, constructor blocks until that
            // many workers have registered with the controller (times out and
@@ -1043,4 +1042,74 @@ NB_MODULE(_tpu_raiden_torch, m) {
       nb::arg("raiden_orchestrator_address") = "",
       nb::arg("reshard_service_port") = 0,
       nb::call_guard<nb::gil_scoped_release>());
+||||||| parent of source: 15a47f22d3ab - znewbery: Grant Guitar permissions t...
+  nb::class_<tpu_raiden::kv_cache::KVCacheStoreWrapper>(m, "ReshardStore")
+      .def(
+          "__init__",
+          [](tpu_raiden::kv_cache::KVCacheStoreWrapper* self,
+             tpu_raiden::kv_cache::RaidenId raiden_id,
+             std::string store_server_ip, int raiden_controller_port,
+             std::string raiden_orchestrator_address,
+             int reshard_service_port) {
+            auto store = tpu_raiden::kv_cache::KVCacheStore::CreateReshardStore(
+                std::move(raiden_id), store_server_ip, raiden_controller_port,
+                raiden_orchestrator_address, reshard_service_port);
+            if (!store.ok()) {
+              throw std::runtime_error(absl::StrCat(
+                  "ReshardStore initialization failed: ",
+                  store.status().message()));
+            }
+            new (self)
+                tpu_raiden::kv_cache::KVCacheStoreWrapper(std::move(*store));
+          },
+          nb::arg("raiden_id"), nb::arg("store_server_ip"),
+          nb::arg("raiden_controller_port") = 0,
+          nb::arg("raiden_orchestrator_address") = "",
+          nb::arg("reshard_service_port") = 0,
+          nb::call_guard<nb::gil_scoped_release>())
+      .def_prop_ro(
+          "raiden_controller_address",
+          [](tpu_raiden::kv_cache::KVCacheStoreWrapper& self) {
+            return self->raiden_controller_address();
+          })
+      .def_prop_ro(
+          "reshard_service_port",
+          [](tpu_raiden::kv_cache::KVCacheStoreWrapper& self) {
+            return self->reshard_service() ? self->reshard_service()->port()
+                                           : 0;
+          });
+
+  nb::class_<tpu_raiden::kv_cache::KVCacheStoreWrapper>(m, "ReshardStore")
+      .def(
+          "__init__",
+          [](tpu_raiden::kv_cache::KVCacheStoreWrapper* self,
+             tpu_raiden::kv_cache::RaidenId raiden_id,
+             std::string store_server_ip, int raiden_controller_port,
+             int reshard_service_port) {
+            auto store = tpu_raiden::kv_cache::KVCacheStore::CreateReshardStore(
+                std::move(raiden_id), store_server_ip, raiden_controller_port,
+                reshard_service_port);
+            if (!store.ok()) {
+              throw std::runtime_error(absl::StrCat(
+                  "ReshardStore initialization failed: ",
+                  store.status().message()));
+            }
+            new (self)
+                tpu_raiden::kv_cache::KVCacheStoreWrapper(std::move(*store));
+          },
+          nb::arg("raiden_id"), nb::arg("store_server_ip"),
+          nb::arg("raiden_controller_port") = 0,
+          nb::arg("reshard_service_port") = 0,
+          nb::call_guard<nb::gil_scoped_release>())
+      .def_prop_ro(
+          "raiden_controller_address",
+          [](tpu_raiden::kv_cache::KVCacheStoreWrapper& self) {
+            return self->raiden_controller_address();
+          })
+      .def_prop_ro(
+          "reshard_service_port",
+          [](tpu_raiden::kv_cache::KVCacheStoreWrapper& self) {
+            return self->reshard_service() ? self->reshard_service()->port()
+                                           : 0;
+          });
 }

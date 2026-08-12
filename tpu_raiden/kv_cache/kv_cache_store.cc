@@ -78,15 +78,16 @@ std::string ComposeControllerAddress(absl::string_view store_server_ip,
 
 // Every store has a
 // controller, and store_server_ip is mandatory and never a wildcard -- it is
-// the host of the controller address registered with the orchestrator, so it
-// must be routable by peers. Hostnames are allowed (same-host tests use
-// "localhost"); empty and wildcard are not.
+// the host of the controller address published to the global registry, which
+// is what a peer dials to acquire a read lease, so it must be routable by
+// peers. Hostnames are allowed (same-host tests use "localhost"); empty and
+// wildcard are not.
 absl::Status ValidateConstructionRules(absl::string_view store_server_ip,
                                        int num_shards) {
   if (store_server_ip.empty()) {
     return absl::InvalidArgumentError(
-        "store_server_ip is required: it is the host peers and the "
-        "orchestrator use to reach this store. Same-host use: \"127.0.0.1\".");
+        "store_server_ip is required: it is the host peers use to reach this "
+        "store's services. Same-host use: \"127.0.0.1\".");
   }
   if (store_server_ip == "[::]" || store_server_ip == "::" ||
       store_server_ip == "0.0.0.0" ||
@@ -127,9 +128,8 @@ absl::Status ValidateBackends(
 
 std::unique_ptr<controller::RaidenController> MakeRaidenController(
     const RaidenId& raiden_id, size_t capacity, int num_shards,
-    int64_t shard_size_bytes, absl::string_view raiden_orchestrator_address,
-    absl::string_view store_server_ip, int raiden_controller_port,
-    int expected_worker_count = 0) {
+    int64_t shard_size_bytes, absl::string_view store_server_ip,
+    int raiden_controller_port, int expected_worker_count = 0) {
   if (num_shards <= 0) return nullptr;
   ::tpu_raiden::rpc::RaidenIdProto unit_proto;
   unit_proto.set_job_name(raiden_id.job_name);
@@ -138,7 +138,6 @@ std::unique_ptr<controller::RaidenController> MakeRaidenController(
   unit_proto.set_data_replica_idx(raiden_id.data_replica_idx);
   return std::make_unique<::tpu_raiden::controller::RaidenController>(
       unit_proto, capacity, num_shards, shard_size_bytes,
-      raiden_orchestrator_address,
       ComposeControllerAddress(store_server_ip, raiden_controller_port),
       /*preprovision_worker_buffers=*/false, expected_worker_count);
 }
@@ -149,7 +148,6 @@ absl::StatusOr<std::unique_ptr<KVCacheStore>> KVCacheStore::Create(
     absl::Span<const BackendConfig> backend_configs, size_t capacity,
     absl::string_view global_registry_address, RaidenId raiden_id,
     int num_shards, int64_t shard_size_bytes,
-    absl::string_view raiden_orchestrator_address,
     absl::string_view store_server_ip, int raiden_controller_port,
     std::optional<KVCacheMetadata> metadata, int expected_worker_count) {
   if (backend_configs.empty()) {
@@ -190,7 +188,7 @@ absl::StatusOr<std::unique_ptr<KVCacheStore>> KVCacheStore::Create(
     raiden_controller =
         std::make_unique<::tpu_raiden::controller::RaidenController>(
             unit_proto, effective_config0.capacity, num_shards,
-            shard_size_bytes, raiden_orchestrator_address,
+            shard_size_bytes,
             ComposeControllerAddress(store_server_ip, raiden_controller_port),
             /*preprovision_worker_buffers=*/false, expected_worker_count);
   }
@@ -269,20 +267,18 @@ absl::StatusOr<std::unique_ptr<KVCacheStore>> KVCacheStore::Create(
     const BackendConfig& config, size_t capacity,
     absl::string_view global_registry_address, RaidenId raiden_id,
     int num_shards, int64_t shard_size_bytes,
-    absl::string_view raiden_orchestrator_address,
     absl::string_view store_server_ip, int raiden_controller_port,
     std::optional<KVCacheMetadata> metadata, int expected_worker_count) {
   return KVCacheStore::Create(absl::MakeConstSpan(&config, 1), capacity,
                               global_registry_address, raiden_id, num_shards,
-                              shard_size_bytes, raiden_orchestrator_address,
-                              store_server_ip, raiden_controller_port,
-                              std::move(metadata), expected_worker_count);
+                              shard_size_bytes, store_server_ip,
+                              raiden_controller_port, std::move(metadata),
+                              expected_worker_count);
 }
 
 absl::StatusOr<std::unique_ptr<KVCacheStore>> KVCacheStore::CreateReshardStore(
     RaidenId raiden_id, absl::string_view store_server_ip,
-    int raiden_controller_port, absl::string_view raiden_orchestrator_address,
-    int reshard_service_port) {
+    int raiden_controller_port, int reshard_service_port) {
   if (store_server_ip.empty() || store_server_ip == "0.0.0.0" ||
       store_server_ip == "::") {
     return absl::InvalidArgumentError(
@@ -306,8 +302,7 @@ absl::StatusOr<std::unique_ptr<KVCacheStore>> KVCacheStore::CreateReshardStore(
                        cfg, /*capacity=*/1,
                        /*global_registry_address=*/"", raiden_id,
                        /*num_shards=*/1, /*shard_size_bytes=*/0,
-                       raiden_orchestrator_address, store_server_ip,
-                       raiden_controller_port,
+                       store_server_ip, raiden_controller_port,
                        /*metadata=*/std::nullopt,
                        /*expected_worker_count=*/0));
 
@@ -382,7 +377,6 @@ KVCacheStore::KVCacheStore(
 KVCacheStore::KVCacheStore(
     std::vector<std::shared_ptr<KVCacheStoreBackend>> backends,
     RaidenId raiden_id, int num_shards, int64_t shard_size_bytes,
-    absl::string_view raiden_orchestrator_address,
     absl::string_view store_server_ip, int raiden_controller_port,
     absl::string_view global_registry_address, int expected_worker_count)
     : KVCacheStore(
@@ -391,8 +385,7 @@ KVCacheStore::KVCacheStore(
                                (!backends.empty() && backends[0] != nullptr)
                                    ? backends[0]->GetCapacity()
                                    : 0,
-                               num_shards, shard_size_bytes,
-                               raiden_orchestrator_address, store_server_ip,
+                               num_shards, shard_size_bytes, store_server_ip,
                                raiden_controller_port, expected_worker_count),
           store_server_ip, global_registry_address) {
   if (raiden_controller_) {
@@ -411,21 +404,19 @@ KVCacheStore::KVCacheStore(
 KVCacheStore::KVCacheStore(std::shared_ptr<KVCacheStoreBackend> backend,
                            RaidenId raiden_id, int num_shards,
                            int64_t shard_size_bytes,
-                           absl::string_view raiden_orchestrator_address,
                            absl::string_view store_server_ip,
                            int raiden_controller_port,
                            absl::string_view global_registry_address,
                            int expected_worker_count)
     : KVCacheStore(
           std::vector<std::shared_ptr<KVCacheStoreBackend>>{std::move(backend)},
-          std::move(raiden_id), num_shards, shard_size_bytes,
-          raiden_orchestrator_address, store_server_ip, raiden_controller_port,
-          global_registry_address, expected_worker_count) {}
+          std::move(raiden_id), num_shards, shard_size_bytes, store_server_ip,
+          raiden_controller_port, global_registry_address,
+          expected_worker_count) {}
 
 KVCacheStore::KVCacheStore(
     size_t capacity, absl::string_view global_registry_address,
     RaidenId raiden_id, int num_shards, int64_t shard_size_bytes,
-    absl::string_view raiden_orchestrator_address,
     absl::string_view store_server_ip, int raiden_controller_port,
     std::optional<KVCacheMetadata> metadata, int expected_worker_count)
     : raiden_id_(raiden_id),
@@ -453,7 +444,6 @@ KVCacheStore::KVCacheStore(
     raiden_controller_ =
         std::make_unique<::tpu_raiden::controller::RaidenController>(
             unit_proto, capacity, num_shards, shard_size_bytes,
-            raiden_orchestrator_address,
             ComposeControllerAddress(store_server_ip, raiden_controller_port),
             /*preprovision_worker_buffers=*/false, expected_worker_count);
   }
@@ -1181,19 +1171,25 @@ absl::Status KVCacheStore::ReadRemote(
     return absl::OkStatus();
   }
 
-  std::vector<std::string> successfully_marked_as_reading;
-  successfully_marked_as_reading.reserve(block_hashes.size());
-  auto cleanup = absl::MakeCleanup([this, &successfully_marked_as_reading]() {
-    absl::MutexLock lock(mutex_);
-    for (const auto& hash : successfully_marked_as_reading) {
-      reading_hashes_.erase(hash);
-    }
-  });
-
   auto host_blocks_or = AllocateBlockIds(block_hashes.size());
   if (!host_blocks_or.ok()) {
     return host_blocks_or.status();
   }
+
+  // Unwinds everything this call has claimed so far. Every failure below is an
+  // early return, and each one owes both the reading marks and the landing
+  // blocks: an error path that returned without freeing them leaked N host
+  // blocks per call, silently and permanently.
+  std::vector<std::string> successfully_marked_as_reading;
+  successfully_marked_as_reading.reserve(block_hashes.size());
+  auto cleanup = absl::MakeCleanup(
+      [this, &successfully_marked_as_reading, &host_blocks_or]() {
+        DeallocateBlockIds(host_blocks_or.value());
+        absl::MutexLock lock(mutex_);
+        for (const auto& hash : successfully_marked_as_reading) {
+          reading_hashes_.erase(hash);
+        }
+      });
 
   const bool to_hbm = !device_block_ids.empty();
   if (to_hbm && device_block_ids.size() != block_hashes.size()) {
@@ -1206,6 +1202,9 @@ absl::Status KVCacheStore::ReadRemote(
 
   struct RemoteReadGroup {
     RaidenId src_raiden_id;
+    // The peer's ControllerService address, resolved from the global registry
+    // below. The controller holds no directory of its own.
+    std::string src_controller_address;
     std::vector<int32_t> src_host_block_ids;
     std::vector<int32_t> dst_host_block_ids;
     std::vector<std::string> block_hashes;
@@ -1249,9 +1248,53 @@ absl::Status KVCacheStore::ReadRemote(
   }
 
   if (!raiden_controller_) {
-    DeallocateBlockIds(dst_host_block_ids);
     return absl::FailedPreconditionError(
         "RaidenController is not initialized for ReadRemote");
+  }
+
+  // Resolve every peer BEFORE issuing anything. Resolving inside the issue loop
+  // would leave the first group's lease acquired and its transfer running with
+  // nothing tracking it when a later group turns out to be unreachable.
+  //
+  // Cached per peer (resolved_peer_controllers_), and dropped whenever a read
+  // against that peer fails -- see the member's comment for why invalidation is
+  // what makes a cache here safe at all.
+  if (registry_client_ == nullptr) {
+    return absl::FailedPreconditionError(
+        "ReadRemote needs a global registry: it is what maps the owning peer "
+        "to the controller address this store acquires a read lease from. "
+        "Construct this store with a global_registry_address.");
+  }
+  for (auto& group : groups) {
+    {
+      absl::MutexLock lock(mutex_);
+      auto it = resolved_peer_controllers_.find(group.src_raiden_id);
+      if (it != resolved_peer_controllers_.end()) {
+        group.src_controller_address = it->second;
+      }
+    }
+    if (!group.src_controller_address.empty()) continue;
+
+    absl::StatusOr<global_registry::StoreInfo> store_info =
+        registry_client_->ResolveStore(group.src_raiden_id);
+    if (!store_info.ok()) {
+      return store_info.status();
+    }
+    if (store_info->controller_address().empty()) {
+      return absl::FailedPreconditionError(absl::StrCat(
+          "Peer ", group.src_raiden_id.job_name, "/",
+          group.src_raiden_id.job_replica_id, "/",
+          group.src_raiden_id.data_name, "/",
+          group.src_raiden_id.data_replica_idx,
+          " is registered but published no controller address, so it cannot "
+          "serve a remote read."));
+    }
+    group.src_controller_address = store_info->controller_address();
+    {
+      absl::MutexLock lock(mutex_);
+      resolved_peer_controllers_[group.src_raiden_id] =
+          group.src_controller_address;
+    }
   }
 
   // NOTE: the landing block ids are deliberately NOT stamped into the LRU
@@ -1269,8 +1312,8 @@ absl::Status KVCacheStore::ReadRemote(
   futures.reserve(groups.size());
   for (const auto& group : groups) {
     futures.push_back(raiden_controller_->ReadRemote(
-        group.src_raiden_id, group.src_host_block_ids, group.dst_host_block_ids,
-        group.block_hashes, group.device_block_ids));
+        group.src_controller_address, group.src_host_block_ids,
+        group.dst_host_block_ids, group.block_hashes, group.device_block_ids));
   }
 
   tsl::Future<> combined_future;
@@ -1282,15 +1325,21 @@ absl::Status KVCacheStore::ReadRemote(
 
   {
     absl::MutexLock lock(mutex_);
+    std::vector<RaidenId> peers;
+    peers.reserve(groups.size());
+    for (const auto& group : groups) peers.push_back(group.src_raiden_id);
     active_remote_reads_.emplace(std::move(combined_future),
                                  RemoteReadState{
                                      .block_hashes = block_hashes,
+                                     .src_raiden_ids = std::move(peers),
                                      .host_block_ids = dst_host_block_ids,
                                      .device_block_ids = device_block_ids,
                                  });
   }
 
-  successfully_marked_as_reading.clear();
+  // Issued: the landing blocks now belong to the read, and the reading marks
+  // are cleared by the poller when it goes terminal.
+  std::move(cleanup).Cancel();
   return absl::OkStatus();
 }
 
@@ -1926,6 +1975,13 @@ void KVCacheStore::PollRemoteReadsInternal(
       // caller's device blocks may hold garbage -- by design: nothing in the
       // LRU points at them, and the caller overwrites device blocks on reuse.
       LOG(WARNING) << "Async ReadRemote failed: " << status.ToString();
+      // Drop these peers' cached controller addresses. Most failures are not
+      // address failures, and dropping anyway is the point: re-resolving costs
+      // one RPC on the next read, whereas keeping an address that moved leaves
+      // the peer unreachable until this process dies.
+      for (const auto& peer : state.src_raiden_ids) {
+        resolved_peer_controllers_.erase(peer);
+      }
       DeallocateBlockIds(state.host_block_ids);
       for (const auto& hash : state.block_hashes) {
         failed_remote_reads_.push_back(hash);

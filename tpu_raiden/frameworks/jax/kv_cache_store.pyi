@@ -40,7 +40,6 @@ class KVCacheStore:
       *,
       num_shards: int,
       shard_size_bytes: int = 0,
-      raiden_orchestrator_address: str = '',
       store_server_ip: str,
       raiden_controller_port: int = 0,
       expected_worker_count: int = 0,

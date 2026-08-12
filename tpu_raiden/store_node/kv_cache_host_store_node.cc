@@ -189,8 +189,7 @@ KVCacheHostStoreNode::Create(const Options& options,
                    options.global_registry_address, options.raiden_id,
                    static_cast<int>(spec.num_kv_shards),
                    static_cast<int64_t>(block_bytes_per_array),
-                   options.raiden_orchestrator_address, options.store_server_ip,
-                   options.raiden_controller_port));
+                   options.store_server_ip, options.raiden_controller_port));
   } catch (const std::exception& e) {
     return absl::UnavailableError(
         absl::StrCat("host store node assembly failed: ", e.what()));

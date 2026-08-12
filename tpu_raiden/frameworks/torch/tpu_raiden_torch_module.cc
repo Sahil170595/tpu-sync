@@ -26,6 +26,7 @@
 #include "nanobind/stl/shared_ptr.h"
 #include "nanobind/stl/string.h"
 #include "nanobind/stl/string_view.h"
+#include "nanobind/stl/tuple.h"
 #include "nanobind/stl/vector.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
@@ -39,6 +40,7 @@
 #include "tpu_raiden/frameworks/torch/weight_synchronizer.h"
 #include "tpu_raiden/kv_cache/kv_cache_store.h"
 #include "tpu_raiden/kv_cache/kv_cache_store_wrapper.h"
+#include "tpu_raiden/kv_cache/reshard/reshard_client.h"
 #include "tpu_sync/rpc/raiden_service.pb.h"
 
 namespace nb = nanobind;
@@ -61,9 +63,113 @@ std::vector<std::string> ToStdStringVector(
 }
 
 }  // namespace
+
+// C++-owned reshard client behind the facade-compatible api/torch shim. The
+// shim normalizes Python objects to plain tuples / dicts (private contract);
+// every encoding decision lives in reshard::ReshardClient. Conversions run
+// with the GIL; transport I/O releases it.
+namespace reshardpb2 {
+
+namespace nb = nanobind;
+namespace reshard = tpu_raiden::kv_cache::reshard;
+
+using UnitTuple = std::tuple<std::string, std::string, std::string, int32_t>;
+
+tpu_raiden::kv_cache::RaidenId UnitOf(const UnitTuple& t) {
+  tpu_raiden::kv_cache::RaidenId unit;
+  unit.job_name = std::get<0>(t);
+  unit.job_replica_id = std::get<1>(t);
+  unit.data_name = std::get<2>(t);
+  unit.data_replica_idx = std::get<3>(t);
+  return unit;
+}
+
+int64_t DictInt(nb::dict d, const char* key, int64_t fallback) {
+  if (!d.contains(key)) return fallback;
+  return nb::cast<int64_t>(d[key]);
+}
+
+std::string DictStr(nb::dict d, const char* key, const char* fallback) {
+  if (!d.contains(key)) return fallback;
+  return nb::cast<std::string>(d[key]);
+}
+
+std::vector<reshard::ClientPoolSpec> ManifestOf(nb::handle sequence) {
+  std::vector<reshard::ClientPoolSpec> out;
+  for (nb::handle item : sequence) {
+    nb::dict d = nb::cast<nb::dict>(item);
+    reshard::ClientPoolSpec pool;
+    pool.tag = DictStr(d, "tag", "");
+    pool.storage_index = DictInt(d, "storage_index", 0);
+    pool.base_offset_bytes = DictInt(d, "base_offset_bytes", 0);
+    pool.block_stride_bytes = DictInt(d, "block_stride_bytes", 0);
+    pool.num_blocks = DictInt(d, "num_blocks", 0);
+    pool.dtype_tag = DictStr(d, "dtype_tag", "");
+    if (d.contains("regions")) {
+      for (nb::handle region_item : d["regions"]) {
+        nb::dict r = nb::cast<nb::dict>(region_item);
+        reshard::ClientPoolRegion region;
+        region.name = DictStr(r, "name", "");
+        region.offset_bytes = DictInt(r, "offset_bytes", 0);
+        region.stride_bytes = DictInt(r, "stride_bytes", 0);
+        region.unit_bytes = DictInt(r, "unit_bytes", 0);
+        region.num_units = DictInt(r, "num_units", 0);
+        region.units_per_stride = DictInt(r, "units_per_stride", 1);
+        pool.regions.push_back(std::move(region));
+      }
+    }
+    out.push_back(std::move(pool));
+  }
+  return out;
+}
+
+std::vector<reshard::ClientPoolSpans> SpansOf(nb::handle sequence) {
+  std::vector<reshard::ClientPoolSpans> out;
+  for (nb::handle item : sequence) {
+    nb::dict d = nb::cast<nb::dict>(item);
+    reshard::ClientPoolSpans entry;
+    entry.tag = DictStr(d, "tag", "");
+    for (nb::handle block : d["block_ids"]) {
+      entry.block_ids.push_back(nb::cast<int64_t>(block));
+    }
+    entry.declared_bytes = DictInt(d, "declared_bytes", 0);
+    entry.dst_space_version =
+        static_cast<int32_t>(DictInt(d, "dst_space_version", 0));
+    for (nb::handle span_item : d["spans"]) {
+      auto t = nb::cast<std::tuple<int64_t, int64_t, int64_t, int64_t,
+                                   int64_t, int64_t, int64_t, int64_t>>(
+          span_item);
+      reshard::ClientByteSpan span;
+      span.src_block_ordinal = std::get<0>(t);
+      span.src_offset_bytes = std::get<1>(t);
+      span.dst_block_index = std::get<2>(t);
+      span.dst_offset_bytes = std::get<3>(t);
+      span.size_bytes = std::get<4>(t);
+      span.src_stride_bytes = std::get<5>(t);
+      span.dst_stride_bytes = std::get<6>(t);
+      span.count = std::get<7>(t);
+      entry.spans.push_back(span);
+    }
+    out.push_back(std::move(entry));
+  }
+  return out;
+}
+
+void ThrowIfError(const absl::Status& status) {
+  if (!status.ok()) {
+    throw std::runtime_error(std::string(status.message()));
+  }
+}
+
+struct ClientHandle {
+  std::unique_ptr<reshard::ReshardClient> client;
+};
+
+}  // namespace reshardpb2
 }  // namespace kv_cache
 }  // namespace tpu_raiden
 
+namespace reshardpb2 = ::tpu_raiden::kv_cache::reshardpb2;
 using ::tpu_raiden::kv_cache::ToStdStringVector;
 
 NB_MODULE(_tpu_raiden_torch, m) {
@@ -531,6 +637,14 @@ NB_MODULE(_tpu_raiden_torch, m) {
                    [](tpu_raiden::kv_cache::KVCacheStoreWrapper& self) {
                      return self->raiden_controller_address();
                    })
+      // 0 when this store does not host a reshard service (regular stores);
+      // set on stores built via create_reshard_store.
+      .def_prop_ro("reshard_service_port",
+                   [](tpu_raiden::kv_cache::KVCacheStoreWrapper& self) {
+                     return self->reshard_service()
+                                ? self->reshard_service()->port()
+                                : 0;
+                   })
       .def_prop_ro("store_server_address",
                    [](tpu_raiden::kv_cache::KVCacheStoreWrapper& self) {
                      return self->store_server_address();
@@ -749,39 +863,184 @@ NB_MODULE(_tpu_raiden_torch, m) {
                                     py_unregistered);
            });
 
-  nb::class_<tpu_raiden::kv_cache::KVCacheStoreWrapper>(m, "ReshardStore")
-      .def(
-          "__init__",
-          [](tpu_raiden::kv_cache::KVCacheStoreWrapper* self,
-             tpu_raiden::kv_cache::RaidenId raiden_id,
-             std::string store_server_ip, int raiden_controller_port,
-             std::string raiden_orchestrator_address,
-             int reshard_service_port) {
-            auto store = tpu_raiden::kv_cache::KVCacheStore::CreateReshardStore(
-                std::move(raiden_id), store_server_ip, raiden_controller_port,
-                raiden_orchestrator_address, reshard_service_port);
-            if (!store.ok()) {
-              throw std::runtime_error(absl::StrCat(
-                  "ReshardStore initialization failed: ",
-                  store.status().message()));
-            }
-            new (self)
-                tpu_raiden::kv_cache::KVCacheStoreWrapper(std::move(*store));
-          },
-          nb::arg("raiden_id"), nb::arg("store_server_ip"),
-          nb::arg("raiden_controller_port") = 0,
-          nb::arg("raiden_orchestrator_address") = "",
-          nb::arg("reshard_service_port") = 0,
-          nb::call_guard<nb::gil_scoped_release>())
-      .def_prop_ro(
-          "raiden_controller_address",
-          [](tpu_raiden::kv_cache::KVCacheStoreWrapper& self) {
-            return self->raiden_controller_address();
-          })
-      .def_prop_ro(
-          "reshard_service_port",
-          [](tpu_raiden::kv_cache::KVCacheStoreWrapper& self) {
-            return self->reshard_service() ? self->reshard_service()->port()
-                                           : 0;
-          });
+  // C++-owned reshard client. The facade-compatible surface is provided by
+  // tpu_raiden/api/torch/reshard_client.py on top of this binding.
+  nb::class_<reshardpb2::ClientHandle>(m, "ReshardClient")
+      .def("__init__",
+           [](reshardpb2::ClientHandle* self, const std::string& address) {
+             new (self) reshardpb2::ClientHandle();
+             self->client = std::make_unique<
+                 tpu_raiden::kv_cache::reshard::ReshardClient>(address);
+           },
+           nb::arg("controller_address"))
+      .def("register_work_unit",
+           [](reshardpb2::ClientHandle& self,
+              const reshardpb2::UnitTuple& unit,
+              const std::vector<std::string>& shards,
+              const std::string& control_plane_rpc_address,
+              const std::vector<int64_t>& mesh_shape,
+              const std::vector<int32_t>& layout,
+              const std::vector<int64_t>& global_shape, int32_t itemsize,
+              bool has_pool_manifest, nb::object pool_manifest,
+              std::optional<std::string> layout_fingerprint,
+              std::optional<int64_t> page_tokens,
+              std::optional<int32_t> transfer_parallelism,
+              std::optional<int32_t> transfer_rank, bool has_variables,
+              const std::vector<nb::bytes>& variables) {
+             tpu_raiden::kv_cache::reshard::RegisterWorkUnitArgs args;
+             args.unit = reshardpb2::UnitOf(unit);
+             args.shards = shards;
+             args.control_plane_rpc_address = control_plane_rpc_address;
+             args.mesh_shape = mesh_shape;
+             args.layout = layout;
+             args.global_shape = global_shape;
+             args.itemsize = itemsize;
+             args.has_pool_manifest = has_pool_manifest;
+             if (has_pool_manifest) {
+               args.pool_manifest = reshardpb2::ManifestOf(pool_manifest);
+             }
+             args.layout_fingerprint = std::move(layout_fingerprint);
+             args.page_tokens = page_tokens;
+             args.transfer_parallelism = transfer_parallelism;
+             args.transfer_rank = transfer_rank;
+             args.has_variables = has_variables;
+             for (const nb::bytes& payload : variables) {
+               args.variables.emplace_back(payload.c_str(), payload.size());
+             }
+             nb::gil_scoped_release release;
+             reshardpb2::ThrowIfError(self.client->RegisterWorkUnit(args));
+           })
+      .def("register_request_blocks",
+           [](reshardpb2::ClientHandle& self, const std::string& req_id,
+              int64_t uuid, const reshardpb2::UnitTuple& unit,
+              const std::vector<int64_t>& block_ids, nb::object pool_spans) {
+             tpu_raiden::kv_cache::RaidenId unit_id =
+                 reshardpb2::UnitOf(unit);
+             std::vector<tpu_raiden::kv_cache::reshard::ClientPoolSpans>
+                 spans = reshardpb2::SpansOf(pool_spans);
+             nb::gil_scoped_release release;
+             reshardpb2::ThrowIfError(self.client->RegisterRequestBlocks(
+                 req_id, uuid, unit_id, block_ids, spans));
+           })
+      .def("release_request_blocks",
+           [](reshardpb2::ClientHandle& self, const std::string& req_id,
+              int64_t uuid) {
+             nb::gil_scoped_release release;
+             reshardpb2::ThrowIfError(
+                 self.client->ReleaseRequestBlocks(req_id, uuid));
+           })
+      .def("complete_request_blocks",
+           [](reshardpb2::ClientHandle& self, const std::string& req_id,
+              int64_t uuid, const reshardpb2::UnitTuple& unit) {
+             tpu_raiden::kv_cache::RaidenId unit_id =
+                 reshardpb2::UnitOf(unit);
+             nb::gil_scoped_release release;
+             reshardpb2::ThrowIfError(
+                 self.client->CompleteRequestBlocks(req_id, uuid, unit_id));
+           })
+      .def("cancel_request_blocks_if_unclaimed",
+           [](reshardpb2::ClientHandle& self, const std::string& req_id,
+              int64_t uuid) {
+             nb::gil_scoped_release release;
+             absl::StatusOr<bool> result =
+                 self.client->CancelRequestBlocksIfUnclaimed(req_id, uuid);
+             reshardpb2::ThrowIfError(result.status());
+             return *result;
+           })
+      .def("start_transfer",
+           [](reshardpb2::ClientHandle& self,
+              const std::vector<reshardpb2::UnitTuple>& src_units,
+              const std::vector<reshardpb2::UnitTuple>& dst_units,
+              const std::string& req_id, bool use_block_chunks,
+              bool is_sender, int64_t expected_block_count, int64_t uuid,
+              const std::string& dst_controller_address,
+              const std::string& src_controller_address,
+              int32_t dst_mem_type, bool has_dst_device_block_ids,
+              const std::vector<int64_t>& dst_device_block_ids,
+              bool has_transfer_pool_tags,
+              const std::vector<std::string>& transfer_pool_tags,
+              const std::vector<int64_t>& dst_block_counts) {
+             tpu_raiden::kv_cache::reshard::StartTransferArgs args;
+             for (const auto& unit : src_units) {
+               args.src_units.push_back(reshardpb2::UnitOf(unit));
+             }
+             for (const auto& unit : dst_units) {
+               args.dst_units.push_back(reshardpb2::UnitOf(unit));
+             }
+             args.req_id = req_id;
+             args.use_block_chunks = use_block_chunks;
+             args.is_sender = is_sender;
+             args.expected_block_count = expected_block_count;
+             args.uuid = uuid;
+             args.dst_controller_address = dst_controller_address;
+             args.src_controller_address = src_controller_address;
+             args.dst_mem_type = dst_mem_type;
+             args.has_dst_device_block_ids = has_dst_device_block_ids;
+             args.dst_device_block_ids = dst_device_block_ids;
+             args.has_transfer_pool_tags = has_transfer_pool_tags;
+             args.transfer_pool_tags = transfer_pool_tags;
+             args.dst_block_counts = dst_block_counts;
+             nb::gil_scoped_release release;
+             absl::StatusOr<bool> result = self.client->StartTransfer(args);
+             reshardpb2::ThrowIfError(result.status());
+             return *result;
+           })
+      .def("get_transfer_status",
+           [](reshardpb2::ClientHandle& self, const std::string& req_id,
+              int64_t uuid) {
+             nb::gil_scoped_release release;
+             absl::StatusOr<int32_t> result =
+                 self.client->GetTransferStatus(req_id, uuid);
+             reshardpb2::ThrowIfError(result.status());
+             return *result;
+           })
+      .def("get_metadata",
+           [](reshardpb2::ClientHandle& self) {
+             std::vector<std::string> serialized;
+             {
+               nb::gil_scoped_release release;
+               absl::StatusOr<std::vector<std::string>> result =
+                   self.client->GetMetadata();
+               reshardpb2::ThrowIfError(result.status());
+               serialized = *std::move(result);
+             }
+             nb::list out;
+             for (const std::string& payload : serialized) {
+               out.append(nb::bytes(payload.data(), payload.size()));
+             }
+             return out;
+           })
+      .def("shutdown", [](reshardpb2::ClientHandle& self) {
+        nb::gil_scoped_release release;
+        absl::StatusOr<bool> result = self.client->Shutdown();
+        reshardpb2::ThrowIfError(result.status());
+        return *result;
+      });
+
+  // NOTE: KVCacheStoreWrapper is already bound above as "KVCacheStore";
+  // nanobind keys class bindings by C++ type, so a second nb::class_ for the
+  // same type is silently skipped ("type already registered") and the module
+  // would end up without a ReshardStore attribute. Expose the reshard-store
+  // factory as a free function returning the existing binding instead; the
+  // Python ReshardStore facade wraps it.
+  m.def(
+      "create_reshard_store",
+      [](tpu_raiden::kv_cache::RaidenId raiden_id, std::string store_server_ip,
+         int raiden_controller_port, std::string raiden_orchestrator_address,
+         int reshard_service_port) {
+        auto store = tpu_raiden::kv_cache::KVCacheStore::CreateReshardStore(
+            std::move(raiden_id), store_server_ip, raiden_controller_port,
+            raiden_orchestrator_address, reshard_service_port);
+        if (!store.ok()) {
+          throw std::runtime_error(
+              absl::StrCat("ReshardStore initialization failed: ",
+                           store.status().message()));
+        }
+        return tpu_raiden::kv_cache::KVCacheStoreWrapper(std::move(*store));
+      },
+      nb::arg("raiden_id"), nb::arg("store_server_ip"),
+      nb::arg("raiden_controller_port") = 0,
+      nb::arg("raiden_orchestrator_address") = "",
+      nb::arg("reshard_service_port") = 0,
+      nb::call_guard<nb::gil_scoped_release>());
 }

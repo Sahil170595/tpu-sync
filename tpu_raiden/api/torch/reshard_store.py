@@ -44,7 +44,11 @@ class ReshardStore:
       raiden_orchestrator_address: str = "",
       reshard_service_port: int = 0,
   ):
-    self._impl = _impl.ReshardStore(
+    # The extension exposes the reshard-store factory as a free function
+    # (create_reshard_store) returning the KVCacheStore binding: a second
+    # nb::class_ registration of the same wrapper type would be silently
+    # dropped by nanobind.
+    self._impl = _impl.create_reshard_store(
         raiden_id._impl,
         store_server_ip,
         raiden_controller_port,

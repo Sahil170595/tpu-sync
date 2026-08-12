@@ -97,6 +97,20 @@ py_library(
 )
 
 py_library(
+    name = "reshard_client",
+    srcs = ["reshard_client.py"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":torch_abi",
+        ":torch_tpu_common_loader",
+        "//tpu_raiden/frameworks/torch:_tpu_raiden_torch",
+        "//tpu_sync/rpc:raiden_service_py_pb2",
+        "@torch_tpu//torch_tpu",
+        "@torch_tpu//torch_tpu:_loader",
+    ],
+)
+
+py_library(
     name = "reshard_store",
     srcs = ["reshard_store.py"],
     visibility = ["//visibility:public"],

@@ -291,7 +291,11 @@ absl::StatusOr<std::unique_ptr<KVCacheStore>> KVCacheStore::CreateReshardStore(
   // Construct a minimal thin store with dummy backend (capacity=1) so the
   // store owns the RaidenController and can host ReshardService.
   BackendConfig cfg;
-  cfg.type = "local_lru";
+  // "local_lru" is not registered in this repository's
+  // KVCacheStoreBackendFactory; HostOffloadBackend is the only registered
+  // backend and is cheap at capacity=1 (no registry client, no server start,
+  // no preallocation) — the reshard store never serves blocks through it.
+  cfg.type = "HostOffloadBackend";
   cfg.capacity = 1;
   cfg.raiden_id = raiden_id;
 

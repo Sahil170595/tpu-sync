@@ -78,8 +78,8 @@ TORCH_REQUIRES = COMMON_REQUIRES + TORCH_REQ
 # Framework-agnostic python deps for the py_library aggregator.
 #
 COMMON_DEPS = [
-    "//tpu_raiden/rpc:coordination_helper",
-    "//tpu_raiden/rpc:raiden_controller",
+    "//tpu_sync/rpc:coordination_helper",
+    "//tpu_sync/rpc:raiden_controller",
 ]
 
 # JAX native extensions + wrappers + public API. (TransferEngine was merged into
@@ -102,6 +102,7 @@ JAX_DEPS = [
 TORCH_DEPS = [
     "//tpu_raiden/frameworks/torch:_tpu_raiden_torch",
     "//tpu_raiden/api/torch:kv_cache_manager_torch_py",
+    "//tpu_raiden/api/torch:reshard_client",
     "//tpu_raiden/api/torch:reshard_store",
     "//tpu_raiden/api/torch:weight_synchronizer_torch_py",
 ]
@@ -121,7 +122,10 @@ py_library(
 
 py_package(
     name = "raiden_jax_package",
-    packages = ["tpu_raiden"],
+    packages = [
+        "tpu_raiden",
+        "tpu_sync",
+    ],
     deps = [":jax_raiden_files"],
 )
 
@@ -142,7 +146,10 @@ py_library(
 
 py_package(
     name = "raiden_torch_package",
-    packages = ["tpu_raiden"],
+    packages = [
+        "tpu_raiden",
+        "tpu_sync",
+    ],
     deps = [":torch_raiden_files"],
 )
 

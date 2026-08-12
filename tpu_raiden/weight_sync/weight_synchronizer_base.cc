@@ -473,16 +473,6 @@ absl::Status WeightSynchronizerBase::PushWeightsResharded(
       size_t src_offset = entry.src_offset_bytes();
       size_t size = entry.size_bytes();
 
-      bool skip = (layer_idx_to_use >= 0 &&
-                   static_cast<size_t>(layer_idx_to_use) < num_layers_ &&
-                   skip_tiling[layer_idx_to_use]);
-      if (skip) {
-        size = block_bytes(layer_idx_to_use);
-        src_offset = 0;
-        dst_offset = 0;
-        count = 1;
-      }
-
       for (size_t c = 0; c < count; ++c) {
         size_t curr_src_offset = src_offset + c * src_stride;
         size_t curr_dst_offset = dst_offset + c * dst_stride;

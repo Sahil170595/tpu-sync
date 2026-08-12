@@ -1178,6 +1178,154 @@ def generate_strided_copy_chunks(
   return chunks
 
 
+def is_nd_slice_tile_aligned(
+    src_shard_slice: list[tuple[int, int]],
+    dst_shard_slice: list[tuple[int, int]],
+    intersection_slice: list[tuple[int, int]],
+    tile_shape: tuple[int, int] = (8, 128),
+) -> bool:
+  """Checks if slices and their intersection align with hardware tile boundaries."""
+  rank = len(src_shard_slice)
+  if rank < 2:
+    return True
+  t_row, t_col = tile_shape
+  s_row_s, s_row_e = src_shard_slice[-2]
+  s_col_s, s_col_e = src_shard_slice[-1]
+  d_row_s, d_row_e = dst_shard_slice[-2]
+  d_col_s, d_col_e = dst_shard_slice[-1]
+  i_row_s, i_row_e = intersection_slice[-2]
+  i_col_s, i_col_e = intersection_slice[-1]
+
+  if (i_row_s - s_row_s) % t_row != 0 or (i_row_s - d_row_s) % t_row != 0:
+    return False
+  if (i_col_s - s_col_s) % t_col != 0 or (i_col_s - d_col_s) % t_col != 0:
+    return False
+  if (i_row_e - i_row_s) % t_row != 0:
+    return False
+  if (i_col_e - i_col_s) % t_col != 0:
+    return False
+  if (s_col_e - s_col_s) % t_col != 0 or (d_col_e - d_col_s) % t_col != 0:
+    return False
+  if (s_row_e - s_row_s) % t_row != 0 or (d_row_e - d_row_s) % t_row != 0:
+    return False
+  return True
+
+
+def generate_strided_copy_chunks_tile_aware(
+    src_shard_slice: list[tuple[int, int]],
+    dst_shard_slice: list[tuple[int, int]],
+    intersection_slice: list[tuple[int, int]],
+    itemsize: int,
+    tile_shape: tuple[int, int] = (8, 128),
+) -> list[tuple[int, int, int, int, int, int]]:
+  """Translates an N-dimensional grid intersection into tile-aware physical strided copy chunks."""
+  rank = len(src_shard_slice)
+  if rank == 1:
+    s_s, s_e = src_shard_slice[0]
+    d_s, d_e = dst_shard_slice[0]
+    i_s, i_e = intersection_slice[0]
+    size = (i_e - i_s) * itemsize
+    return [((i_s - s_s) * itemsize, (i_s - d_s) * itemsize, size, 0, 0, 1)]
+
+  t_row, t_col = tile_shape
+  s_row_s, s_row_e = src_shard_slice[-2]
+  s_col_s, s_col_e = src_shard_slice[-1]
+  d_row_s, d_row_e = dst_shard_slice[-2]
+  d_col_s, d_col_e = dst_shard_slice[-1]
+  i_row_s, i_row_e = intersection_slice[-2]
+  i_col_s, i_col_e = intersection_slice[-1]
+
+  w_src = s_col_e - s_col_s
+  w_dst = d_col_e - d_col_s
+  w_int = i_col_e - i_col_s
+  h_int = i_row_e - i_row_s
+
+  local_src_row = i_row_s - s_row_s
+  local_src_col = i_col_s - s_col_s
+  local_dst_row = i_row_s - d_row_s
+  local_dst_col = i_col_s - d_col_s
+
+  # Physical tile parameters
+  size_bytes = w_int * t_row * itemsize
+  src_stride = w_src * t_row * itemsize
+  dst_stride = w_dst * t_row * itemsize
+  count = h_int // t_row
+
+  src_offset = (
+      local_src_row * w_src * itemsize + local_src_col * t_row * itemsize
+  )
+  dst_offset = (
+      local_dst_row * w_dst * itemsize + local_dst_col * t_row * itemsize
+  )
+
+  if rank > 2:
+    num_outer_dims = rank - 2
+    outer_shape = [
+        intersection_slice[d][1] - intersection_slice[d][0]
+        for d in range(num_outer_dims)
+    ]
+    src_outer_strides = [1] * num_outer_dims
+    src_outer_strides[-1] = (s_row_e - s_row_s) * (s_col_e - s_col_s)
+    for d in range(num_outer_dims - 2, -1, -1):
+      dim_len = src_shard_slice[d + 1][1] - src_shard_slice[d + 1][0]
+      src_outer_strides[d] = src_outer_strides[d + 1] * dim_len
+
+    dst_outer_strides = [1] * num_outer_dims
+    dst_outer_strides[-1] = (d_row_e - d_row_s) * (d_col_e - d_col_s)
+    for d in range(num_outer_dims - 2, -1, -1):
+      dim_len = dst_shard_slice[d + 1][1] - dst_shard_slice[d + 1][0]
+      dst_outer_strides[d] = dst_outer_strides[d + 1] * dim_len
+
+    src_local_outer_start = [
+        intersection_slice[d][0] - src_shard_slice[d][0]
+        for d in range(num_outer_dims)
+    ]
+    dst_local_outer_start = [
+        intersection_slice[d][0] - dst_shard_slice[d][0]
+        for d in range(num_outer_dims)
+    ]
+
+    num_outer = math.prod(outer_shape) if outer_shape else 1
+    chunks = []
+    for i in range(num_outer):
+      multi_idx = []
+      temp = i
+      for dim_size in reversed(outer_shape):
+        multi_idx.append(temp % dim_size)
+        temp //= dim_size
+      multi_idx.reverse()
+
+      outer_src_bytes = sum(
+          (src_local_outer_start[d] + multi_idx[d])
+          * src_outer_strides[d]
+          * itemsize
+          for d in range(num_outer_dims)
+      )
+      outer_dst_bytes = sum(
+          (dst_local_outer_start[d] + multi_idx[d])
+          * dst_outer_strides[d]
+          * itemsize
+          for d in range(num_outer_dims)
+      )
+
+      curr_src_offset = src_offset + outer_src_bytes
+      curr_dst_offset = dst_offset + outer_dst_bytes
+      chunks.append((
+          curr_src_offset,
+          curr_dst_offset,
+          size_bytes,
+          src_stride,
+          dst_stride,
+          count,
+      ))
+    return chunks
+
+  if size_bytes == src_stride and size_bytes == dst_stride:
+    return [(src_offset, dst_offset, size_bytes * count, 0, 0, 1)]
+
+  return [(src_offset, dst_offset, size_bytes, src_stride, dst_stride, count)]
+
+
 class RaidenController:
   """High-level transfer controller managing active transfers and generating transfer plans."""
 
@@ -2563,7 +2711,7 @@ class RaidenController:
             k_pool_group = key[8]
 
             skip = final_plan.skip_tiling.get(k_layer_idx, False)
-            push_count = 1 if skip else k_count
+            push_count = k_count
 
             for idx in dst_indices:
               k_target = k_targets[idx]
@@ -3417,9 +3565,23 @@ class RaidenController:
 
                       intersection = intersect_nd_slices(src_slice, dst_slice)
                       if intersection:
-                        chunks = generate_strided_copy_chunks(
-                            src_slice, dst_slice, intersection, itemsize
-                        )
+                        if is_nd_slice_tile_aligned(
+                            src_slice,
+                            dst_slice,
+                            intersection,
+                            tile_shape=(8, 128),
+                        ):
+                          chunks = generate_strided_copy_chunks_tile_aware(
+                              src_slice,
+                              dst_slice,
+                              intersection,
+                              itemsize,
+                              tile_shape=(8, 128),
+                          )
+                        else:
+                          chunks = generate_strided_copy_chunks(
+                              src_slice, dst_slice, intersection, itemsize
+                          )
                         for (
                             src_offset,
                             dst_offset,
@@ -3532,12 +3694,27 @@ class RaidenController:
                     None,
                 )
                 if dst_var:
-                  is_identical = (
-                      list(src_var.shape) == list(dst_var.shape)
-                      and list(src_var.layout) == list(dst_var.layout)
-                      and list(src_var.mesh_shape) == list(dst_var.mesh_shape)
+                  s_slices = computed_slices.get(reference_src_unit, {}).get(
+                      src_var.name, []
                   )
-                  local_skip_tiling[layer_idx] = is_identical
+                  d_slices = computed_slices.get(reference_dst_unit, {}).get(
+                      dst_var.name, []
+                  )
+                  all_aligned = True
+                  for s_proto in s_slices:
+                    s_sl = _proto_to_nd_slice(s_proto)
+                    for d_proto in d_slices:
+                      d_sl = _proto_to_nd_slice(d_proto)
+                      inter = intersect_nd_slices(s_sl, d_sl)
+                      if inter:
+                        if not is_nd_slice_tile_aligned(
+                            s_sl, d_sl, inter, tile_shape=(8, 128)
+                        ):
+                          all_aligned = False
+                          break
+                    if not all_aligned:
+                      break
+                  local_skip_tiling[layer_idx] = all_aligned
 
           # Build final plan and replace the partial plan
           final_plan = TransferPlan(

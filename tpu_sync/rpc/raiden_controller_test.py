@@ -2844,6 +2844,171 @@ class GetGlobalIndicesTest(absltest.TestCase):
           self.assertEqual(len(set(layer_indices)), 2)
           self.assertEqual(layer_indices[0] // 2, layer_indices[2] // 2)
 
+  def test_is_nd_slice_tile_aligned_1d(self):
+    src_slice = [(0, 2304)]
+    dst_slice = [(0, 1152)]
+    intersection = [(0, 1152)]
+    self.assertTrue(
+        raiden_controller.is_nd_slice_tile_aligned(
+            src_slice, dst_slice, intersection
+        )
+    )
+
+  def test_is_nd_slice_tile_aligned_2d(self):
+    # Aligned 2D slice: multiples of (8, 128)
+    src_slice = [(0, 64032), (0, 2304)]
+    dst_slice = [(0, 128064), (0, 1152)]
+    intersection = [(0, 64032), (0, 1152)]
+    self.assertTrue(
+        raiden_controller.is_nd_slice_tile_aligned(
+            src_slice, dst_slice, intersection, tile_shape=(8, 128)
+        )
+    )
+
+    # Unaligned column start
+    unaligned_col_start_int = [(0, 64032), (10, 1162)]
+    self.assertFalse(
+        raiden_controller.is_nd_slice_tile_aligned(
+            src_slice, dst_slice, unaligned_col_start_int, tile_shape=(8, 128)
+        )
+    )
+
+    # Unaligned row length (not divisible by 8)
+    unaligned_row_len_int = [(0, 64035), (0, 1152)]
+    self.assertFalse(
+        raiden_controller.is_nd_slice_tile_aligned(
+            src_slice, dst_slice, unaligned_row_len_int, tile_shape=(8, 128)
+        )
+    )
+
+    # Unaligned column length (not divisible by 128)
+    unaligned_col_len_int = [(0, 64032), (0, 1000)]
+    self.assertFalse(
+        raiden_controller.is_nd_slice_tile_aligned(
+            src_slice, dst_slice, unaligned_col_len_int, tile_shape=(8, 128)
+        )
+    )
+
+  def test_generate_strided_copy_chunks_tile_aware_1d(self):
+    src_slice = [(0, 2304)]
+    dst_slice = [(0, 1152)]
+    intersection = [(0, 1152)]
+    chunks = raiden_controller.generate_strided_copy_chunks_tile_aware(
+        src_slice, dst_slice, intersection, itemsize=4
+    )
+    self.assertEqual(chunks, [(0, 0, 1152 * 4, 0, 0, 1)])
+
+  def test_generate_strided_copy_chunks_tile_aware_2d_reshard(self):
+    # Embedding resharding: [64032, 2304] -> [128064, 1152]
+    # Source shard 0 -> Destination shard 0
+    src_0 = [(0, 64032), (0, 2304)]
+    dst_0 = [(0, 128064), (0, 1152)]
+    int_0 = [(0, 64032), (0, 1152)]
+
+    chunks_0 = raiden_controller.generate_strided_copy_chunks_tile_aware(
+        src_0, dst_0, int_0, itemsize=4, tile_shape=(8, 128)
+    )
+    # Expected: size = 1152 * 8 * 4 = 36864, src_stride = 2304 * 8 * 4 = 73728,
+    # dst_stride = 1152 * 8 * 4 = 36864, count = 64032 / 8 = 8004
+    self.assertEqual(
+        chunks_0,
+        [(0, 0, 36864, 73728, 36864, 8004)],
+    )
+
+    # Source shard 0 -> Destination shard 1 (offset col = 1152)
+    dst_1 = [(0, 128064), (1152, 2304)]
+    int_1 = [(0, 64032), (1152, 2304)]
+    chunks_1 = raiden_controller.generate_strided_copy_chunks_tile_aware(
+        src_0, dst_1, int_1, itemsize=4, tile_shape=(8, 128)
+    )
+    # local_src_col = 1152 -> src_offset = 1152 * 8 * 4 = 36864
+    self.assertEqual(
+        chunks_1,
+        [(36864, 0, 36864, 73728, 36864, 8004)],
+    )
+
+    # Source shard 1 -> Destination shard 0 (offset row = 64032)
+    src_1 = [(64032, 128064), (0, 2304)]
+    int_src1_dst0 = [(64032, 128064), (0, 1152)]
+    chunks_src1_dst0 = (
+        raiden_controller.generate_strided_copy_chunks_tile_aware(
+            src_1, dst_0, int_src1_dst0, itemsize=4, tile_shape=(8, 128)
+        )
+    )
+    # local_dst_row = 64032 -> dst_offset = 64032 * 1152 * 4 = 295059456
+    self.assertEqual(
+        chunks_src1_dst0,
+        [(0, 295059456, 36864, 73728, 36864, 8004)],
+    )
+
+  def test_generate_strided_copy_chunks_tile_aware_row_parallel_merge(self):
+    # When sharding only along row (FSDP), size == src_stride == dst_stride -> merge to 1 chunk
+    src_slice = [(0, 1024), (0, 512)]
+    dst_slice = [(0, 1024), (0, 512)]
+    intersection = [(0, 1024), (0, 512)]
+    chunks = raiden_controller.generate_strided_copy_chunks_tile_aware(
+        src_slice, dst_slice, intersection, itemsize=4, tile_shape=(8, 128)
+    )
+    self.assertEqual(
+        chunks,
+        [(0, 0, 1024 * 512 * 4, 0, 0, 1)],
+    )
+
+  def test_generate_strided_copy_chunks_tile_aware_3d_batch(self):
+    # 3D tensor: [batch=2, H=16, W=128]
+    src_slice = [(0, 2), (0, 16), (0, 128)]
+    dst_slice = [(0, 2), (0, 16), (0, 128)]
+    intersection = [(0, 2), (0, 16), (0, 128)]
+    chunks = raiden_controller.generate_strided_copy_chunks_tile_aware(
+        src_slice, dst_slice, intersection, itemsize=4, tile_shape=(8, 128)
+    )
+    self.assertLen(chunks, 2)
+    # Batch 0
+    self.assertEqual(
+        chunks[0], (0, 0, 128 * 8 * 4, 128 * 8 * 4, 128 * 8 * 4, 2)
+    )
+    # Batch 1: offset = 16 * 128 * 4 = 8192
+    self.assertEqual(
+        chunks[1], (8192, 8192, 128 * 8 * 4, 128 * 8 * 4, 128 * 8 * 4, 2)
+    )
+
+  def test_generate_strided_copy_chunks_tile_aware_3d_sharded_batch(self):
+    # 3D tensor: [B=8, H=16, W=128]. Source has B=[0, 4), Dest has B=[2, 6) -> Intersect B=[2, 4)
+    src_slice = [(0, 4), (0, 16), (0, 128)]
+    dst_slice = [(2, 6), (0, 16), (0, 128)]
+    intersection = [(2, 4), (0, 16), (0, 128)]
+    chunks = raiden_controller.generate_strided_copy_chunks_tile_aware(
+        src_slice, dst_slice, intersection, itemsize=4, tile_shape=(8, 128)
+    )
+    self.assertLen(chunks, 2)
+    # Batch 2 of global = local src index 2, local dst index 0
+    # src_offset = 2 * 16 * 128 * 4 = 16384, dst_offset = 0
+    self.assertEqual(
+        chunks[0], (16384, 0, 128 * 8 * 4, 128 * 8 * 4, 128 * 8 * 4, 2)
+    )
+    # Batch 3 of global = local src index 3, local dst index 1
+    # src_offset = 3 * 16 * 128 * 4 = 24576, dst_offset = 1 * 16 * 128 * 4 = 8192
+    self.assertEqual(
+        chunks[1], (24576, 8192, 128 * 8 * 4, 128 * 8 * 4, 128 * 8 * 4, 2)
+    )
+
+  def test_generate_strided_copy_chunks_tile_aware_4d_tensor(self):
+    # 4D tensor: [Experts=2, Heads=2, H=16, W=128]
+    src_slice = [(0, 2), (0, 2), (0, 16), (0, 128)]
+    dst_slice = [(0, 2), (0, 2), (0, 16), (0, 128)]
+    intersection = [(0, 2), (0, 2), (0, 16), (0, 128)]
+    chunks = raiden_controller.generate_strided_copy_chunks_tile_aware(
+        src_slice, dst_slice, intersection, itemsize=4, tile_shape=(8, 128)
+    )
+    # 2 * 2 = 4 outer slices
+    self.assertLen(chunks, 4)
+    # Each matrix is 16 * 128 * 4 = 8192 bytes
+    for i in range(4):
+      self.assertEqual(
+          chunks[i],
+          (i * 8192, i * 8192, 128 * 8 * 4, 128 * 8 * 4, 128 * 8 * 4, 2),
+      )
+
 
 if __name__ == "__main__":
   absltest.main()

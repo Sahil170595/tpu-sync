@@ -339,6 +339,18 @@ NB_MODULE(_tpu_raiden_jax, m) {
           },
           nb::call_guard<nb::gil_scoped_release>())
       .def(
+          "set_skip_tiling",
+          [](WeightSynchronizer& self, bool skip_all) {
+            self.SetSkipTiling(skip_all);
+          },
+          nb::arg("skip_all"))
+      .def(
+          "set_skip_tiling",
+          [](WeightSynchronizer& self, const std::vector<bool>& skip_tiling) {
+            self.SetSkipTiling(skip_tiling);
+          },
+          nb::arg("skip_tiling"))
+      .def(
           "bind_weights",
           [](WeightSynchronizer& self, nb::list jax_arrays) {
             absl::Status status = self.BindWeights(jax_arrays);

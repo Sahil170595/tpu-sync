@@ -60,6 +60,8 @@ class WeightSynchronizer {
 
   absl::StatusOr<raiden::PjRtCopyFuture> D2h();
   absl::StatusOr<raiden::PjRtCopyFuture> H2d();
+  void SetSkipTiling(const std::vector<bool>& skip_tiling);
+  void SetSkipTiling(bool skip_all);
 
   const uint8_t* GetHostBufferPtr(size_t layer_idx, size_t shard_idx) const;
   std::optional<int> local_port() const;

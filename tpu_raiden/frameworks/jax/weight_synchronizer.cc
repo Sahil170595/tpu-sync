@@ -21,6 +21,7 @@
 #include <optional>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
@@ -70,6 +71,12 @@ absl::StatusOr<raiden::PjRtCopyFuture> WeightSynchronizer::D2h() {
 }
 absl::StatusOr<raiden::PjRtCopyFuture> WeightSynchronizer::H2d() {
   return impl_->H2d();
+}
+void WeightSynchronizer::SetSkipTiling(const std::vector<bool>& skip_tiling) {
+  impl_->SetSkipTiling(skip_tiling);
+}
+void WeightSynchronizer::SetSkipTiling(bool skip_all) {
+  impl_->SetSkipTiling(skip_all);
 }
 
 const uint8_t* WeightSynchronizer::GetHostBufferPtr(size_t layer_idx,

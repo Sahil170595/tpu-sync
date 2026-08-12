@@ -59,6 +59,13 @@ class WeightSynchronizer:
     """Triggers asynchronous Host-to-Device (H2D) copy of staged host buffer back to Device memory E2E."""
     self._impl.H2d()
 
+  def test_only_set_skip_tiling(self, skip: bool | List[bool]) -> None:
+    """Sets whether D2H/H2D should skip CPU tiling/detiling (for testing only)."""
+    if isinstance(skip, bool):
+      self._impl.set_skip_tiling(skip)
+    else:
+      self._impl.set_skip_tiling(list(skip))
+
   def bind_weights(self, jax_arrays: List[any]) -> None:
     """Binds the JAX arrays to the weight synchronizer in-place.
 

@@ -448,6 +448,27 @@ class WeightSynchronizationPerfTest(parameterized.TestCase):
 
     logging.info("Executing %d benchmark iterations...", num_iters)
 
+    # Warmup transfer to initialize connections and transfer metadata
+    logging.info("Executing warmup transfer...")
+    ws_source.d2h()
+    future = controller.start_transfer(
+        src_units=[src_unit],
+        dst_units=[dst_unit],
+        dst_mem_type=raiden_controller.RaidenMemoryType.DRAM,
+        use_block_chunks=True,
+        is_sender=True,
+        expected_block_count=0,
+        uuid=999,
+        req_id="warmup",
+        group_size=FLAGS.group_size,
+    )
+    loop = asyncio.new_event_loop()
+    try:
+      loop.run_until_complete(future.wait())
+    finally:
+      loop.close()
+    ws_dest.h2d()
+
     for it in range(num_iters):
       logging.info("--- Benchmark Iteration %d/%d ---", it + 1, num_iters)
 
@@ -486,6 +507,18 @@ class WeightSynchronizationPerfTest(parameterized.TestCase):
       t5 = time.perf_counter()
       h2d_elapsed = t5 - t4
       h2d_latencies.append(h2d_elapsed)
+
+      logging.info(
+          "Iter %d: D2H = %.3f ms (%.2f GB/s), H2H = %.3f ms (%.2f GB/s), H2D ="
+          " %.3f ms (%.2f GB/s)",
+          it + 1,
+          d2h_elapsed * 1000.0,
+          total_size_gb / max(d2h_elapsed, 1e-9),
+          h2h_elapsed * 1000.0,
+          total_size_gb / max(h2h_elapsed, 1e-9),
+          h2d_elapsed * 1000.0,
+          total_size_gb / max(h2d_elapsed, 1e-9),
+      )
 
       e2e_elapsed = d2h_elapsed + h2h_elapsed + h2d_elapsed
       e2e_latencies.append(e2e_elapsed)
@@ -530,7 +563,7 @@ class WeightSynchronizationPerfTest(parameterized.TestCase):
 
     for name, s_arr, d_shd in zip(names, src_arrays, dst_shardings):
       single_bytes = int(np.prod(s_arr.shape)) * s_arr.dtype.itemsize
-      # Single-tensor D2H
+      # Single-tensor D2H (zero-copy physical DMA)
       ws_single_src = weight_synchronizer.WeightSynchronizer(
           jax_arrays=[s_arr],
           local_port=0,
@@ -538,6 +571,9 @@ class WeightSynchronizationPerfTest(parameterized.TestCase):
           unsafe_skip_buffer_lock=False,
           bind_ip="127.0.0.1",
       )
+      ws_single_src.test_only_set_skip_tiling(True)
+      # Warmup
+      ws_single_src.d2h()
       t_d2h_s = time.perf_counter()
       ws_single_src.d2h()
       t_d2h_e = time.perf_counter()
@@ -557,7 +593,7 @@ class WeightSynchronizationPerfTest(parameterized.TestCase):
           )
       )
 
-      # Single-tensor H2D (using isolated scratch array on destination mesh)
+      # Single-tensor H2D (zero-copy physical DMA)
       scratch_d_arr = jax.jit(
           lambda: jnp.zeros(s_arr.shape, dtype=s_arr.dtype),
           out_shardings=d_shd,
@@ -571,6 +607,9 @@ class WeightSynchronizationPerfTest(parameterized.TestCase):
           unsafe_skip_buffer_lock=False,
           bind_ip="127.0.0.1",
       )
+      ws_single_dst.test_only_set_skip_tiling(True)
+      # Warmup
+      ws_single_dst.h2d()
       t_h2d_s = time.perf_counter()
       ws_single_dst.h2d()
       t_h2d_e = time.perf_counter()

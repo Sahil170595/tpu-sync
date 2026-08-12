@@ -21,8 +21,8 @@
 #include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
 #include "grpcpp/channel.h"
-#include "tpu_raiden/proto/orchestrator_service.grpc.pb.h"
-#include "tpu_raiden/proto/orchestrator_service.pb.h"
+#include "tpu_sync/proto/orchestrator_service.grpc.pb.h"
+#include "tpu_sync/proto/orchestrator_service.pb.h"
 #include "tpu_sync/rpc/raiden_service.pb.h"
 
 namespace tpu_raiden {

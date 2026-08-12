@@ -23,8 +23,8 @@
 #include "grpcpp/client_context.h"
 #include "grpcpp/support/status.h"
 #include "xla/tsl/concurrency/future.h"
-#include "tpu_raiden/proto/worker_service.grpc.pb.h"
-#include "tpu_raiden/proto/worker_service.pb.h"
+#include "tpu_sync/proto/worker_service.grpc.pb.h"
+#include "tpu_sync/proto/worker_service.pb.h"
 
 namespace tpu_raiden {
 namespace controller {

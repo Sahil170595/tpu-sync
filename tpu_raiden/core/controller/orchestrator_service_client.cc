@@ -25,8 +25,8 @@
 #include "grpcpp/create_channel.h"
 #include "grpcpp/security/credentials.h"
 #include "grpcpp/support/status.h"
-#include "tpu_raiden/proto/orchestrator_service.grpc.pb.h"
-#include "tpu_raiden/proto/orchestrator_service.pb.h"
+#include "tpu_sync/proto/orchestrator_service.grpc.pb.h"
+#include "tpu_sync/proto/orchestrator_service.pb.h"
 
 namespace tpu_raiden {
 namespace controller {

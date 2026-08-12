@@ -24,7 +24,7 @@
 #include "grpcpp/create_channel.h"
 #include "grpcpp/security/credentials.h"
 #include "tpu_raiden/core/controller/worker_service_client.h"
-#include "tpu_raiden/proto/worker_service.pb.h"
+#include "tpu_sync/proto/worker_service.pb.h"
 
 namespace tpu_raiden {
 namespace controller {

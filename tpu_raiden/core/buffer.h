@@ -24,7 +24,7 @@
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
 #include "tpu_raiden/core/raiden_transfer_endpoint.h"
-#include "tpu_raiden/proto/worker_service.pb.h"
+#include "tpu_sync/proto/worker_service.pb.h"
 
 namespace tpu_raiden {
 

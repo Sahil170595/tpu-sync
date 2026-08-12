@@ -28,7 +28,7 @@
 #include "tpu_raiden/core/controller/worker_service_impl.h"
 #include "tpu_raiden/core/kv_manager_holder.h"
 #include "tpu_raiden/core/raw_transfer_core.h"
-#include "tpu_raiden/proto/worker_service.pb.h"
+#include "tpu_sync/proto/worker_service.pb.h"
 #include "tpu_sync/rpc/raiden_service.pb.h"
 
 namespace tpu_raiden {

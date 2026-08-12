@@ -48,8 +48,8 @@
 #include "tpu_raiden/core/buffer.h"
 #include "tpu_raiden/core/controller/raiden_controller.h"
 #include "tpu_raiden/kv_cache/kv_cache_store_backend.h"
-#include "tpu_raiden/proto/kv_cache_store_service.grpc.pb.h"
-#include "tpu_raiden/proto/kv_cache_store_service.pb.h"
+#include "tpu_sync/proto/kv_cache_store_service.grpc.pb.h"
+#include "tpu_sync/proto/kv_cache_store_service.pb.h"
 
 namespace tpu_raiden {
 namespace kv_cache {

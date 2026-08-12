@@ -49,8 +49,8 @@
 #include "tpu_raiden/kv_cache/kv_cache_store_server.h"
 #include "tpu_raiden/kv_cache/lru_cache.h"
 #include "tpu_raiden/kv_cache/raiden_id.h"
-#include "tpu_raiden/proto/kv_cache_store_service.pb.h"
-#include "tpu_raiden/proto/worker_service.pb.h"
+#include "tpu_sync/proto/kv_cache_store_service.pb.h"
+#include "tpu_sync/proto/worker_service.pb.h"
 #include "tpu_sync/rpc/raiden_service.pb.h"
 
 namespace tpu_raiden {

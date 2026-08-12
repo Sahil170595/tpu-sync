@@ -71,7 +71,7 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         ":raiden_transfer_endpoint",
-        "//tpu_raiden/proto:worker_service_cc_proto",
+        "//tpu_sync/proto:worker_service_cc_proto",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/types:span",
     ],

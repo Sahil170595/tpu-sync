@@ -28,8 +28,8 @@
 #include "grpcpp/support/status.h"
 #include "tpu_raiden/core/host_memory_allocator.h"
 #include "tpu_raiden/core/kv_manager_holder.h"
-#include "tpu_raiden/proto/worker_service.grpc.pb.h"
-#include "tpu_raiden/proto/worker_service.pb.h"
+#include "tpu_sync/proto/worker_service.grpc.pb.h"
+#include "tpu_sync/proto/worker_service.pb.h"
 
 namespace tpu_raiden {
 namespace controller {

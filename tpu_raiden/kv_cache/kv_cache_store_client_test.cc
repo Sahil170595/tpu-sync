@@ -41,8 +41,8 @@
 #include "grpcpp/security/credentials.h"
 #include "grpcpp/security/server_credentials.h"
 #include "tpu_raiden/core/raiden_future.h"
-#include "tpu_raiden/proto/kv_cache_store_service.grpc.pb.h"
-#include "tpu_raiden/proto/kv_cache_store_service.pb.h"
+#include "tpu_sync/proto/kv_cache_store_service.grpc.pb.h"
+#include "tpu_sync/proto/kv_cache_store_service.pb.h"
 #include "tpu_sync/rpc/raiden_service.pb.h"
 
 namespace tpu_raiden {

@@ -65,7 +65,7 @@
 #include "third_party/protobuf/util/message_differencer.h"
 #include "tpu_raiden/kv_cache/reshard/framed_rpc.h"
 #include "tpu_raiden/kv_cache/reshard/reshard_service.h"
-#include "tpu_raiden/rpc/raiden_service.pb.h"
+#include "tpu_sync/rpc/raiden_service.pb.h"
 
 ABSL_FLAG(std::string, log, "", "Recorded controller jsonl to replay.");
 ABSL_FLAG(std::string, peer_metadata_log, "",

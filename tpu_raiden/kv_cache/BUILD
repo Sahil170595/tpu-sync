@@ -21,7 +21,7 @@ py_library(
     name = "nd_slice_math",
     srcs = ["nd_slice_math.py"],
     visibility = ["//visibility:public"],
-    deps = ["//tpu_raiden/rpc:raiden_service_py_pb2"],
+    deps = ["//tpu_sync/rpc:raiden_service_py_pb2"],
 )
 
 py_test(
@@ -29,7 +29,7 @@ py_test(
     srcs = ["nd_slice_math_test.py"],
     deps = [
         ":nd_slice_math",
-        "//tpu_raiden/rpc:raiden_controller",
+        "//tpu_sync/rpc:raiden_controller",
         "@com_google_absl_py//absl/testing:absltest",
     ],
 )
@@ -45,7 +45,7 @@ cc_test(
     deps = [
         ":kv_cache_listener",
         ":kv_cache_manager_base",
-        "//tpu_raiden/rpc:raiden_service_cc_proto",
+        "//tpu_sync/rpc:raiden_service_cc_proto",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/types:span",
         "@com_google_googletest//:gtest_main",
@@ -178,7 +178,7 @@ cc_library(
     ],
     features = ["-use_header_modules"],
     deps = [
-        "//tpu_raiden/rpc:raiden_service_cc_proto",
+        "//tpu_sync/rpc:raiden_service_cc_proto",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
@@ -196,7 +196,7 @@ cc_test(
     features = ["-use_header_modules"],
     deps = [
         ":pool_layout",
-        "//tpu_raiden/rpc:raiden_service_cc_proto",
+        "//tpu_sync/rpc:raiden_service_cc_proto",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:status_matchers",
         "@com_google_absl//absl/status:statusor",
@@ -229,7 +229,7 @@ cc_library(
         "//tpu_raiden/core:status_macros",
         "//tpu_raiden/core:tpu_utils",
         "//tpu_raiden/core:xla_raw_transfer_headers",
-        "//tpu_raiden/rpc:raiden_service_cc_proto",
+        "//tpu_sync/rpc:raiden_service_cc_proto",
         "//tpu_sync/transport:block_transport",
         "//tpu_sync/transport:block_transport_delegate",
         "@com_google_absl//absl/base:core_headers",
@@ -305,7 +305,7 @@ cc_library(
         "//tpu_raiden/kv_cache/global_registry:global_registry_client_cc",
         "//tpu_raiden/proto:kv_cache_store_service_cc_proto",
         "//tpu_raiden/proto:worker_service_cc_proto",
-        "//tpu_raiden/rpc:raiden_service_cc_proto",
+        "//tpu_sync/rpc:raiden_service_cc_proto",
         "@com_github_grpc_grpc//:grpc++",
         "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/base:nullability",
@@ -354,7 +354,7 @@ cc_test(
         ":kv_cache_store_backend_factory",
         ":raiden_id",
         "//tpu_raiden/core/controller:raiden_controller",
-        "//tpu_raiden/rpc:raiden_service_cc_proto",
+        "//tpu_sync/rpc:raiden_service_cc_proto",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_googletest//:gtest",
@@ -386,7 +386,7 @@ cc_library(
         "//tpu_raiden/core/controller:raiden_controller",
         "//tpu_raiden/kv_cache/global_registry:global_registry_client_cc",
         "//tpu_raiden/kv_cache/reshard:reshard_service",
-        "//tpu_raiden/rpc:raiden_service_cc_proto",
+        "//tpu_sync/rpc:raiden_service_cc_proto",
         "@com_github_grpc_grpc//:grpc++",
         "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/cleanup",
@@ -572,7 +572,7 @@ cc_library(
         "//tpu_raiden/proto:kv_cache_store_service_cc_grpc",
         "//tpu_raiden/proto:kv_cache_store_service_cc_proto",
         "//tpu_raiden/proto:worker_service_cc_proto",
-        "//tpu_raiden/rpc:raiden_service_cc_proto",
+        "//tpu_sync/rpc:raiden_service_cc_proto",
         "@com_github_grpc_grpc//:grpc++",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
@@ -591,7 +591,7 @@ cc_test(
         "//tpu_raiden/core:raw_transfer_core",
         "//tpu_raiden/proto:kv_cache_store_service_cc_grpc",
         "//tpu_raiden/proto:kv_cache_store_service_cc_proto",
-        "//tpu_raiden/rpc:raiden_service_cc_proto",
+        "//tpu_sync/rpc:raiden_service_cc_proto",
         "@com_github_grpc_grpc//:grpc++",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:status_matchers",
@@ -643,8 +643,8 @@ py_library(
     srcs = ["kv_cache_controller.py"],
     visibility = ["//visibility:public"],
     deps = [
-        "//tpu_raiden/rpc:raiden_controller",
-        "//tpu_raiden/rpc:raiden_service_py_pb2",
+        "//tpu_sync/rpc:raiden_controller",
+        "//tpu_sync/rpc:raiden_service_py_pb2",
     ],
 )
 
@@ -660,7 +660,7 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         ":kv_cache_manager_base",
-        "//tpu_raiden/rpc:raiden_service_cc_proto",
+        "//tpu_sync/rpc:raiden_service_cc_proto",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/status",
     ],

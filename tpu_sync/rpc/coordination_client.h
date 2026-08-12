@@ -22,8 +22,8 @@
 
 #include "absl/status/statusor.h"
 #include "grpcpp/channel.h"
-#include "tpu_raiden/rpc/coordination.grpc.pb.h"
-#include "tpu_raiden/rpc/coordination.pb.h"
+#include "tpu_sync/rpc/coordination.grpc.pb.h"
+#include "tpu_sync/rpc/coordination.pb.h"
 
 namespace tpu_raiden {
 namespace rpc {

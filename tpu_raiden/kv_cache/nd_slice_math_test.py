@@ -59,7 +59,7 @@ import sys
 
 sys.modules["jax"] = None
 from tpu_raiden.kv_cache import nd_slice_math
-from tpu_raiden.rpc import raiden_controller
+from tpu_sync.rpc import raiden_controller
 
 slices = nd_slice_math.compute_nd_shard_slices((8, 12), (2, 3))
 assert len(slices) == 6

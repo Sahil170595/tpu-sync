@@ -44,7 +44,7 @@
 #include "absl/status/status.h"
 #include "absl/types/span.h"
 #include "tpu_raiden/kv_cache/kv_cache_manager_base.h"
-#include "tpu_raiden/rpc/raiden_service.pb.h"
+#include "tpu_sync/rpc/raiden_service.pb.h"
 
 namespace tpu_raiden {
 namespace kv_cache {

@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "tpu_raiden/rpc/coordination_client.h"
+#include "tpu_sync/rpc/coordination_client.h"
 
 #include <cstdint>
 #include <memory>
@@ -23,7 +23,7 @@
 #include "absl/strings/str_cat.h"
 #include "grpcpp/client_context.h"
 #include "grpcpp/support/status.h"
-#include "tpu_raiden/rpc/coordination.grpc.pb.h"
+#include "tpu_sync/rpc/coordination.grpc.pb.h"
 
 namespace tpu_raiden {
 namespace rpc {

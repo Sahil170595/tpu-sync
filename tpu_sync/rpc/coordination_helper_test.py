@@ -14,7 +14,7 @@
 
 import concurrent.futures
 from absl.testing import absltest
-from tpu_raiden.rpc import coordination_helper
+from tpu_sync.rpc import coordination_helper
 
 
 class CoordinationHelperTest(absltest.TestCase):

@@ -35,7 +35,7 @@
 #include "tpu_raiden/core/controller/test_util.h"
 #include "tpu_raiden/core/controller/raiden_controller.h"
 // clang-format on
-#include "tpu_raiden/rpc/raiden_service.pb.h"
+#include "tpu_sync/rpc/raiden_service.pb.h"
 
 namespace tpu_raiden {
 namespace kv_cache {

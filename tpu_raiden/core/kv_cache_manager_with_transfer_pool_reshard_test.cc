@@ -45,7 +45,7 @@
 #include "absl/types/span.h"
 #include "tpu_raiden/core/kv_cache_manager_with_transfer.h"
 #include "tpu_raiden/kv_cache/pool_layout.h"
-#include "tpu_raiden/rpc/raiden_service.pb.h"
+#include "tpu_sync/rpc/raiden_service.pb.h"
 
 namespace tpu_raiden {
 namespace {

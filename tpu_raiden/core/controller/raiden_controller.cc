@@ -59,7 +59,7 @@
 #include "tpu_raiden/proto/controller_service.grpc.pb.h"
 #include "tpu_raiden/proto/controller_service.pb.h"
 #include "tpu_raiden/proto/worker_service.pb.h"
-#include "tpu_raiden/rpc/raiden_service.pb.h"
+#include "tpu_sync/rpc/raiden_service.pb.h"
 
 namespace tpu_raiden {
 namespace controller {

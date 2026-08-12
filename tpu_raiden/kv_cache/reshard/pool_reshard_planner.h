@@ -38,7 +38,7 @@
 #include "absl/status/statusor.h"
 #include "tpu_raiden/kv_cache/raiden_id.h"
 #include "tpu_raiden/kv_cache/reshard/request_block_registry.h"
-#include "tpu_raiden/rpc/raiden_service.pb.h"
+#include "tpu_sync/rpc/raiden_service.pb.h"
 
 namespace tpu_raiden {
 namespace kv_cache {

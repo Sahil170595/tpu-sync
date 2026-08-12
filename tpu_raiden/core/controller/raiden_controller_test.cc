@@ -51,7 +51,7 @@
 #include "tpu_raiden/core/raiden_transfer_endpoint.h"
 #include "tpu_raiden/kv_cache/raiden_id.h"
 #include "tpu_raiden/proto/worker_service.pb.h"
-#include "tpu_raiden/rpc/raiden_service.pb.h"
+#include "tpu_sync/rpc/raiden_service.pb.h"
 
 namespace tpu_raiden {
 namespace controller {

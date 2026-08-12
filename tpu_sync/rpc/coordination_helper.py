@@ -18,8 +18,8 @@ import concurrent.futures
 import threading
 from typing import Any, Dict, List, NamedTuple, Tuple
 import grpc
-from tpu_raiden.rpc import coordination_pb2
-from tpu_raiden.rpc import coordination_pb2_grpc
+from tpu_sync.rpc import coordination_pb2
+from tpu_sync.rpc import coordination_pb2_grpc
 
 
 class TransferMetadata(NamedTuple):

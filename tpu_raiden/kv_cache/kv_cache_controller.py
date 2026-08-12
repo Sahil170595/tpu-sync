@@ -29,10 +29,10 @@
 
 from typing import Optional
 
-from tpu_raiden.rpc import raiden_controller
-from tpu_raiden.rpc import raiden_service_pb2
-from tpu_raiden.rpc.raiden_controller import RaidenId
-from tpu_raiden.rpc.raiden_controller import TransferPlan
+from tpu_sync.rpc import raiden_controller
+from tpu_sync.rpc import raiden_service_pb2
+from tpu_sync.rpc.raiden_controller import RaidenId
+from tpu_sync.rpc.raiden_controller import TransferPlan
 
 
 class KVCacheWorkerRpcClient(raiden_controller.WorkerRpcClient):

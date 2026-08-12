@@ -38,7 +38,7 @@ _runtime_version.ValidateProtobufRuntimeVersion(
 _sym_db = _symbol_database.Default()
 
 
-from tpu_raiden.rpc import raiden_service_pb2 as tpu__raiden_dot_rpc_dot_raiden__service__pb2
+from tpu_sync.rpc import raiden_service_pb2 as tpu__raiden_dot_rpc_dot_raiden__service__pb2
 
 DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(
     b'\n\'tpu_raiden/rpc/controller_service.proto\x12\x0etpu_raiden.rpc\x1a#tpu_raiden/rpc/raiden_service.proto"\xb4\x03\n\x19\x43oordinateTransferRequest\x12\x30\n\tsrc_units\x18\x01'

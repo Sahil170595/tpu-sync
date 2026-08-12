@@ -22,7 +22,7 @@ package(default_visibility = ["//visibility:public"])
 proto_library(
     name = "global_registry_proto",
     srcs = ["global_registry.proto"],
-    deps = ["//tpu_raiden/rpc:raiden_service_proto"],
+    deps = ["//tpu_sync/rpc:raiden_service_proto"],
 )
 
 cc_proto_library(

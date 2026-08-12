@@ -23,7 +23,7 @@ package(default_visibility = ["//visibility:public"])
 proto_library(
     name = "worker_service_proto",
     srcs = ["worker_service.proto"],
-    deps = ["//tpu_raiden/rpc:raiden_service_proto"],
+    deps = ["//tpu_sync/rpc:raiden_service_proto"],
 )
 
 cc_proto_library(
@@ -58,7 +58,7 @@ proto_library(
     srcs = ["controller_service.proto"],
     deps = [
         ":worker_service_proto",
-        "//tpu_raiden/rpc:raiden_service_proto",
+        "//tpu_sync/rpc:raiden_service_proto",
     ],
 )
 
@@ -80,7 +80,7 @@ cc_grpc_library(
 proto_library(
     name = "orchestrator_service_proto",
     srcs = ["orchestrator_service.proto"],
-    deps = ["//tpu_raiden/rpc:raiden_service_proto"],
+    deps = ["//tpu_sync/rpc:raiden_service_proto"],
 )
 
 cc_proto_library(
@@ -102,7 +102,7 @@ proto_library(
     srcs = ["kv_cache_store_service.proto"],
     deps = [
         ":worker_service_proto",
-        "//tpu_raiden/rpc:raiden_service_proto",
+        "//tpu_sync/rpc:raiden_service_proto",
     ],
 )
 

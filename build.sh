@@ -148,10 +148,10 @@ if [ "${BUILD_TORCH}" = true ]; then
 fi
 
 BAZEL_TARGETS=(
-  "//tpu_raiden/rpc:raiden_service_py_pb2"
-  "//tpu_raiden/rpc:coordination_py_pb2"
-  "//tpu_raiden/rpc:coordination_py_pb2_grpc"
-  "//tpu_raiden/rpc:controller_service_py_pb2"
+  "//tpu_sync/rpc:raiden_service_py_pb2"
+  "//tpu_sync/rpc:coordination_py_pb2"
+  "//tpu_sync/rpc:coordination_py_pb2_grpc"
+  "//tpu_sync/rpc:controller_service_py_pb2"
   # C++ control-plane service binaries. These do not depend on JAX or Torch,
   # so they are always built.
   "//tpu_raiden/core/controller:raiden_orchestrator_main"
@@ -317,10 +317,10 @@ echo "=== Building targets with Bazel ==="
 
 
 echo "=== Copying generated protobuf Python modules ==="
-cp -f "${WORKSPACE_DIR}/bazel-bin/tpu_raiden/rpc/raiden_service_pb2.py" "${WORKSPACE_DIR}/tpu_raiden/rpc/" 2>/dev/null || true
-cp -f "${WORKSPACE_DIR}/bazel-bin/tpu_raiden/rpc/coordination_pb2.py" "${WORKSPACE_DIR}/tpu_raiden/rpc/" 2>/dev/null || true
-cp -f "${WORKSPACE_DIR}/bazel-bin/tpu_raiden/rpc/coordination_pb2_grpc.py" "${WORKSPACE_DIR}/tpu_raiden/rpc/" 2>/dev/null || true
-cp -f "${WORKSPACE_DIR}/bazel-bin/tpu_raiden/rpc/controller_service_pb2.py" "${WORKSPACE_DIR}/tpu_raiden/rpc/" 2>/dev/null || true
+cp -f "${WORKSPACE_DIR}/bazel-bin/tpu_sync/rpc/raiden_service_pb2.py" "${WORKSPACE_DIR}/tpu_sync/rpc/" 2>/dev/null || true
+cp -f "${WORKSPACE_DIR}/bazel-bin/tpu_sync/rpc/coordination_pb2.py" "${WORKSPACE_DIR}/tpu_sync/rpc/" 2>/dev/null || true
+cp -f "${WORKSPACE_DIR}/bazel-bin/tpu_sync/rpc/coordination_pb2_grpc.py" "${WORKSPACE_DIR}/tpu_sync/rpc/" 2>/dev/null || true
+cp -f "${WORKSPACE_DIR}/bazel-bin/tpu_sync/rpc/controller_service_pb2.py" "${WORKSPACE_DIR}/tpu_sync/rpc/" 2>/dev/null || true
 
 echo "=== Linking C++ control-plane service binaries into source tree ==="
 # The KVCacheStore tests (kv_cache_store_test.py / kv_cache_store_e2e_test.py)

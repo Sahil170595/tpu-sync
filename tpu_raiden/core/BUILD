@@ -638,7 +638,7 @@ cc_test(
         ":kv_cache_manager_with_transfer",
         "//tpu_raiden/kv_cache:kv_cache_manager_base",
         "//tpu_raiden/kv_cache:pool_layout",
-        "//tpu_raiden/rpc:raiden_service_cc_proto",
+        "//tpu_sync/rpc:raiden_service_cc_proto",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/types:span",
         "@com_google_googletest//:gtest_main",

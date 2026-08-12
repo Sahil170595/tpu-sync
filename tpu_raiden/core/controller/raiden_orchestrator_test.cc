@@ -23,7 +23,7 @@
 #include "grpcpp/support/status.h"
 #include "tpu_raiden/proto/orchestrator_service.grpc.pb.h"
 #include "tpu_raiden/proto/orchestrator_service.pb.h"
-#include "tpu_raiden/rpc/raiden_service.pb.h"
+#include "tpu_sync/rpc/raiden_service.pb.h"
 
 #ifndef _WIN32
 int ignore_sigpipe = []() {

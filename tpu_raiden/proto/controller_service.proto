@@ -17,7 +17,7 @@ syntax = "proto3";
 package tpu_raiden.proto;
 
 import "tpu_raiden/proto/worker_service.proto";
-import "tpu_raiden/rpc/raiden_service.proto";
+import "tpu_sync/rpc/raiden_service.proto";
 
 // Service definition for TPU Raiden Controller.
 service RaidenControllerService {

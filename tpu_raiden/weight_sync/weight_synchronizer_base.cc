@@ -38,9 +38,9 @@
 #include "xla/tsl/platform/statusor.h"
 #include "tpu_raiden/core/raiden_manager_base.h"
 #include "tpu_raiden/core/raw_transfer_core.h"
-#include "tpu_raiden/rpc/raiden_service.pb.h"
 #include "tpu_raiden/weight_sync/tiling_utils.h"
 #include "tpu_raiden/weight_sync/weight_synchronizer_listener.h"
+#include "tpu_sync/rpc/raiden_service.pb.h"
 #include "tpu_sync/transport/buffer_push_task.h"
 
 ABSL_FLAG(size_t, raiden_weight_sync_host_buffer_scratchpad_size, 256 * 1024,

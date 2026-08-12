@@ -43,8 +43,8 @@ import numpy as np
 
 from tpu_raiden.api.jax import weight_synchronizer
 from tpu_raiden.frameworks.jax import resharding_planner
-from tpu_raiden.rpc import raiden_controller
-from tpu_raiden.rpc import raiden_service_pb2
+from tpu_sync.rpc import raiden_controller
+from tpu_sync.rpc import raiden_service_pb2
 
 # os.environ["XLA_FLAGS"] = "--xla_force_host_platform_device_count=8"
 

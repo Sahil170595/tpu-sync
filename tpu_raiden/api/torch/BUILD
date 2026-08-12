@@ -47,7 +47,7 @@ py_library(
         ":torch_abi",
         ":torch_tpu_common_loader",
         "//tpu_raiden/frameworks/torch:_tpu_raiden_torch",
-        "//tpu_raiden/rpc:raiden_service_py_pb2",
+        "//tpu_sync/rpc:raiden_service_py_pb2",
     ],
 )
 
@@ -58,7 +58,7 @@ py_library(
     deps = [
         ":pool_layout",
         "//tpu_raiden/frameworks/torch:_tpu_raiden_host",
-        "//tpu_raiden/rpc:raiden_service_py_pb2",
+        "//tpu_sync/rpc:raiden_service_py_pb2",
     ],
 )
 

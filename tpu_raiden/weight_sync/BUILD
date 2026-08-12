@@ -58,7 +58,7 @@ cc_library(
         "//tpu_raiden/core:raw_transfer_core",
         "//tpu_raiden/core:status_macros",
         "//tpu_raiden/core:xla_raw_transfer_headers",
-        "//tpu_raiden/rpc:raiden_service_cc_proto",
+        "//tpu_sync/rpc:raiden_service_cc_proto",
         "//tpu_sync/transport:buffer_push_task",
         "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/container:flat_hash_map",
@@ -87,7 +87,7 @@ cc_test(
     deps = [
         ":weight_synchronizer_base",
         "//tpu_raiden/core:raw_transfer_core",
-        "//tpu_raiden/rpc:raiden_service_cc_proto",
+        "//tpu_sync/rpc:raiden_service_cc_proto",
         "@com_google_absl//absl/flags:flag",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/status",
@@ -109,7 +109,7 @@ cc_test(
     features = ["-use_header_modules"],
     deps = [
         ":weight_synchronizer_base",
-        "//tpu_raiden/rpc:raiden_service_cc_proto",
+        "//tpu_sync/rpc:raiden_service_cc_proto",
         "@com_google_googletest//:gtest",
         "@com_google_googletest//:gtest_main",
     ],

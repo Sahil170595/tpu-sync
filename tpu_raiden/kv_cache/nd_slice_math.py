@@ -31,7 +31,7 @@
 import itertools
 from typing import List, Tuple
 
-from tpu_raiden.rpc import raiden_service_pb2
+from tpu_sync.rpc import raiden_service_pb2
 
 
 def compute_nd_shard_slices(

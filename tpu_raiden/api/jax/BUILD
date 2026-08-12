@@ -95,7 +95,7 @@ py_test(
     deps = [
         ":weight_synchronizer_jax_py",
         "//tpu_raiden/frameworks/jax:jax_test_utils",
-        "//tpu_raiden/rpc:raiden_service_py_pb2",
+        "//tpu_sync/rpc:raiden_service_py_pb2",
         "@com_google_absl_py//absl/testing:absltest",
         "@jax//jax",
         "@pypi//numpy",

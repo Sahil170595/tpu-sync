@@ -34,8 +34,8 @@ import socket
 import threading
 from unittest import mock
 from absl.testing import absltest
-from tpu_raiden.rpc import raiden_controller
-from tpu_raiden.rpc import raiden_service_pb2
+from tpu_sync.rpc import raiden_controller
+from tpu_sync.rpc import raiden_service_pb2
 
 
 class DummyWorkerRpcClient(raiden_controller.WorkerRpcClient):

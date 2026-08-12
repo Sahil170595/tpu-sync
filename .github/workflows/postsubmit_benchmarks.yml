@@ -12,27 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-name: Run Benchmarks
+name: Postsubmit Benchmarks
 
 on:
-  # Allow manual runs from the Actions tab for testing
+  # Required for internal services to invoke workflow runs.
+  # Required inputs: benchmark_filter, environment_filter, custom_metadata.
   workflow_dispatch:
     inputs:
-      ab_mode:
-        description: "Run A/B comparison (baseline vs experiment)."
-        required: false
-        type: boolean
-        default: false
-      baseline_ref:
-        description: "Git ref for the baseline in A/B mode. Defaults to PR base or main."
-        required: false
-        type: string
-        default: ""
-      experiment_ref:
-        description: "Git ref for the experiment in A/B mode. Defaults to current commit SHA."
-        required: false
-        type: string
-        default: ""
       benchmark_filter:
         description: "Regex to filter by benchmark name (e.g., 'h2d_d2h_gating')."
         required: false
@@ -49,6 +35,10 @@ on:
         type: string
         default: "{}"
 
+  push:
+    branches:
+      - main
+
 permissions:
   contents: read
   pull-requests: write
@@ -61,9 +51,6 @@ jobs:
       registry_file: "tpu_raiden/benchmarks/benchmark_registry.pbtxt"
       ml_actions_ref: "fd37d1f65a06f0124d9d2022d97efa8dc8812557"
       runner: "linux-x86-n2-8"
-      ab_mode: ${{ inputs.ab_mode }}
-      baseline_ref: ${{ inputs.baseline_ref }}
-      experiment_ref: ${{ inputs.experiment_ref }}
-      benchmark_filter: ${{ inputs.benchmark_filter }}
-      environment_filter: ${{ inputs.environment_filter }}
-      custom_metadata: ${{ inputs.custom_metadata }}
+      publish_metrics: true
+      pub_sub_gcp_project_id: "ml-oss-benchmarking-production"
+      pub_sub_gcp_topic_id: "public-results-prod"

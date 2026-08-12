@@ -40,7 +40,7 @@
 #include "tpu_raiden/core/utils.h"
 #include "tpu_raiden/frameworks/torch/torch_utils.h"
 #include "tpu_raiden/kv_cache/kv_cache_listener.h"
-#include "tpu_raiden/transport/block_transport.h"
+#include "tpu_sync/transport/block_transport.h"
 
 namespace tpu_raiden {
 namespace torch {

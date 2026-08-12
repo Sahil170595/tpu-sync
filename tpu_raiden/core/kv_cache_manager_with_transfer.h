@@ -59,7 +59,7 @@
 #include "tpu_raiden/core/raiden_transfer_endpoint.h"
 #include "tpu_raiden/core/raw_transfer_core.h"
 #include "tpu_raiden/kv_cache/kv_cache_manager_base.h"
-#include "tpu_raiden/transport/block_transport_delegate.h"
+#include "tpu_sync/transport/block_transport_delegate.h"
 
 namespace tpu_raiden {
 

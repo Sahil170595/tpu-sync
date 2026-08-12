@@ -34,8 +34,8 @@
 #include "xla/future.h"
 #include "tpu_raiden/core/raw_transfer_core.h"
 #include "tpu_raiden/core/tpu_utils.h"
-#include "tpu_raiden/transport/block_transport.h"
-#include "tpu_raiden/transport/buffer_push_task.h"
+#include "tpu_sync/transport/block_transport.h"
+#include "tpu_sync/transport/buffer_push_task.h"
 
 namespace tpu_raiden {
 

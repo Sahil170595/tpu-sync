@@ -59,7 +59,7 @@ cc_library(
         "//tpu_raiden/core:status_macros",
         "//tpu_raiden/core:xla_raw_transfer_headers",
         "//tpu_raiden/rpc:raiden_service_cc_proto",
-        "//tpu_raiden/transport:buffer_push_task",
+        "//tpu_sync/transport:buffer_push_task",
         "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/flags:flag",

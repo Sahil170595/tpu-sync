@@ -43,8 +43,8 @@
 #include "tpu_raiden/kv_cache/logical_block_manager.h"
 #include "tpu_raiden/kv_cache/pool_layout.h"
 #include "tpu_raiden/rpc/raiden_service.pb.h"
-#include "tpu_raiden/transport/block_transport.h"
-#include "tpu_raiden/transport/block_transport_delegate.h"
+#include "tpu_sync/transport/block_transport.h"
+#include "tpu_sync/transport/block_transport_delegate.h"
 
 namespace tpu_raiden {
 

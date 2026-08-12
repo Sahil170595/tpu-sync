@@ -43,6 +43,13 @@ permissions:
   contents: read
   pull-requests: write
 
+concurrency:
+  # Group by workflow name and branch to ensure runs execute sequentially.
+  # This prevents parallel postsubmit runs from clashing and ensures accurate 
+  # reporting history.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs: 
   run_benchmarks:
     name: Run Single Host Benchmarks

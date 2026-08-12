@@ -27,7 +27,7 @@
 # The only remaining requirement is that `import tpu_raiden` works -- which
 # is exactly what this file guarantees.
 #
-_raiden_ready() { python -c "import tpu_raiden.rpc.coordination_pb2" 2>/dev/null; }
+_raiden_ready() { python -c "import tpu_sync.rpc.coordination_pb2" 2>/dev/null; }
 
 if ! _raiden_ready; then
   export PYTHONPATH="${RAIDEN_ROOT}:${RAIDEN_ROOT}/bazel-bin:${PYTHONPATH:-}"

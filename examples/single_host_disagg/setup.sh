@@ -52,7 +52,7 @@ fi
 #   - wheel install: tpu_raiden (with bundled protos) is already importable, or
 #   - build-from-source: the engine .so exists in the source tree.
 # The run scripts resolve whichever is present at launch -- see raiden_env.sh.
-if ! python -c "import tpu_raiden.rpc.coordination_pb2" 2>/dev/null \
+if ! python -c "import tpu_sync.rpc.coordination_pb2" 2>/dev/null \
    && [ ! -f "${RAIDEN_ROOT}/tpu_raiden/frameworks/jax/_tpu_raiden_jax.so" ]; then
   echo "ERROR: tpu_raiden is not available. Install it via one of:" >&2
   echo "  - build from source: run \`./build.sh jax\` from the repo root, or" >&2

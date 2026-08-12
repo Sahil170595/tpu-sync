@@ -361,6 +361,17 @@ int main(int argc, char* argv[]) {
   int num_blocks = absl::GetFlag(FLAGS_num_blocks);
   int kNumIterations = absl::GetFlag(FLAGS_iterations);
 
+  // Dynamic cap on num_blocks so that total payload per interface per iteration <= 16 GiB
+  // Prevents very large block_size configurations from causing excessive OOMs or hangs.
+  constexpr int64_t kMaxBytesPerInterface = 16ULL * 1024 * 1024 * 1024;
+  int64_t bytes_per_block = static_cast<int64_t>(kNumLayers) * kNumShards * block_size;
+  int64_t total_bytes = static_cast<int64_t>(num_blocks) * bytes_per_block;
+  if (total_bytes > kMaxBytesPerInterface) {
+    num_blocks = std::max<int>(1, kMaxBytesPerInterface / bytes_per_block);
+    std::cout << "Auto-scaling num_blocks to " << num_blocks 
+              << " to constrain memory bandwidth payload per iteration to ~16 GiB." << std::endl;
+  }
+
   if (role != "sender" && role != "receiver") {
     std::cerr << "Error: --role must be either 'sender' or 'receiver'"
               << std::endl;
@@ -598,7 +609,8 @@ int main(int argc, char* argv[]) {
         for (int b = 0; b < num_blocks; ++b) {
           uint8_t* dst_ptr = receiver_base + dst_block_ids[b] * block_size;
           for (size_t i = 0; i < block_size; ++i) {
-            uint8_t expected = static_cast<uint8_t>((l + b + i + m) & 0xFF);
+            uint32_t seed = static_cast<uint32_t>(l + b + i + m);
+            uint8_t expected = static_cast<uint8_t>((seed * 0x9E3779B9) >> 24);
             if (dst_ptr[i] != expected) {
               std::cerr << "Data mismatch at manager " << m << ", layer " << l
                         << ", block " << b << ", byte " << i << ". Expected "
@@ -736,7 +748,8 @@ int main(int argc, char* argv[]) {
           for (int b = 0; b < num_blocks; ++b) {
             uint8_t* src_ptr = sender_base + src_block_ids[b] * block_size;
             for (size_t i = 0; i < block_size; ++i) {
-              src_ptr[i] = static_cast<uint8_t>((l + b + i + m_idx) & 0xFF);
+              uint32_t seed = static_cast<uint32_t>(l + b + i + m_idx);
+              src_ptr[i] = static_cast<uint8_t>((seed * 0x9E3779B9) >> 24);
             }
           }
         }
@@ -846,12 +859,13 @@ int main(int argc, char* argv[]) {
           if (!status_or.ok()) {
             std::cerr << "Iteration " << i << " failed on active manager " << m
                       << ": " << status_or.status() << std::endl;
-            return;
+            exit(1);
           }
           auto await_status = status_or.value().second.Await();
           if (!await_status.ok()) {
             std::cerr << "H2H Write Await failed on active manager " << m
                       << ": " << await_status << std::endl;
+            exit(1);
           }
         }));
       }

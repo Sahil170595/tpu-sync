@@ -13,6 +13,7 @@
 # limitations under the License.
 
 load("@rules_cc//cc:defs.bzl", "cc_library", "cc_test")
+load("@rules_python//python:defs.bzl", "py_library")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -320,5 +321,19 @@ cc_test(
         "@com_google_absl//absl/status:status_matchers",
         "@com_google_googletest//:gtest",
         "@com_google_googletest//:gtest_main",
+    ],
+)
+
+# Console-script launchers for the control-plane binaries bundled in the
+# tpu_raiden_torch wheel. The binaries ride along as data at their source
+# paths, so pip installs are sufficient to run the registry and the host
+# store node — see //ci/wheel:BUILD.bazel. (The orchestrator the launcher
+# originally also wrapped was deprecated upstream in ff56427.)
+py_library(
+    name = "binary_launcher",
+    srcs = ["binary_launcher.py"],
+    data = [
+        "//tpu_sync/kv_cache/global_registry:global_registry_server",
+        "//tpu_sync/store_node:kv_cache_host_store_node_main",
     ],
 )

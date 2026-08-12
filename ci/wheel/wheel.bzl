@@ -32,7 +32,13 @@
 
 load("@rules_python//python:packaging.bzl", "py_wheel")
 
-def raiden_framework_wheel(name, distribution, package, requires, version):
+def raiden_framework_wheel(
+        name,
+        distribution,
+        package,
+        requires,
+        version,
+        entry_points = {}):
     """A tpu_raiden wheel for a single framework (jax or torch).
 
     Args:
@@ -41,8 +47,11 @@ def raiden_framework_wheel(name, distribution, package, requires, version):
       package: the py_package target whose tpu_raiden files go in the wheel.
       requires: runtime dependency list for the wheel metadata.
       version: wheel version (typically @raiden_version//:WHEEL_VERSION).
+      entry_points: py_wheel entry_points dict, e.g.
+        {"console_scripts": ["name = module:func"]}.
     """
     py_wheel(
+        entry_points = entry_points,
         name = name,
         abi = "cp312",
         author = "TPU Raiden team",

@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-
 #ifndef THIRD_PARTY_TPU_RAIDEN_KV_CACHE_KV_CACHE_METADATA_SHM_H_
 #define THIRD_PARTY_TPU_RAIDEN_KV_CACHE_KV_CACHE_METADATA_SHM_H_
 

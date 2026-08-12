@@ -60,6 +60,7 @@ class ReshardService {
     // Injectable for replay/tests; defaults to the socket transport.
     FramedTransport* transport = nullptr;
     RequestBlockRegistry::Clock clock;  // defaults to steady_clock seconds
+    WorkerDelivery delivery = WorkerDelivery{};
   };
 
   explicit ReshardService(const Options& options);
@@ -92,10 +93,13 @@ class ReshardService {
   std::string HandleControllerCommand(
       const tpu_raiden::rpc::ControllerRequest& req);
   std::string HandleRaidenCommand(const std::string& request_bytes);
+  std::string HandleRaidenStartTransfer(
+      const tpu_raiden::rpc::ControlRequest& req);
 
   absl::Mutex state_mu_;  // the controller-wide lock (Python self._lock)
   std::unique_ptr<SocketFramedTransport> default_transport_;
   FramedTransport* transport_ = nullptr;  // injected or default
+  WorkerDelivery delivery_;
   std::unique_ptr<WorkUnitDirectory> directory_;
   std::unique_ptr<RequestBlockRegistry> registry_;
   std::unique_ptr<ReshardCoordinator> coordinator_;

@@ -279,6 +279,46 @@ absl::StatusOr<std::unique_ptr<KVCacheStore>> KVCacheStore::Create(
                               std::move(metadata), expected_worker_count);
 }
 
+absl::StatusOr<std::unique_ptr<KVCacheStore>> KVCacheStore::CreateReshardStore(
+    RaidenId raiden_id, absl::string_view store_server_ip,
+    int raiden_controller_port, absl::string_view raiden_orchestrator_address,
+    int reshard_service_port) {
+  if (store_server_ip.empty() || store_server_ip == "0.0.0.0" ||
+      store_server_ip == "::") {
+    return absl::InvalidArgumentError(
+        "store_server_ip must be a concrete IP (not empty or wildcard)");
+  }
+  // Construct a minimal thin store with dummy backend (capacity=1) so the
+  // store owns the RaidenController and can host ReshardService.
+  BackendConfig cfg;
+  cfg.type = "local_lru";
+  cfg.capacity = 1;
+  cfg.raiden_id = raiden_id;
+
+  // num_shards=1 gives the controller an initial partition; workers dynamically
+  // register their actual shard assignments via WorkerService.
+  ASSIGN_OR_RETURN(auto store,
+                   KVCacheStore::Create(
+                       cfg, /*capacity=*/1,
+                       /*global_registry_address=*/"", raiden_id,
+                       /*num_shards=*/1, /*shard_size_bytes=*/0,
+                       raiden_orchestrator_address, store_server_ip,
+                       raiden_controller_port,
+                       /*metadata=*/std::nullopt,
+                       /*expected_worker_count=*/0));
+
+  // Initialize ReshardService with WorkerDelivery::Mode::kController.
+  reshard::ReshardService::Options reshard_opts;
+  reshard_opts.port = reshard_service_port;
+  reshard_opts.delivery.mode = reshard::WorkerDelivery::Mode::kController;
+  reshard_opts.delivery.controller = store->raiden_controller_.get();
+
+  store->reshard_service_ =
+      std::make_unique<reshard::ReshardService>(reshard_opts);
+  RETURN_IF_ERROR(store->reshard_service_->StartServer());
+  return store;
+}
+
 KVCacheStore::KVCacheStore(ReshardSidecarTag) {}
 
 absl::StatusOr<std::unique_ptr<KVCacheStore>>

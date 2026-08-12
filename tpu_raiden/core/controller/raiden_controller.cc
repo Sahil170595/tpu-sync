@@ -29,6 +29,7 @@
 #include <utility>
 #include <vector>
 
+#include "absl/base/thread_annotations.h"
 #include "absl/cleanup/cleanup.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/log/log.h"
@@ -1117,6 +1118,32 @@ void RaidenController::PullAndRelease(
           }
         });
   });
+}
+
+tsl::Future<proto::TransferProgramResponse>
+RaidenController::SubmitTransferProgram(
+    absl::string_view worker_id,
+    const proto::TransferProgramRequest& request) {
+  auto fail = [](absl::Status status) {
+    auto [promise, future] =
+        tsl::MakePromise<proto::TransferProgramResponse>();
+    std::move(promise).ToShared()->Set(std::move(status));
+    return future;
+  };
+  absl::StatusOr<core::controller::WorkerRegistration> registration =
+      worker_registry_->GetWorker(worker_id);
+  if (!registration.ok()) {
+    return fail(absl::UnavailableError(absl::StrCat(
+        "SubmitTransferProgram: worker '", worker_id,
+        "' is not registered with this controller: ",
+        registration.status().message())));
+  }
+  if (registration->worker_service_client == nullptr) {
+    return fail(absl::UnavailableError(absl::StrCat(
+        "SubmitTransferProgram: worker '", worker_id,
+        "' has no WorkerService channel")));
+  }
+  return registration->worker_service_client->SubmitTransferProgram(request);
 }
 
 }  // namespace controller

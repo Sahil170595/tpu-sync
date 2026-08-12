@@ -63,6 +63,7 @@
 #include "third_party/protobuf/io/coded_stream.h"
 #include "third_party/protobuf/io/zero_copy_stream_impl_lite.h"
 #include "third_party/protobuf/util/message_differencer.h"
+#include "tpu_raiden/core/transfer_program_reshard.h"
 #include "tpu_raiden/kv_cache/reshard/framed_rpc.h"
 #include "tpu_raiden/kv_cache/reshard/reshard_service.h"
 #include "tpu_sync/rpc/raiden_service.pb.h"
@@ -71,6 +72,10 @@ ABSL_FLAG(std::string, log, "", "Recorded controller jsonl to replay.");
 ABSL_FLAG(std::string, peer_metadata_log, "",
           "Peer controller jsonl whose remote_metadata_in records check "
           "this side's GET_METADATA responses.");
+ABSL_FLAG(bool, program_roundtrip, true,
+          "Also compile each outbound StartTransferRequest to a "
+          "TransferProgram, lower it back, and assert compile o lower == "
+          "identity.");
 
 namespace {
 
@@ -345,6 +350,44 @@ int main(int argc, char** argv) {
                      addr.c_str(), i);
         ReportByteDiff(*expected, *actual);
         ++failures;
+      }
+      if (absl::GetFlag(FLAGS_program_roundtrip)) {
+        rpcpb::ControlRequest req;
+        if (req.ParseFromString(actual_list[i]) &&
+            req.has_start_transfer_request()) {
+          auto program =
+              tpu_raiden::core::CompileStartTransfer(req.start_transfer_request());
+          if (!program.ok()) {
+            std::fprintf(stderr,
+                         "FAIL: %s[%zu]: CompileStartTransfer failed: %s\n",
+                         addr.c_str(), i,
+                         program.status().ToString().c_str());
+            ++failures;
+          } else {
+            auto lowered = tpu_raiden::core::LowerToStartTransfer(*program);
+            if (!lowered.ok()) {
+              std::fprintf(stderr,
+                           "FAIL: %s[%zu]: LowerToStartTransfer failed: %s\n",
+                           addr.c_str(), i,
+                           lowered.status().ToString().c_str());
+              ++failures;
+            } else {
+              rpcpb::ControlRequest lowered_req;
+              lowered_req.set_command(req.command());
+              *lowered_req.mutable_peers() = req.peers();
+              *lowered_req.mutable_start_transfer_request() = *lowered;
+              auto lowered_canonical =
+                  CanonicalControlRequest(lowered_req.SerializeAsString());
+              if (!lowered_canonical.ok() || *lowered_canonical != *actual) {
+                std::fprintf(stderr,
+                             "FAIL: %s[%zu]: program roundtrip canonical bytes "
+                             "differ\n",
+                             addr.c_str(), i);
+                ++failures;
+              }
+            }
+          }
+        }
       }
     }
   }

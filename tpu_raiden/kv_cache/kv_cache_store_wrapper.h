@@ -48,6 +48,9 @@ class KVCacheStoreWrapper {
                                int raiden_controller_port = 0,
                                int expected_worker_count = 0);
 
+  explicit KVCacheStoreWrapper(std::unique_ptr<KVCacheStore> store)
+      : controller_(std::move(store)) {}
+
   KVCacheStore* operator->() { return controller_.get(); }
   KVCacheStore& operator*() { return *controller_; }
 

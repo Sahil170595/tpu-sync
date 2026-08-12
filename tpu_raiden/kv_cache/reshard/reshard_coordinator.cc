@@ -45,12 +45,16 @@
 #include "absl/synchronization/mutex.h"
 #include "absl/time/clock.h"
 #include "absl/time/time.h"
+#include "xla/tsl/concurrency/future.h"
+#include "tpu_raiden/core/controller/raiden_controller.h"
+#include "tpu_raiden/core/transfer_program_reshard.h"
 #include "tpu_raiden/kv_cache/raiden_id.h"
 #include "tpu_raiden/kv_cache/reshard/declaration_types.h"
 #include "tpu_raiden/kv_cache/reshard/framed_rpc.h"
 #include "tpu_raiden/kv_cache/reshard/pool_reshard_planner.h"
 #include "tpu_raiden/kv_cache/reshard/request_block_registry.h"
 #include "tpu_raiden/kv_cache/reshard/work_unit_directory.h"
+#include "tpu_sync/proto/transfer_program.pb.h"
 
 namespace tpu_raiden {
 namespace kv_cache {
@@ -115,41 +119,35 @@ absl::Status SendWorkerRpc(FramedTransport* transport,
 
 }  // namespace
 
-std::string EncodeStartTransfer(const PoolReshardPlan& plan,
-                                const RaidenId& target) {
-  tpu_raiden::rpc::ControlRequest req;
-  req.set_command(tpu_raiden::rpc::ControlRequest::COMMAND_START_TRANSFER);
-  // peers: the destination units' data endpoints (one dst, one endpoint).
-  req.add_peers(plan.dst_peer);
-
+tpu_raiden::rpc::StartTransferRequest BuildStartTransferForTarget(
+    const PoolReshardPlan& plan, const RaidenId& target) {
   const bool is_sender = std::find(plan.src_units.begin(), plan.src_units.end(),
                                    target) != plan.src_units.end();
-  tpu_raiden::rpc::StartTransferRequest* start_req =
-      req.mutable_start_transfer_request();
+  tpu_raiden::rpc::StartTransferRequest start_req;
   for (const RaidenId& unit : plan.src_units) {
-    *start_req->add_src_units() = RaidenIdToProto(unit);
+    *start_req.add_src_units() = RaidenIdToProto(unit);
   }
-  *start_req->add_dst_units() = RaidenIdToProto(plan.dst_unit);
-  start_req->set_uuid(plan.uuid);
-  start_req->set_is_sender(is_sender);
-  start_req->set_dst_mem_type(tpu_raiden::rpc::MEMORY_TYPE_HBM);
-  start_req->set_use_block_chunks(true);
-  start_req->set_expected_block_count(plan.expected_block_count);
-  start_req->set_req_id(plan.req_id);
+  *start_req.add_dst_units() = RaidenIdToProto(plan.dst_unit);
+  start_req.set_uuid(plan.uuid);
+  start_req.set_is_sender(is_sender);
+  start_req.set_dst_mem_type(tpu_raiden::rpc::MEMORY_TYPE_HBM);
+  start_req.set_use_block_chunks(true);
+  start_req.set_expected_block_count(plan.expected_block_count);
+  start_req.set_req_id(plan.req_id);
   for (int32_t index : plan.transfer_pool_indices) {
-    start_req->add_transfer_pool_indices(index);
+    start_req.add_transfer_pool_indices(index);
   }
   for (const std::string& tag : plan.pool_dtype_tags) {
-    start_req->add_pool_dtype_tags(tag);
+    start_req.add_pool_dtype_tags(tag);
   }
-  start_req->set_parallelism(plan.parallelism);
+  start_req.set_parallelism(plan.parallelism);
   // Python assigns transfer_plan.skip_d2h unconditionally, which marks the
   // optional field present even when false — mirror that for G1.
-  start_req->set_skip_d2h(plan.skip_d2h);
+  start_req.set_skip_d2h(plan.skip_d2h);
   // Pool plans leave skip_tiling empty: absent map on the wire.
 
   for (const PlanPoolGroup& group : plan.pool_groups) {
-    tpu_raiden::rpc::PoolGroupProto* group_proto = start_req->add_pool_groups();
+    tpu_raiden::rpc::PoolGroupProto* group_proto = start_req.add_pool_groups();
     for (int32_t index : group.pool_indices) {
       group_proto->add_pool_indices(index);
     }
@@ -200,7 +198,7 @@ std::string EncodeStartTransfer(const PoolReshardPlan& plan,
       if (filtered.empty()) continue;
       tpu_raiden::rpc::ShardPushScheduleProto schedule_proto;
       entries_to_proto(filtered, &schedule_proto);
-      (*start_req->mutable_shard_push_schedules())[key_it->second] =
+      (*start_req.mutable_shard_push_schedules())[key_it->second] =
           schedule_proto;
     }
   } else {
@@ -208,17 +206,32 @@ std::string EncodeStartTransfer(const PoolReshardPlan& plan,
     if (schedule_it != plan.schedules.end() && !schedule_it->second.empty()) {
       tpu_raiden::rpc::ShardPushScheduleProto schedule_proto;
       entries_to_proto(schedule_it->second, &schedule_proto);
-      (*start_req->mutable_shard_push_schedules())[0] = schedule_proto;
+      (*start_req.mutable_shard_push_schedules())[0] = schedule_proto;
     }
   }
 
+  return start_req;
+}
+
+std::string EncodeStartTransfer(const PoolReshardPlan& plan,
+                                const RaidenId& target) {
+  tpu_raiden::rpc::ControlRequest req;
+  req.set_command(tpu_raiden::rpc::ControlRequest::COMMAND_START_TRANSFER);
+  // peers: the destination units' data endpoints (one dst, one endpoint).
+  req.add_peers(plan.dst_peer);
+  *req.mutable_start_transfer_request() =
+      BuildStartTransferForTarget(plan, target);
   return req.SerializeAsString();
 }
 
 ReshardCoordinator::ReshardCoordinator(WorkUnitDirectory* directory,
                                        RequestBlockRegistry* registry,
-                                       FramedTransport* transport)
-    : directory_(directory), registry_(registry), transport_(transport) {}
+                                       FramedTransport* transport,
+                                       WorkerDelivery delivery)
+    : directory_(directory),
+      registry_(registry),
+      transport_(transport),
+      delivery_(delivery) {}
 
 absl::StatusOr<std::vector<tpu_raiden::rpc::RegisterWorkUnitRequest>>
 ReshardCoordinator::QueryRemoteMetadata(const std::string& address) {
@@ -375,7 +388,45 @@ absl::Status ReshardCoordinator::ExecutePoolReshard(
   // (Python gathers the same fan-out on its per-connection event loop).
   const int64_t sender_dispatch_ns = MonotonicNs();
   std::vector<absl::Status> sender_status(plan.src_units.size());
-  {
+  if (delivery_.mode == WorkerDelivery::Mode::kController) {
+    if (delivery_.controller == nullptr) {
+      registry_->AbandonClaim(args.req_id, uuid, claim_owner);
+      return absl::InternalError(
+          "WorkerDelivery::Mode::kController requires a non-null controller");
+    }
+    // Senders route via the local controller's persistent WorkerService
+    // channels. Workers are registered as "worker_<schedule_key>" (where
+    // schedule_key matches the shard_id the worker was initialized with).
+    std::vector<tsl::Future<proto::TransferProgramResponse>> futures;
+    futures.reserve(plan.src_units.size());
+    for (size_t i = 0; i < plan.src_units.size(); ++i) {
+      const RaidenId& unit = plan.src_units[i];
+      auto key_it = plan.src_schedule_keys.find(unit);
+      if (key_it == plan.src_schedule_keys.end()) {
+        sender_status[i] = absl::InternalError(absl::StrCat(
+            "No schedule key assigned for ", PythonRepr(unit)));
+        continue;
+      }
+      const std::string worker_id = absl::StrCat("worker_", key_it->second);
+      auto compiled =
+          core::CompileStartTransfer(BuildStartTransferForTarget(plan, unit));
+      if (!compiled.ok()) {
+        sender_status[i] = compiled.status();
+        continue;
+      }
+      futures.push_back(
+          delivery_.controller->SubmitTransferProgram(worker_id, *compiled));
+    }
+    for (size_t i = 0; i < futures.size(); ++i) {
+      auto resp = futures[i].Await();
+      if (!resp.ok()) {
+        sender_status[i] = resp.status();
+      } else if (!resp->success()) {
+        sender_status[i] = absl::InternalError(absl::StrCat(
+            "Raiden remote native execution failed: ", resp->message()));
+      }
+    }
+  } else {
     std::vector<std::thread> senders;
     senders.reserve(plan.src_units.size());
     for (size_t i = 0; i < plan.src_units.size(); ++i) {

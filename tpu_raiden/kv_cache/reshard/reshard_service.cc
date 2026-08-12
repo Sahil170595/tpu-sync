@@ -41,11 +41,14 @@
 #include "absl/strings/str_cat.h"
 #include "absl/synchronization/mutex.h"
 #include "absl/time/time.h"
+#include "tpu_raiden/core/controller/raiden_controller.h"
+#include "tpu_raiden/core/transfer_program_reshard.h"
 #include "tpu_raiden/kv_cache/reshard/declaration_types.h"
 #include "tpu_raiden/kv_cache/reshard/framed_rpc.h"
 #include "tpu_raiden/kv_cache/reshard/request_block_registry.h"
 #include "tpu_raiden/kv_cache/reshard/reshard_coordinator.h"
 #include "tpu_raiden/kv_cache/reshard/work_unit_directory.h"
+#include "tpu_sync/proto/transfer_program.pb.h"
 #include "tpu_sync/rpc/controller_service.pb.h"
 #include "tpu_sync/rpc/raiden_service.pb.h"
 
@@ -71,7 +74,7 @@ std::string StatusMessage(const absl::Status& status) {
 }  // namespace
 
 ReshardService::ReshardService(const Options& options)
-    : requested_port_(options.port) {
+    : delivery_(options.delivery), requested_port_(options.port) {
   FramedTransport* transport = options.transport;
   if (transport == nullptr) {
     default_transport_ = std::make_unique<SocketFramedTransport>();
@@ -84,7 +87,7 @@ ReshardService::ReshardService(const Options& options)
   registry_ = std::make_unique<RequestBlockRegistry>(
       directory_.get(), options.request_registry_ttl_s, std::move(clock));
   coordinator_ = std::make_unique<ReshardCoordinator>(
-      directory_.get(), registry_.get(), transport);
+      directory_.get(), registry_.get(), transport, delivery_);
 }
 
 ReshardService::~ReshardService() { StopServer(); }
@@ -381,6 +384,9 @@ std::string ReshardService::HandleRaidenCommand(
       }
       break;
     }
+    case rpcpb::ControlRequest::COMMAND_START_TRANSFER: {
+      return HandleRaidenStartTransfer(raiden_req);
+    }
     case rpcpb::ControlRequest::COMMAND_SHUTDOWN: {
       // Best-effort worker shutdown fan-out, then stop (the Python
       // controller's shutdown_workers + stop()).
@@ -407,6 +413,49 @@ std::string ReshardService::HandleRaidenCommand(
       break;
   }
   return raiden_resp.SerializeAsString();
+}
+
+std::string ReshardService::HandleRaidenStartTransfer(
+    const rpcpb::ControlRequest& req) {
+  rpcpb::ControlResponse resp;
+  resp.set_success(false);
+  if (delivery_.mode != WorkerDelivery::Mode::kController) {
+    // In framed mode, START_TRANSFER is a worker-side RPC; the framed
+    // controller is not the destination for it.
+    resp.set_message(
+        "START_TRANSFER is handled by worker listeners in framed mode");
+    return resp.SerializeAsString();
+  }
+  if (delivery_.controller == nullptr) {
+    resp.set_message("ReshardService has no RaidenController configured");
+    return resp.SerializeAsString();
+  }
+  const auto& start_req = req.start_transfer_request();
+  auto compiled = core::CompileStartTransfer(start_req);
+  if (!compiled.ok()) {
+    resp.set_message(StatusMessage(compiled.status()));
+    return resp.SerializeAsString();
+  }
+  // The receiver arm's destination unit names the worker to target.
+  // In single-host deployments this is worker_<transfer_rank> (defaulting
+  // to worker_0).
+  std::string worker_id = "worker_0";
+  if (start_req.dst_units_size() > 0) {
+    auto meta = directory_->LocalMetadata(
+        {RaidenIdFromProto(start_req.dst_units(0))});
+    if (meta.ok() && !meta->empty() && (*meta)[0].transfer_rank() >= 0) {
+      worker_id = absl::StrCat("worker_", (*meta)[0].transfer_rank());
+    }
+  }
+  auto submit_resp =
+      delivery_.controller->SubmitTransferProgram(worker_id, *compiled).Await();
+  if (!submit_resp.ok()) {
+    resp.set_message(StatusMessage(submit_resp.status()));
+    return resp.SerializeAsString();
+  }
+  resp.set_success(submit_resp->success());
+  resp.set_message(submit_resp->message());
+  return resp.SerializeAsString();
 }
 
 }  // namespace reshard

@@ -16,6 +16,7 @@ syntax = "proto3";
 
 package tpu_raiden.proto;
 
+import "tpu_sync/proto/transfer_program.proto";
 import "tpu_sync/rpc/raiden_service.proto";
 
 // Service providing a gRPC communication channel between Raiden Controller and
@@ -39,6 +40,19 @@ service WorkerService {
   // The transfer applies uniformly to all buffers, i.e., all shards across all
   // major dimensions (such as layers or blocks).
   rpc TransferBuffers(TransferBuffersRequest) returns (TransferBuffersResponse);
+
+  // Submits a uniform TransferProgram execution plan to this worker for
+  // asynchronous execution.
+  rpc SubmitTransferProgram(TransferProgramRequest)
+      returns (TransferProgramResponse);
+
+  // Polls the execution status of a previously submitted TransferProgram.
+  rpc PollTransfer(PollTransferRequest)
+      returns (PollTransferResponse);
+
+  // Aborts an in-flight TransferProgram on this worker.
+  rpc AbortTransfer(AbortTransferRequest)
+      returns (AbortTransferResponse);
 }
 
 // Transfer endpoint descriptor for worker sub-managers.

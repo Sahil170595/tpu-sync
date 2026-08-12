@@ -221,6 +221,14 @@ class RaidenController {
   absl::StatusOr<std::string> ResolvePeerController(
       const rpc::RaidenIdProto& peer_id);
 
+  // Forwards an opaque transfer program to the named registered worker over
+  // its persistent WorkerService channel. The controller does not interpret
+  // the program or hold reshard state; an unknown worker id or missing client
+  // resolves the future with an error status.
+  tsl::Future<proto::TransferProgramResponse> SubmitTransferProgram(
+      absl::string_view worker_id,
+      const proto::TransferProgramRequest& request);
+
   // Accessors for state inspection and testing.
   const rpc::RaidenIdProto& unit() const { return unit_; }
   kv_cache::LogicalBlockManager* block_manager() const {

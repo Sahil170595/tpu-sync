@@ -132,7 +132,10 @@ cc_library(
         ":pool_reshard_planner",
         ":request_block_registry",
         ":work_unit_directory",
+        "//tpu_raiden/core:transfer_program_reshard",
+        "//tpu_raiden/core/controller:raiden_controller",
         "//tpu_raiden/kv_cache:raiden_id",
+        "//tpu_sync/proto:transfer_program_cc_proto",
         "//tpu_sync/rpc:raiden_service_cc_proto",
         "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/random",
@@ -141,6 +144,7 @@ cc_library(
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/synchronization",
         "@com_google_absl//absl/time",
+        "@xla//xla/tsl/concurrency:future",
     ],
 )
 
@@ -156,6 +160,9 @@ cc_library(
         ":request_block_registry",
         ":reshard_coordinator",
         ":work_unit_directory",
+        "//tpu_raiden/core:transfer_program_reshard",
+        "//tpu_raiden/core/controller:raiden_controller",
+        "//tpu_sync/proto:transfer_program_cc_proto",
         "//tpu_sync/rpc:controller_service_cc_proto",
         "//tpu_sync/rpc:raiden_service_cc_proto",
         "@com_google_absl//absl/log",
@@ -190,6 +197,8 @@ cc_binary(
     deps = [
         ":framed_rpc",
         ":reshard_service",
+        "//tpu_raiden/core:transfer_program_reshard",
+        "//tpu_sync/proto:transfer_program_cc_proto",
         "//tpu_sync/rpc:raiden_service_cc_proto",
         "@com_google_absl//absl/flags:flag",
         "@com_google_absl//absl/flags:parse",

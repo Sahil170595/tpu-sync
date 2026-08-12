@@ -105,6 +105,18 @@ class KVCacheStore {
       std::optional<KVCacheMetadata> metadata = std::nullopt,
       int expected_worker_count = 0);
 
+  // Thin-store factory: hosts a RaidenController (expected_worker_count=0)
+  // and a ReshardService in WorkerDelivery::Mode::kController mode within a
+  // minimal KVCacheStore, eliminating the need for a separate sidecar
+  // binary. Workers register their WorkerService endpoints with the
+  // in-process controller; the coordinator dispatches reshard transfer
+  // programs over persistent gRPC channels directly to them.
+  static absl::StatusOr<std::unique_ptr<KVCacheStore>> CreateReshardStore(
+      RaidenId raiden_id, absl::string_view store_server_ip,
+      int raiden_controller_port = 0,
+      absl::string_view raiden_orchestrator_address = "",
+      int reshard_service_port = 0);
+
   // Flexible constructor accepting a custom root backend
   explicit KVCacheStore(std::shared_ptr<KVCacheStoreBackend> backend,
                         RaidenId raiden_id = {}, int num_shards = 0,

@@ -60,7 +60,7 @@ KVCacheStoreWrapper::KVCacheStoreWrapper(
     size_t lru_capacity, std::string global_registry_address,
     RaidenId raiden_id, int num_shards, int64_t shard_size_bytes,
     std::string store_server_ip, int raiden_controller_port,
-    int expected_worker_count) {
+    int expected_worker_count, std::string kv_pool_group) {
   std::optional<KVCacheMetadata> metadata;
   if (num_shards > 0) {
     std::string shm_key = MetadataShmKey();
@@ -86,6 +86,7 @@ KVCacheStoreWrapper::KVCacheStoreWrapper(
   BackendConfig config;
   config.type = "HostOffloadBackend";
   config.capacity = lru_capacity;
+  config.kv_pool_group = std::move(kv_pool_group);
   auto store_or = KVCacheStore::Create(
       config, /*capacity=*/lru_capacity, global_registry_address, raiden_id,
       num_shards, shard_size_bytes, store_server_ip, raiden_controller_port,

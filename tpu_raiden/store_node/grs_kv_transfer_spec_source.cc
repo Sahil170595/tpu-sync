@@ -30,13 +30,14 @@ namespace tpu_raiden {
 namespace store_node {
 
 GrsKVTransferSpecSource::GrsKVTransferSpecSource(
-    absl::string_view global_registry_address)
+    absl::string_view global_registry_address, absl::string_view kv_pool_group)
     : client_(grpc::CreateChannel(std::string(global_registry_address),
-                                  grpc::InsecureChannelCredentials())) {}
+                                  grpc::InsecureChannelCredentials())),
+      kv_pool_group_(kv_pool_group) {}
 
 absl::StatusOr<KVTransferSpec> GrsKVTransferSpecSource::Get() {
   ASSIGN_OR_RETURN(const kv_cache::global_registry::KVTransferSpec proto,
-                   client_.GetKVTransferSpec());
+                   client_.GetKVTransferSpec(kv_pool_group_));
   KVTransferSpec spec;
   spec.block_array_bytes.reserve(proto.block_arrays_size());
   for (const auto& array : proto.block_arrays()) {

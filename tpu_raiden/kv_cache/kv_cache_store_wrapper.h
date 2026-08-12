@@ -39,13 +39,11 @@ namespace kv_cache {
 // construction.
 class KVCacheStoreWrapper {
  public:
-  explicit KVCacheStoreWrapper(size_t lru_capacity,
-                               std::string global_registry_address = "",
-                               RaidenId raiden_id = {}, int num_shards = 0,
-                               int64_t shard_size_bytes = 0,
-                               std::string store_server_ip = "",
-                               int raiden_controller_port = 0,
-                               int expected_worker_count = 0);
+  explicit KVCacheStoreWrapper(
+      size_t lru_capacity, std::string global_registry_address = "",
+      RaidenId raiden_id = {}, int num_shards = 0, int64_t shard_size_bytes = 0,
+      std::string store_server_ip = "", int raiden_controller_port = 0,
+      int expected_worker_count = 0, std::string kv_pool_group = "");
 
   explicit KVCacheStoreWrapper(std::unique_ptr<KVCacheStore> store)
       : controller_(std::move(store)) {}

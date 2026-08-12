@@ -257,15 +257,16 @@ TEST(HostOffloadBackendTest, CreateRegistersKVTransferSpecFromConfig) {
   config.raiden_id = node_id;
   config.kv_transfer_spec = KVTransferSpecConfig{
       .block_array_bytes = {4096, 512}, .num_kv_shards = 2, .num_workers = 2};
+  config.kv_pool_group = "node_group";
 
   auto backend_or = HostOffloadBackend::Create(config, &controller);
   ASSERT_OK(backend_or.status());
 
-  // The registry now serves the registered spec.
+  // The registry now serves the registered spec under the configured group.
   auto channel =
       grpc::CreateChannel(server_address, grpc::InsecureChannelCredentials());
   global_registry::GlobalRegistryClient registry_client(channel);
-  auto spec = registry_client.GetKVTransferSpec();
+  auto spec = registry_client.GetKVTransferSpec("node_group");
   ASSERT_TRUE(spec.ok()) << spec.status();
   ASSERT_EQ(spec->block_arrays_size(), 2);
   EXPECT_EQ(spec->block_arrays(0).block_bytes(), 4096);

@@ -43,6 +43,7 @@ class KVCacheStore:
       store_server_ip: str,
       raiden_controller_port: int = 0,
       expected_worker_count: int = 0,
+      kv_pool_group: str = '',
   ) -> None: ...
 
   @property

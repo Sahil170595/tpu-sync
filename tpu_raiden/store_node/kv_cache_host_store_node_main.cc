@@ -67,6 +67,10 @@ ABSL_FLAG(std::string, global_registry_address, "",
           "GlobalRegistry host:port. Supplies the deployment's "
           "KVTransferSpec and is where this node publishes itself. "
           "Required.");
+ABSL_FLAG(std::string, kv_pool_group, "",
+          "KV pool group whose KVTransferSpec this node serves (the "
+          "serving hosts publish their spec under this name; see "
+          "global_registry.proto). Required.");
 // Capacity.
 ABSL_FLAG(size_t, dram_budget_bytes, 0,
           "Host DRAM lent to the pool, in bytes. Required.");
@@ -108,8 +112,13 @@ int Run() {
     LOG(ERROR) << "--global_registry_address is required";
     return 1;
   }
+  const std::string kv_pool_group = absl::GetFlag(FLAGS_kv_pool_group);
+  if (kv_pool_group.empty()) {
+    LOG(ERROR) << "--kv_pool_group is required";
+    return 1;
+  }
   GrsKVTransferSpecSource kv_transfer_spec_source(
-      options.global_registry_address);
+      options.global_registry_address, kv_pool_group);
 
   absl::StatusOr<std::unique_ptr<KVCacheHostStoreNode>> node =
       KVCacheHostStoreNode::Create(options, &kv_transfer_spec_source);

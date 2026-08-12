@@ -424,7 +424,7 @@ NB_MODULE(_tpu_raiden_jax, m) {
 
   nb::class_<tpu_raiden::kv_cache::KVCacheStoreWrapper>(m, "KVCacheStore")
       .def(nb::init<size_t, std::string, tpu_raiden::kv_cache::RaidenId, int,
-                    int64_t, std::string, int, int>(),
+                    int64_t, std::string, int, int, std::string>(),
            nb::arg("capacity"), nb::arg("global_registry_address") = "",
            nb::arg("raiden_id") = tpu_raiden::kv_cache::RaidenId(),
            // No defaults: every KVCacheStore has a controller and a
@@ -436,6 +436,10 @@ NB_MODULE(_tpu_raiden_jax, m) {
            // many workers have registered with the controller (times out and
            // throws after RAIDEN_EXPECTED_WORKERS_TIMEOUT_S, default 120s).
            nb::arg("expected_worker_count") = 0,
+           // KV pool group this store's KVTransferSpec is published under
+           // (see global_registry.proto); empty falls back to
+           // raiden_id.job_name.
+           nb::arg("kv_pool_group") = "",
            // Release the GIL during construction so concurrent in-process
            // Python threads (e.g., worker registration threads) can run and
            // avoid deadlocking on the expected_worker_count barrier.

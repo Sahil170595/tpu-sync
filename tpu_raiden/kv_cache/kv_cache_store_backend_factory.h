@@ -63,6 +63,9 @@ struct BackendConfig {
   std::vector<BackendConfig> sub_backends;
   absl::flat_hash_map<std::string, std::string> properties;
   std::optional<KVTransferSpecConfig> kv_transfer_spec = std::nullopt;
+  // KV pool group KVTransferSpecs are registered under (see
+  // global_registry.proto). Empty falls back to raiden_id.job_name.
+  std::string kv_pool_group;
 
   std::string GetProperty(absl::string_view key,
                           absl::string_view default_val = "") const;

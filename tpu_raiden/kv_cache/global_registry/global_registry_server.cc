@@ -452,6 +452,11 @@ grpc::Status GlobalRegistryServiceImpl::RegisterKVTransferSpec(
     response->set_error_message("spec cannot be empty");
     return grpc::Status::OK;
   }
+  if (request->kv_pool_group().empty()) {
+    response->set_success(false);
+    response->set_error_message("kv_pool_group cannot be empty");
+    return grpc::Status::OK;
+  }
   const std::string invalid = SpecValidationError(request->spec());
   if (!invalid.empty()) {
     response->set_success(false);
@@ -460,33 +465,41 @@ grpc::Status GlobalRegistryServiceImpl::RegisterKVTransferSpec(
   }
 
   absl::MutexLock lock(mutex_);
-  if (!transfer_spec_.has_value()) {
-    transfer_spec_ = request->spec();
+  auto [it, inserted] =
+      transfer_specs_.try_emplace(request->kv_pool_group(), request->spec());
+  if (inserted) {
     response->set_success(true);
     return grpc::Status::OK;
   }
-  const std::string diff = SpecDifference(*transfer_spec_, request->spec());
+  const std::string diff = SpecDifference(it->second, request->spec());
   if (diff.empty()) {
     // Identical republish: the idempotent restart path.
     response->set_success(true);
     return grpc::Status::OK;
   }
   response->set_success(false);
-  response->set_error_message(absl::StrCat("KVTransferSpec mismatch: ", diff));
-  *response->mutable_registered_spec() = *transfer_spec_;
+  response->set_error_message(
+      absl::StrCat("KVTransferSpec mismatch in kv_pool_group '",
+                   request->kv_pool_group(), "': ", diff));
+  *response->mutable_registered_spec() = it->second;
   return grpc::Status::OK;
 }
 
 grpc::Status GlobalRegistryServiceImpl::GetKVTransferSpec(
     grpc::ServerContext* context, const GetKVTransferSpecRequest* request,
     GetKVTransferSpecResponse* response) {
+  if (request->kv_pool_group().empty()) {
+    return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                        "kv_pool_group cannot be empty");
+  }
   absl::MutexLock lock(mutex_);
-  if (!transfer_spec_.has_value()) {
+  auto it = transfer_specs_.find(request->kv_pool_group());
+  if (it == transfer_specs_.end()) {
     response->set_found(false);
     return grpc::Status::OK;
   }
   response->set_found(true);
-  *response->mutable_spec() = *transfer_spec_;
+  *response->mutable_spec() = it->second;
   return grpc::Status::OK;
 }
 

@@ -62,7 +62,8 @@ class HostOffloadBackend : public KVCacheStoreBackend {
       RaidenId raiden_id = {},
       controller::RaidenController* raiden_controller = nullptr,
       std::shared_ptr<global_registry::GlobalRegistryClient> registry_client =
-          nullptr);
+          nullptr,
+      std::string kv_pool_group = "");
 
   ~HostOffloadBackend() override;
 
@@ -255,6 +256,9 @@ class HostOffloadBackend : public KVCacheStoreBackend {
   std::optional<KVCacheMetadata> metadata_ ABSL_GUARDED_BY(mutex_);
   uint64_t next_metadata_seq_ ABSL_GUARDED_BY(mutex_) = 0;
   RaidenId raiden_id_ ABSL_GUARDED_BY(mutex_);
+  // Set at construction, immutable afterwards; see
+  // BackendConfig.kv_pool_group.
+  const std::string kv_pool_group_;
   controller::RaidenController* raiden_controller_ = nullptr;
   absl::flat_hash_map<std::vector<std::string>, size_t> pending_eviction_counts_
       ABSL_GUARDED_BY(mutex_);

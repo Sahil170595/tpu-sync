@@ -4677,9 +4677,11 @@ TEST(KVCacheStoreTest, RegisterKVTransferSpecFromWorkersPublishesToRegistry) {
   ASSERT_NE(backend, nullptr);
   ASSERT_OK(backend->RegisterKVTransferSpecFromWorkers());
 
+  // No kv_pool_group was configured, so the publish fell back to the
+  // store's raiden_id.job_name as the group.
   global_registry::GlobalRegistryClient registry_client(grpc::CreateChannel(
       registry_address, grpc::InsecureChannelCredentials()));
-  auto spec_or = registry_client.GetKVTransferSpec();
+  auto spec_or = registry_client.GetKVTransferSpec("job");
   ASSERT_OK(spec_or.status());
   ASSERT_EQ(spec_or->block_arrays_size(), 2);
   EXPECT_EQ(spec_or->block_arrays(0).block_bytes(), 4096);

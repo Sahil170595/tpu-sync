@@ -257,6 +257,11 @@ message KVTransferSpec {
 
 message RegisterKVTransferSpecRequest {
   KVTransferSpec spec = 1;
+  // Group of raiden units sharing one KV transfer geometry. Specs are
+  // registered and validated per group, so differently-shaped groups (e.g.
+  // heterogeneous prefill and decode jobs) coexist in one registry.
+  // Must not be empty.
+  string kv_pool_group = 2;
 }
 
 message RegisterKVTransferSpecResponse {
@@ -267,7 +272,11 @@ message RegisterKVTransferSpecResponse {
   KVTransferSpec registered_spec = 3;
 }
 
-message GetKVTransferSpecRequest {}
+message GetKVTransferSpecRequest {
+  // The group whose spec to read (see RegisterKVTransferSpecRequest).
+  // Must not be empty.
+  string kv_pool_group = 1;
+}
 
 message GetKVTransferSpecResponse {
   // False when nothing has been published yet. The RPC itself returns OK:

@@ -334,11 +334,12 @@ TEST_F(KVCacheHostStoreNodeBootTest, BootsFromGrsPublishedSpec) {
   published.add_block_arrays()->set_block_bytes(256);
   published.set_num_kv_shards(1);
   published.set_num_workers(1);
-  ASSERT_TRUE(registry_client.RegisterKVTransferSpec(published).ok());
+  ASSERT_TRUE(
+      registry_client.RegisterKVTransferSpec(published, "prefill_pool").ok());
 
   KVCacheHostStoreNode::Options options = BootOptions();
   options.global_registry_address = registry_address;
-  GrsKVTransferSpecSource source(registry_address);
+  GrsKVTransferSpecSource source(registry_address, "prefill_pool");
   absl::StatusOr<std::unique_ptr<KVCacheHostStoreNode>> node =
       KVCacheHostStoreNode::Create(options, &source);
   ASSERT_TRUE(node.ok()) << node.status();

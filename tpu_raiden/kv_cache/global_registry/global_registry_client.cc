@@ -222,9 +222,10 @@ absl::Status GlobalRegistryClient::UnregisterStore(const RaidenId& raiden_id) {
 }
 
 absl::Status GlobalRegistryClient::RegisterKVTransferSpec(
-    const KVTransferSpec& spec) {
+    const KVTransferSpec& spec, absl::string_view kv_pool_group) {
   RegisterKVTransferSpecRequest request;
   *request.mutable_spec() = spec;
+  request.set_kv_pool_group(std::string(kv_pool_group));
 
   RegisterKVTransferSpecResponse response;
   grpc::ClientContext context;
@@ -243,8 +244,10 @@ absl::Status GlobalRegistryClient::RegisterKVTransferSpec(
   return absl::OkStatus();
 }
 
-absl::StatusOr<KVTransferSpec> GlobalRegistryClient::GetKVTransferSpec() {
+absl::StatusOr<KVTransferSpec> GlobalRegistryClient::GetKVTransferSpec(
+    absl::string_view kv_pool_group) {
   GetKVTransferSpecRequest request;
+  request.set_kv_pool_group(std::string(kv_pool_group));
 
   GetKVTransferSpecResponse response;
   grpc::ClientContext context;

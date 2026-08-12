@@ -22,6 +22,7 @@
 #include <gtest/gtest.h>
 #include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
+#include "absl/strings/string_view.h"
 #include "grpcpp/create_channel.h"
 #include "grpcpp/security/credentials.h"
 #include "grpcpp/security/server_credentials.h"
@@ -53,11 +54,12 @@ class GrsKVTransferSpecSourceTest : public ::testing::Test {
 
   void TearDown() override { server_->Shutdown(); }
 
-  // Publishes a spec the way a serving host will.
-  void Publish(const gr::KVTransferSpec& spec) {
+  // Publishes a spec under `kv_pool_group` the way a serving host will.
+  void Publish(const gr::KVTransferSpec& spec,
+               absl::string_view kv_pool_group = "prefill_pool") {
     gr::GlobalRegistryClient client(grpc::CreateChannel(
         address_, grpc::InsecureChannelCredentials()));
-    ASSERT_TRUE(client.RegisterKVTransferSpec(spec).ok());
+    ASSERT_TRUE(client.RegisterKVTransferSpec(spec, kv_pool_group).ok());
   }
 
   std::unique_ptr<gr::GlobalRegistryServiceImpl> service_;
@@ -67,7 +69,7 @@ class GrsKVTransferSpecSourceTest : public ::testing::Test {
 };
 
 TEST_F(GrsKVTransferSpecSourceTest, NotFoundBeforePublish) {
-  GrsKVTransferSpecSource source(address_);
+  GrsKVTransferSpecSource source(address_, "prefill_pool");
   EXPECT_TRUE(absl::IsNotFound(source.Get().status()));
 }
 
@@ -79,7 +81,7 @@ TEST_F(GrsKVTransferSpecSourceTest, RoundTripsPublishedSpec) {
   proto.set_num_workers(1);
   Publish(proto);
 
-  GrsKVTransferSpecSource source(address_);
+  GrsKVTransferSpecSource source(address_, "prefill_pool");
   absl::StatusOr<KVTransferSpec> spec = source.Get();
   ASSERT_TRUE(spec.ok()) << spec.status();
   EXPECT_EQ(spec->block_array_bytes, (std::vector<uint64_t>{4096, 512}));
@@ -87,9 +89,23 @@ TEST_F(GrsKVTransferSpecSourceTest, RoundTripsPublishedSpec) {
   EXPECT_EQ(spec->num_workers, 1u);
 }
 
+TEST_F(GrsKVTransferSpecSourceTest, OtherGroupsSpecIsNotFound) {
+  gr::KVTransferSpec proto;
+  proto.add_block_arrays()->set_block_bytes(4096);
+  proto.set_num_kv_shards(2);
+  proto.set_num_workers(1);
+  Publish(proto, "decode_pool");
+
+  // The node follows its configured group only; another group's spec is
+  // invisible, so the source keeps reporting NotFound (and WaitForSpec keeps
+  // waiting).
+  GrsKVTransferSpecSource source(address_, "prefill_pool");
+  EXPECT_TRUE(absl::IsNotFound(source.Get().status()));
+}
+
 TEST_F(GrsKVTransferSpecSourceTest, UnavailableWhenRegistryUnreachable) {
   server_->Shutdown();
-  GrsKVTransferSpecSource source(address_);
+  GrsKVTransferSpecSource source(address_, "prefill_pool");
   EXPECT_TRUE(absl::IsUnavailable(source.Get().status()));
 }
 

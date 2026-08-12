@@ -86,10 +86,12 @@ BuildLocalWorkerEndpoints(controller::RaidenController* ctrl) {
 HostOffloadBackend::HostOffloadBackend(
     size_t capacity, std::optional<KVCacheMetadata> metadata,
     RaidenId raiden_id, controller::RaidenController* raiden_controller,
-    std::shared_ptr<global_registry::GlobalRegistryClient> registry_client)
+    std::shared_ptr<global_registry::GlobalRegistryClient> registry_client,
+    std::string kv_pool_group)
     : lru_cache_(capacity),
       metadata_(std::move(metadata)),
       raiden_id_(std::move(raiden_id)),
+      kv_pool_group_(std::move(kv_pool_group)),
       raiden_controller_(raiden_controller),
       registry_client_(std::move(registry_client)) {}
 
@@ -123,7 +125,7 @@ absl::StatusOr<std::shared_ptr<KVCacheStoreBackend>> HostOffloadBackend::Create(
   // a registry exists at all.
   auto backend = std::make_shared<HostOffloadBackend>(
       config.capacity, config.metadata, config.raiden_id, controller,
-      std::move(registry_client));
+      std::move(registry_client), config.kv_pool_group);
   if (config.kv_transfer_spec.has_value()) {
     RETURN_IF_ERROR(backend->RegisterKVTransferSpec(*config.kv_transfer_spec));
   }
@@ -1177,14 +1179,23 @@ absl::Status HostOffloadBackend::RegisterKVTransferSpecFromWorkers() {
 absl::Status HostOffloadBackend::RegisterKVTransferSpec(
     const KVTransferSpecConfig& spec_config) {
   std::shared_ptr<global_registry::GlobalRegistryClient> registry_client;
+  std::string kv_pool_group = kv_pool_group_;
   {
     absl::MutexLock lock(mutex_);
     registry_client = registry_client_;
+    if (kv_pool_group.empty()) {
+      kv_pool_group = raiden_id_.job_name;
+    }
   }
   if (registry_client == nullptr) {
     return absl::FailedPreconditionError(
         "HostOffloadBackend has no global registry configured; cannot "
         "register a KVTransferSpec.");
+  }
+  if (kv_pool_group.empty()) {
+    return absl::FailedPreconditionError(
+        "no KV pool group to register the KVTransferSpec under: set "
+        "BackendConfig.kv_pool_group or a raiden_id with a job_name.");
   }
   global_registry::KVTransferSpec spec;
   for (uint64_t bytes : spec_config.block_array_bytes) {
@@ -1192,7 +1203,7 @@ absl::Status HostOffloadBackend::RegisterKVTransferSpec(
   }
   spec.set_num_kv_shards(static_cast<int32_t>(spec_config.num_kv_shards));
   spec.set_num_workers(static_cast<int32_t>(spec_config.num_workers));
-  return registry_client->RegisterKVTransferSpec(spec);
+  return registry_client->RegisterKVTransferSpec(spec, kv_pool_group);
 }
 
 void HostOffloadBackend::SetMetadataEntry(absl::string_view hash,

@@ -20,7 +20,6 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
-#include <optional>
 #include <string>
 #include <thread>  // NOLINT
 
@@ -154,11 +153,12 @@ class GlobalRegistryServiceImpl final : public GlobalRegistryService::Service {
   absl::flat_hash_map<RaidenId, StoreRecord, RaidenIdHash> store_registry_
       ABSL_GUARDED_BY(mutex_);
 
-  // The deployment's KVTransferSpec, set by the first successful
-  // RegisterKVTransferSpec and immutable afterwards (later calls only
-  // validate against it). Never expires: the spec is deployment geometry,
-  // not liveness information.
-  std::optional<KVTransferSpec> transfer_spec_ ABSL_GUARDED_BY(mutex_);
+  // KVTransferSpecs by KV pool group, each set by the group's first
+  // successful RegisterKVTransferSpec and immutable afterwards (later calls
+  // only validate against it). Never expire: a spec is group geometry, not
+  // liveness information.
+  absl::flat_hash_map<std::string, KVTransferSpec> transfer_specs_
+      ABSL_GUARDED_BY(mutex_);
 
   std::atomic<bool> shutdown_{false};
   std::thread cleanup_thread_;

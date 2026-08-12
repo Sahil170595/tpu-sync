@@ -261,7 +261,8 @@ class KVCacheStore {
   absl::Status Load(absl::Span<const std::string> block_hashes,
                     absl::Span<const int> device_block_ids);
 
-  // Overload accepting pre-looked up RaidenBlockID slices.
+  // Loads blocks using pre-looked up RaidenBlockID slices, avoiding internal
+  // index lookups.
   // NOTE: Blocks in `slices` are assumed to be already pinned externally.
   absl::Status Load(absl::Span<const std::string> block_hashes,
                     absl::Span<const RaidenBlockID> slices,
@@ -426,22 +427,16 @@ class KVCacheStore {
   absl::StatusOr<size_t> RecoverFromLocalManifest();
 
  private:
-  // Tag selecting the constructor overload below that does NOT auto-wire the
-  // controller (SetRaidenController) or FATAL on failure -- used exclusively
-  // by Create(), which does that wiring itself afterward so a publish failure
-  // can return a Status instead of aborting the process. The public
-  // constructor with the same parameters delegates to this one and then
-  // wires+FATALs, for direct (non-Create()) callers.
-  struct CreateTag {};
   // Tag for the W1 reshard-only construction (no backends, no wiring).
   struct ReshardSidecarTag {};
   explicit KVCacheStore(ReshardSidecarTag);
-  KVCacheStore(std::vector<std::shared_ptr<KVCacheStoreBackend>> backends,
-               RaidenId raiden_id, int num_shards, int64_t shard_size_bytes,
-               absl::string_view raiden_orchestrator_address,
-               absl::string_view store_server_ip, int raiden_controller_port,
-               absl::string_view global_registry_address,
-               int expected_worker_count, CreateTag);
+
+  explicit KVCacheStore(
+      std::vector<std::shared_ptr<KVCacheStoreBackend>> backends,
+      RaidenId raiden_id,
+      std::unique_ptr<controller::RaidenController> raiden_controller,
+      absl::string_view store_server_ip = "",
+      absl::string_view global_registry_address = "");
 
   // Registers ValidateAndPinHostBlocks/UnpinHostBlocks as ReadRemote step-6a
   // hooks on raiden_controller_ (no-op if there is no controller).

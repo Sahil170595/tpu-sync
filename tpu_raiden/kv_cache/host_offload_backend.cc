@@ -58,12 +58,10 @@ namespace kv_cache {
 
 namespace {
 
-using LRUCache = LRUCache<std::string, RaidenBlockID>;
-
 std::vector<::tpu_raiden::proto::RaidenWorkerEndpointsProto>
 BuildLocalWorkerEndpoints(controller::RaidenController* ctrl) {
   std::vector<::tpu_raiden::proto::RaidenWorkerEndpointsProto> result;
-  if (ctrl == nullptr || ctrl->worker_registry() == nullptr) {
+  if (ctrl->worker_registry() == nullptr) {
     return result;
   }
   const auto& registered_workers = ctrl->worker_registry()->GetRegisteredWorkers();
@@ -102,33 +100,15 @@ HostOffloadBackend::~HostOffloadBackend() {
 }
 
 absl::StatusOr<std::shared_ptr<KVCacheStoreBackend>> HostOffloadBackend::Create(
-    const BackendConfig& config) {
-  if (config.capacity == 0) {
-    return absl::InvalidArgumentError(
-        "HostOffloadBackend requires capacity > 0");
-  }
-  std::shared_ptr<global_registry::GlobalRegistryClient> registry_client;
-  if (!config.global_registry_address.empty()) {
-    auto channel = grpc::CreateChannel(config.global_registry_address,
-                                       grpc::InsecureChannelCredentials());
-    registry_client = std::make_shared<
-        ::tpu_raiden::kv_cache::global_registry::GlobalRegistryClient>(channel);
-  }
-  auto backend = std::make_shared<HostOffloadBackend>(
-      config.capacity, config.metadata, config.raiden_id,
-      /*raiden_controller=*/nullptr, std::move(registry_client));
-  if (config.kv_transfer_spec.has_value()) {
-    RETURN_IF_ERROR(backend->RegisterKVTransferSpec(*config.kv_transfer_spec));
-  }
-  return backend;
-}
-
-absl::StatusOr<std::shared_ptr<KVCacheStoreBackend>> HostOffloadBackend::Create(
     const BackendConfig& config,
     controller::RaidenController* absl_nonnull controller) {
   if (config.capacity == 0) {
     return absl::InvalidArgumentError(
         "HostOffloadBackend requires capacity > 0");
+  }
+  if (controller == nullptr) {
+    return absl::InvalidArgumentError(
+        "HostOffloadBackend requires a non-null RaidenController");
   }
   std::shared_ptr<global_registry::GlobalRegistryClient> registry_client;
   if (!config.global_registry_address.empty()) {
@@ -151,15 +131,6 @@ absl::StatusOr<std::shared_ptr<KVCacheStoreBackend>> HostOffloadBackend::Create(
 }
 
 absl::Status HostOffloadBackend::StartServer(absl::string_view server_address) {
-  controller::RaidenController* ctrl = nullptr;
-  {
-    absl::MutexLock lock(mutex_);
-    ctrl = raiden_controller_;
-  }
-  if (ctrl == nullptr) {
-    return absl::FailedPreconditionError(
-        "Cannot start KVCacheStoreServer without a RaidenController.");
-  }
   if (server_address.empty() || server_address == "[::]" ||
       server_address == "::" || server_address == "0.0.0.0" ||
       server_address == "0:0:0:0:0:0:0:0") {
@@ -173,7 +144,7 @@ absl::Status HostOffloadBackend::StartServer(absl::string_view server_address) {
     server_ = KVCacheStoreServer::Create();
   }
 
-  return server_->StartServer(this, ctrl, server_address);
+  return server_->StartServer(this, raiden_controller_, server_address);
 }
 
 absl::StatusOr<BlockSliceList> HostOffloadBackend::Lookup(
@@ -602,17 +573,15 @@ absl::StatusOr<size_t> HostOffloadBackend::RecoverFromLocalManifest() {
             [](const KVCacheMetadata::Entry* a,
                const KVCacheMetadata::Entry* b) { return a->seq < b->seq; });
 
-  if (raiden_controller_ != nullptr) {
-    std::vector<int> block_ids;
-    block_ids.reserve(recoverable.size());
-    for (const KVCacheMetadata::Entry* entry : recoverable) {
-      block_ids.push_back(entry->block_id);
-    }
-    absl::Status allocate_status =
-        raiden_controller_->AllocateTargetBlockIds(block_ids);
-    if (!allocate_status.ok()) {
-      return allocate_status;
-    }
+  std::vector<int> block_ids;
+  block_ids.reserve(recoverable.size());
+  for (const KVCacheMetadata::Entry* entry : recoverable) {
+    block_ids.push_back(entry->block_id);
+  }
+  absl::Status allocate_status =
+      raiden_controller_->AllocateTargetBlockIds(block_ids);
+  if (!allocate_status.ok()) {
+    return allocate_status;
   }
 
   uint64_t max_seq = 0;
@@ -711,12 +680,6 @@ std::vector<std::string> HostOffloadBackend::GetEvictCandidateKeys() const {
   return lru_cache_.GetEvictCandidateKeys();
 }
 
-void HostOffloadBackend::SetRaidenController(
-    controller::RaidenController* controller) {
-  absl::MutexLock lock(mutex_);
-  raiden_controller_ = controller;
-}
-
 KVCacheStoreServer* HostOffloadBackend::store_server() const {
   absl::MutexLock lock(mutex_);
   return server_.get();
@@ -778,16 +741,6 @@ HostOffloadBackend::BeginWriteRemote(
         "src_host_block_ids must have one entry per block hash");
   }
 
-  controller::RaidenController* ctrl = nullptr;
-  {
-    absl::MutexLock lock(mutex_);
-    ctrl = raiden_controller_;
-  }
-  if (ctrl == nullptr) {
-    return absl::FailedPreconditionError(
-        "RaidenController is null; cannot describe this node's data plane");
-  }
-
   // This resolves the peer through the global registry, and its own
   // FailedPrecondition ("No global registry client") IS the registry
   // precondition for the whole feature -- there is no separate check.
@@ -796,8 +749,9 @@ HostOffloadBackend::BeginWriteRemote(
 
   auto response_or =
       client
-          ->WriteRemote(ctrl->unit(), block_hashes, src_host_block_ids,
-                        BuildLocalWorkerEndpoints(ctrl),
+          ->WriteRemote(raiden_controller_->unit(), block_hashes,
+                        src_host_block_ids,
+                        BuildLocalWorkerEndpoints(raiden_controller_),
                         absl::ToInt64Milliseconds(requested_deadline))
           .Await();
   if (!response_or.ok()) {
@@ -947,7 +901,6 @@ bool HostOffloadBackend::InsertAllOrNothing(
 void HostOffloadBackend::RollbackInsert(
     absl::Span<const std::string> block_hashes,
     absl::Span<const int32_t> host_block_ids) {
-  controller::RaidenController* ctrl = nullptr;
   {
     absl::MutexLock lock(mutex_);
     for (const auto& hash : block_hashes) {
@@ -957,12 +910,11 @@ void HostOffloadBackend::RollbackInsert(
       }
       lru_cache_.Erase(hash);
     }
-    ctrl = raiden_controller_;
   }
   // Erasing an entry does NOT return its block to the pool. Without this a
   // failed registration leaks every landing block it touched.
-  if (ctrl != nullptr && !host_block_ids.empty()) {
-    (void)ctrl->DeallocateBlockIds(
+  if (!host_block_ids.empty()) {
+    (void)raiden_controller_->DeallocateBlockIds(
         std::vector<int>(host_block_ids.begin(), host_block_ids.end()));
   }
 }
@@ -1015,46 +967,29 @@ tsl::Future<> HostOffloadBackend::Load(
         ") vs block_hashes count (", block_hashes.size(), ").")));
   }
 
-  controller::RaidenController* ctrl = nullptr;
   bool is_remote = false;
   {
     absl::MutexLock lock(mutex_);
-    ctrl = raiden_controller_;
     is_remote = !remote_id.empty() && remote_id != raiden_id_;
-  }
-
-  if (ctrl == nullptr) {
-    return tsl::Future<>(
-        absl::FailedPreconditionError("RaidenController is null"));
   }
 
   if (is_remote) {
     return LoadRemoteBlocks(remote_id, block_hashes, device_block_ids);
   }
-
   return LoadLocalHostBlocks(block_hashes, device_block_ids, slices);
 }
 
 tsl::Future<> HostOffloadBackend::LoadRemoteBlocks(
     const RaidenId& remote_id, absl::Span<const std::string> block_hashes,
     absl::Span<const int32_t> device_block_ids) {
-  controller::RaidenController* ctrl = nullptr;
-  {
-    absl::MutexLock lock(mutex_);
-    ctrl = raiden_controller_;
-  }
-  if (ctrl == nullptr) {
-    return tsl::Future<>(
-        absl::FailedPreconditionError("RaidenController is null"));
-  }
-
   auto client_or = GetKVCacheStoreClient(remote_id);
   if (!client_or.ok()) {
     return tsl::Future<>(client_or.status());
   }
   std::shared_ptr<KVCacheStoreClient> client = std::move(client_or.value());
 
-  auto host_blocks_or = ctrl->AllocateBlockIds(block_hashes.size());
+  auto host_blocks_or =
+      raiden_controller_->AllocateBlockIds(block_hashes.size());
   if (!host_blocks_or.ok()) {
     return tsl::Future<>(host_blocks_or.status());
   }
@@ -1063,9 +998,9 @@ tsl::Future<> HostOffloadBackend::LoadRemoteBlocks(
 
   auto [load_promise, load_future] = tsl::MakePromise<>();
 
-  tpu_raiden::rpc::RaidenIdProto client_raiden_id = ctrl->unit();
+  tpu_raiden::rpc::RaidenIdProto client_raiden_id = raiden_controller_->unit();
   std::vector<::tpu_raiden::proto::RaidenWorkerEndpointsProto>
-      client_worker_endpoints = BuildLocalWorkerEndpoints(ctrl);
+      client_worker_endpoints = BuildLocalWorkerEndpoints(raiden_controller_);
   tsl::Future<proto::FetchResponse> fetch_future =
       client->Fetch(block_hashes, device_block_ids, dst_host_block_ids,
                     client_raiden_id, client_worker_endpoints);
@@ -1076,15 +1011,8 @@ tsl::Future<> HostOffloadBackend::LoadRemoteBlocks(
                                           device_block_ids.end()),
        load_promise = std::move(load_promise)](
           const absl::StatusOr<proto::FetchResponse>& response_or) mutable {
-        controller::RaidenController* ctrl_cb = nullptr;
-        {
-          absl::MutexLock lock(mutex_);
-          ctrl_cb = raiden_controller_;
-        }
         if (!response_or.ok()) {
-          if (ctrl_cb) {
-            (void)ctrl_cb->DeallocateBlockIds(dst_host_block_ids);
-          }
+          (void)raiden_controller_->DeallocateBlockIds(dst_host_block_ids);
           // The peer may have restarted on a new port; drop the cached client
           // so the next attempt re-resolves instead of redialling a dead one.
           InvalidateStoreClient(remote_id);
@@ -1094,9 +1022,7 @@ tsl::Future<> HostOffloadBackend::LoadRemoteBlocks(
 
         const auto& response = response_or.value();
         if (!response.failed_block_hashes().empty()) {
-          if (ctrl_cb) {
-            (void)ctrl_cb->DeallocateBlockIds(dst_host_block_ids);
-          }
+          (void)raiden_controller_->DeallocateBlockIds(dst_host_block_ids);
           std::string err_msg = response.error_message().empty()
                                     ? "Fetch RPC returned failed blocks"
                                     : response.error_message();
@@ -1105,9 +1031,7 @@ tsl::Future<> HostOffloadBackend::LoadRemoteBlocks(
         }
 
         if (dev_ids_vec.empty()) {
-          if (ctrl_cb) {
-            (void)ctrl_cb->DeallocateBlockIds(dst_host_block_ids);
-          }
+          (void)raiden_controller_->DeallocateBlockIds(dst_host_block_ids);
           load_promise.Set(absl::OkStatus());
           return;
         }
@@ -1126,26 +1050,13 @@ tsl::Future<> HostOffloadBackend::LoadRemoteBlocks(
                                    rpc::MEMORY_TYPE_HBM);
         }
 
-        if (!ctrl_cb) {
-          load_promise.Set(
-              absl::FailedPreconditionError("RaidenController is null"));
-          return;
-        }
-
         tsl::Future<> h2d_future =
-            ctrl_cb->TransferBuffers(src_buffers, dst_buffers);
+            raiden_controller_->TransferBuffers(src_buffers, dst_buffers);
 
         h2d_future.OnReady(
             [this, dst_host_block_ids, load_promise = std::move(load_promise)](
                 absl::Status status) mutable {
-              controller::RaidenController* ctrl_h2d = nullptr;
-              {
-                absl::MutexLock lock(mutex_);
-                ctrl_h2d = raiden_controller_;
-              }
-              if (ctrl_h2d) {
-                (void)ctrl_h2d->DeallocateBlockIds(dst_host_block_ids);
-              }
+              (void)raiden_controller_->DeallocateBlockIds(dst_host_block_ids);
               load_promise.Set(status);
             });
       });
@@ -1206,17 +1117,7 @@ tsl::Future<> HostOffloadBackend::LoadLocalHostBlocks(
                              rpc::MEMORY_TYPE_HBM);
   }
 
-  controller::RaidenController* ctrl = nullptr;
-  {
-    absl::MutexLock lock(mutex_);
-    ctrl = raiden_controller_;
-  }
-  if (ctrl == nullptr) {
-    return tsl::Future<>(
-        absl::FailedPreconditionError("RaidenController is null"));
-  }
-
-  return ctrl->TransferBuffers(src_buffers, dst_buffers);
+  return raiden_controller_->TransferBuffers(src_buffers, dst_buffers);
 }
 
 absl::StatusOr<KVTransferSpecConfig> HostOffloadBackend::ComposeKVTransferSpec(
@@ -1261,19 +1162,15 @@ absl::StatusOr<KVTransferSpecConfig> HostOffloadBackend::ComposeKVTransferSpec(
 }
 
 absl::Status HostOffloadBackend::RegisterKVTransferSpecFromWorkers() {
-  controller::RaidenController* ctrl = nullptr;
-  {
-    absl::MutexLock lock(mutex_);
-    ctrl = raiden_controller_;
-  }
-  if (ctrl == nullptr || ctrl->worker_registry() == nullptr) {
+  if (raiden_controller_->worker_registry() == nullptr) {
     return absl::FailedPreconditionError(
         "HostOffloadBackend has no RaidenController; there are no worker "
         "registrations to derive a KVTransferSpec from.");
   }
   ASSIGN_OR_RETURN(
       const KVTransferSpecConfig spec,
-      ComposeKVTransferSpec(ctrl->worker_registry()->GetRegisteredWorkers()));
+      ComposeKVTransferSpec(
+          raiden_controller_->worker_registry()->GetRegisteredWorkers()));
   return RegisterKVTransferSpec(spec);
 }
 
@@ -1343,5 +1240,6 @@ REGISTER_KV_CACHE_STORE_BACKEND(
     "HostOffloadBackend",
     static_cast<absl::StatusOr<
         std::shared_ptr<::tpu_raiden::kv_cache::KVCacheStoreBackend>> (*)(
-        const ::tpu_raiden::kv_cache::BackendConfig&)>(
+        const ::tpu_raiden::kv_cache::BackendConfig&,
+        ::tpu_raiden::controller::RaidenController*)>(
         ::tpu_raiden::kv_cache::HostOffloadBackend::Create));

@@ -104,7 +104,9 @@ absl::Status KVCacheStoreBackendFactory::RegisterBackend(
 }
 
 absl::StatusOr<std::shared_ptr<KVCacheStoreBackend>>
-KVCacheStoreBackendFactory::CreateBackend(const BackendConfig& config) const {
+KVCacheStoreBackendFactory::CreateBackend(
+    const BackendConfig& config,
+    controller::RaidenController* controller) const {
   BackendCreator creator;
   {
     absl::MutexLock lock(&mutex_);
@@ -118,7 +120,7 @@ KVCacheStoreBackendFactory::CreateBackend(const BackendConfig& config) const {
   }
   // Execute creator OUTSIDE the lock to ensure thread safety and avoid
   // deadlock during recursive instantiation of sub-backends.
-  return creator(config);
+  return creator(config, controller);
 }
 
 bool KVCacheStoreBackendFactory::IsRegistered(

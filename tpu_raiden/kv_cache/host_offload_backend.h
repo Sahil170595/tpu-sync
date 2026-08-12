@@ -54,8 +54,6 @@ namespace kv_cache {
 class HostOffloadBackend : public KVCacheStoreBackend {
  public:
   static absl::StatusOr<std::shared_ptr<KVCacheStoreBackend>> Create(
-      const BackendConfig& config);
-  static absl::StatusOr<std::shared_ptr<KVCacheStoreBackend>> Create(
       const BackendConfig& config,
       controller::RaidenController* absl_nonnull controller);
 
@@ -108,12 +106,6 @@ class HostOffloadBackend : public KVCacheStoreBackend {
   std::vector<int> Evict(const std::vector<std::string>& block_hashes) override;
 
   std::vector<std::string> GetEvictCandidateKeys() const override;
-
-  void SetRaidenController(controller::RaidenController* controller) override;
-
-  void set_raiden_controller(controller::RaidenController* controller) {
-    SetRaidenController(controller);
-  }
 
   // --- Global Memory Pooling & RPC Methods ---
   // The peer-facing server this backend hosts, or nullptr until StartServer()
@@ -263,8 +255,7 @@ class HostOffloadBackend : public KVCacheStoreBackend {
   std::optional<KVCacheMetadata> metadata_ ABSL_GUARDED_BY(mutex_);
   uint64_t next_metadata_seq_ ABSL_GUARDED_BY(mutex_) = 0;
   RaidenId raiden_id_ ABSL_GUARDED_BY(mutex_);
-  controller::RaidenController* raiden_controller_ ABSL_GUARDED_BY(mutex_) =
-      nullptr;
+  controller::RaidenController* raiden_controller_ = nullptr;
   absl::flat_hash_map<std::vector<std::string>, size_t> pending_eviction_counts_
       ABSL_GUARDED_BY(mutex_);
 

@@ -353,6 +353,8 @@ cc_test(
         ":kv_cache_store_backend",
         ":kv_cache_store_backend_factory",
         ":raiden_id",
+        "//tpu_raiden/core/controller:raiden_controller",
+        "//tpu_raiden/rpc:raiden_service_cc_proto",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_googletest//:gtest",

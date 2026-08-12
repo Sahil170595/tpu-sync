@@ -125,6 +125,24 @@ absl::Status ValidateBackends(
   return absl::OkStatus();
 }
 
+std::unique_ptr<controller::RaidenController> MakeRaidenController(
+    const RaidenId& raiden_id, size_t capacity, int num_shards,
+    int64_t shard_size_bytes, absl::string_view raiden_orchestrator_address,
+    absl::string_view store_server_ip, int raiden_controller_port,
+    int expected_worker_count = 0) {
+  if (num_shards <= 0) return nullptr;
+  ::tpu_raiden::rpc::RaidenIdProto unit_proto;
+  unit_proto.set_job_name(raiden_id.job_name);
+  unit_proto.set_job_replica_id(raiden_id.job_replica_id);
+  unit_proto.set_data_name(raiden_id.data_name);
+  unit_proto.set_data_replica_idx(raiden_id.data_replica_idx);
+  return std::make_unique<::tpu_raiden::controller::RaidenController>(
+      unit_proto, capacity, num_shards, shard_size_bytes,
+      raiden_orchestrator_address,
+      ComposeControllerAddress(store_server_ip, raiden_controller_port),
+      /*preprovision_worker_buffers=*/false, expected_worker_count);
+}
+
 }  // namespace
 
 absl::StatusOr<std::unique_ptr<KVCacheStore>> KVCacheStore::Create(
@@ -140,23 +158,49 @@ absl::StatusOr<std::unique_ptr<KVCacheStore>> KVCacheStore::Create(
   // Before any resource is created (violation must not leak).
   RETURN_IF_ERROR(ValidateConstructionRules(store_server_ip, num_shards));
 
+  BackendConfig effective_config0 = backend_configs[0];
+  if (!effective_config0.global_registry_address.empty() &&
+      global_registry_address.empty()) {
+    global_registry_address = effective_config0.global_registry_address;
+  }
+  if (effective_config0.capacity == 0 && capacity > 0) {
+    effective_config0.capacity = capacity;
+  }
+  if (!effective_config0.metadata.has_value() && metadata.has_value()) {
+    effective_config0.metadata = metadata;
+  }
+  if (effective_config0.global_registry_address.empty() &&
+      !global_registry_address.empty()) {
+    effective_config0.global_registry_address =
+        std::string(global_registry_address);
+  }
+  if (effective_config0.raiden_id.empty() && !raiden_id.empty()) {
+    effective_config0.raiden_id = raiden_id;
+  }
+
+  RaidenId effective_raiden_id = effective_config0.raiden_id;
+  std::unique_ptr<::tpu_raiden::controller::RaidenController> raiden_controller;
+  if (num_shards > 0) {
+    ::tpu_raiden::rpc::RaidenIdProto unit_proto;
+    unit_proto.set_job_name(effective_raiden_id.job_name);
+    unit_proto.set_job_replica_id(effective_raiden_id.job_replica_id);
+    unit_proto.set_data_name(effective_raiden_id.data_name);
+    unit_proto.set_data_replica_idx(effective_raiden_id.data_replica_idx);
+
+    raiden_controller =
+        std::make_unique<::tpu_raiden::controller::RaidenController>(
+            unit_proto, effective_config0.capacity, num_shards,
+            shard_size_bytes, raiden_orchestrator_address,
+            ComposeControllerAddress(store_server_ip, raiden_controller_port),
+            /*preprovision_worker_buffers=*/false, expected_worker_count);
+  }
+
   std::vector<std::shared_ptr<KVCacheStoreBackend>> backends;
   backends.reserve(backend_configs.size());
 
   for (size_t i = 0; i < backend_configs.size(); ++i) {
     const auto& config = backend_configs[i];
-    BackendConfig effective_config = config;
-
-    // Apply capacity and metadata fallbacks ONLY to primary Tier 0 backend
-    // (local host DRAM)
-    if (i == 0) {
-      if (effective_config.capacity == 0 && capacity > 0) {
-        effective_config.capacity = capacity;
-      }
-      if (!effective_config.metadata.has_value() && metadata.has_value()) {
-        effective_config.metadata = metadata;
-      }
-    }
+    BackendConfig effective_config = (i == 0) ? effective_config0 : config;
 
     // Apply global registry address and raiden_id across all backend
     // configurations
@@ -169,9 +213,9 @@ absl::StatusOr<std::unique_ptr<KVCacheStore>> KVCacheStore::Create(
       effective_config.raiden_id = raiden_id;
     }
 
-    ASSIGN_OR_RETURN(
-        auto backend,
-        KVCacheStoreBackendFactory::Instance().CreateBackend(effective_config));
+    ASSIGN_OR_RETURN(auto backend,
+                     KVCacheStoreBackendFactory::Instance().CreateBackend(
+                         effective_config, raiden_controller.get()));
     // A custom registration may return OK with a null pointer; that would sail
     // past ValidateBackends for any tier but 0, and crash later.
     if (backend == nullptr) {
@@ -183,18 +227,12 @@ absl::StatusOr<std::unique_ptr<KVCacheStore>> KVCacheStore::Create(
 
   RETURN_IF_ERROR(ValidateBackends(backends));
 
-  RaidenId effective_raiden_id = !backend_configs[0].raiden_id.empty()
-                                     ? backend_configs[0].raiden_id
-                                     : raiden_id;
-
   // CreateTag: the constructor itself must not wire the controller (and
   // FATAL on failure) -- that would defeat Create()'s whole purpose of
   // returning a recoverable Status. Create() does the wiring below instead.
   auto store = absl::WrapUnique(new KVCacheStore(
-      std::move(backends), effective_raiden_id, num_shards, shard_size_bytes,
-      raiden_orchestrator_address, store_server_ip, raiden_controller_port,
-      global_registry_address, expected_worker_count,
-      KVCacheStore::CreateTag{}));
+      std::move(backends), effective_raiden_id, std::move(raiden_controller),
+      store_server_ip, global_registry_address));
 
   if (store->raiden_controller_ != nullptr) {
     RETURN_IF_ERROR(
@@ -266,17 +304,17 @@ KVCacheStore::CreateReshardSidecar(int reshard_port,
 
 KVCacheStore::KVCacheStore(
     std::vector<std::shared_ptr<KVCacheStoreBackend>> backends,
-    RaidenId raiden_id, int num_shards, int64_t shard_size_bytes,
-    absl::string_view raiden_orchestrator_address,
-    absl::string_view store_server_ip, int raiden_controller_port,
-    absl::string_view global_registry_address, int expected_worker_count,
-    CreateTag)
+    RaidenId raiden_id,
+    std::unique_ptr<controller::RaidenController> raiden_controller,
+    absl::string_view store_server_ip,
+    absl::string_view global_registry_address)
     : backends_(std::move(backends)),
       raiden_id_(std::move(raiden_id)),
+      raiden_controller_(std::move(raiden_controller)),
       store_server_ip_(store_server_ip),
       write_through_pool_(std::make_unique<::tpu_raiden::NumaThreadPool>(4)) {
-  if (absl::Status v = ValidateConstructionRules(store_server_ip,
-                                                 num_shards);
+  if (absl::Status v = ValidateConstructionRules(
+          store_server_ip, raiden_controller_ != nullptr ? 1 : 0);
       !v.ok()) {
     LOG(FATAL) << "KVCacheStore construction validation failed: " << v.message()
                << " Use KVCacheStore::Create() for a recoverable error.";
@@ -295,27 +333,6 @@ KVCacheStore::KVCacheStore(
     registry_client_ =
         std::make_shared<global_registry::GlobalRegistryClient>(channel);
   }
-  if (num_shards > 0) {
-    ::tpu_raiden::rpc::RaidenIdProto unit_proto;
-    unit_proto.set_job_name(raiden_id_.job_name);
-    unit_proto.set_job_replica_id(raiden_id_.job_replica_id);
-    unit_proto.set_data_name(raiden_id_.data_name);
-    unit_proto.set_data_replica_idx(raiden_id_.data_replica_idx);
-
-    size_t cap = capacity();
-    // The store's block ids resolve against the manager's own pool, so the
-    // legacy physical-buffer pre-provisioning would allocate that pool a
-    // second time on the worker.
-    raiden_controller_ =
-        std::make_unique<::tpu_raiden::controller::RaidenController>(
-            unit_proto, cap, num_shards, shard_size_bytes,
-            raiden_orchestrator_address,
-            ComposeControllerAddress(store_server_ip, raiden_controller_port),
-            /*preprovision_worker_buffers=*/false, expected_worker_count);
-  }
-  // Deliberately does NOT wire the controller here (see CreateTag) -- the
-  // caller (Create()) does that itself so a publish failure can return a
-  // Status instead of aborting the process.
 }
 
 KVCacheStore::KVCacheStore(
@@ -324,11 +341,16 @@ KVCacheStore::KVCacheStore(
     absl::string_view raiden_orchestrator_address,
     absl::string_view store_server_ip, int raiden_controller_port,
     absl::string_view global_registry_address, int expected_worker_count)
-    : KVCacheStore(std::move(backends), std::move(raiden_id), num_shards,
-                   shard_size_bytes, raiden_orchestrator_address,
-                   store_server_ip, raiden_controller_port,
-                   global_registry_address, expected_worker_count,
-                   CreateTag{}) {
+    : KVCacheStore(
+          backends, raiden_id,
+          MakeRaidenController(raiden_id,
+                               (!backends.empty() && backends[0] != nullptr)
+                                   ? backends[0]->GetCapacity()
+                                   : 0,
+                               num_shards, shard_size_bytes,
+                               raiden_orchestrator_address, store_server_ip,
+                               raiden_controller_port, expected_worker_count),
+          store_server_ip, global_registry_address) {
   if (raiden_controller_) {
     if (absl::Status s = SetRaidenController(raiden_controller_.get());
         !s.ok()) {
@@ -467,14 +489,7 @@ absl::Status KVCacheStore::SetRaidenController(
     tpu_raiden::controller::RaidenController* controller) {
   // Runs first so that store_server_ip_ decides the bind address: StartServer
   // never rebinds a running server, so whoever starts it first wins.
-  RETURN_IF_ERROR(EnsureStoreServerAndRegister(controller));
-
-  for (auto& backend : backends_) {
-    if (backend != nullptr) {
-      backend->SetRaidenController(controller);
-    }
-  }
-  return absl::OkStatus();
+  return EnsureStoreServerAndRegister(controller);
 }
 
 absl::Status KVCacheStore::EnsureStoreServerAndRegister(
@@ -968,8 +983,11 @@ absl::Status KVCacheStore::Load(absl::Span<const std::string> block_hashes,
     }
   }
 
-  tsl::Future<> future =
-      backend()->Load(remote_id, block_hashes, device_block_ids);
+  tsl::Future<> future = backend()->Load(
+      remote_id, block_hashes,
+      absl::Span<const int32_t>(
+          reinterpret_cast<const int32_t*>(device_block_ids.data()),
+          device_block_ids.size()));
 
   {
     absl::MutexLock lock(mutex_);
@@ -1043,8 +1061,12 @@ absl::Status KVCacheStore::Load(absl::Span<const std::string> block_hashes,
     }
   }
 
-  tsl::Future<> future =
-      backend()->Load(remote_id, block_hashes, device_block_ids, slices);
+  tsl::Future<> future = backend()->Load(
+      remote_id, block_hashes,
+      absl::Span<const int32_t>(
+          reinterpret_cast<const int32_t*>(device_block_ids.data()),
+          device_block_ids.size()),
+      slices);
 
   {
     absl::MutexLock lock(mutex_);

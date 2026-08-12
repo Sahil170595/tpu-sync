@@ -30,10 +30,6 @@
 
 namespace tpu_raiden {
 
-namespace controller {
-class RaidenController;
-}  // namespace controller
-
 namespace kv_cache {
 
 // Forward-declared rather than included: kv_cache_store_server.h includes this
@@ -107,10 +103,6 @@ class KVCacheStoreBackend {
  public:
   virtual ~KVCacheStoreBackend() = default;
 
-  // Links RaidenController to backend for DMA/async orchestration.
-  virtual void SetRaidenController(
-      tpu_raiden::controller::RaidenController* controller) {}
-
   // Name identifying the backend type (e.g., "LruCacheBackend",
   // "GlobalMemoryPoolingBackend").
   virtual std::string name() const = 0;
@@ -122,11 +114,8 @@ class KVCacheStoreBackend {
       absl::Span<const std::string> block_hashes,
       const LookupOptions& options = {}) = 0;
 
-  // Loads blocks from host (DRAM) or peer to device (HBM) asynchronously.
-  // If `slices` is non-empty, uses pre-looked up RaidenBlockID slices directly,
-  // avoiding internal index lookups.
-  // NOTE: When `slices` is provided, blocks are assumed to be already pinned
-  // externally.
+  // Asynchronously loads KV cache blocks from a peer node into local
+  // storage / device.
   virtual tsl::Future<> Load(const RaidenId& remote_id,
                              absl::Span<const std::string> block_hashes,
                              absl::Span<const int32_t> device_block_ids = {},

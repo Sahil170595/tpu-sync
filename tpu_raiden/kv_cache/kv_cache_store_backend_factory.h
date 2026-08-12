@@ -36,6 +36,11 @@
 #include "tpu_raiden/kv_cache/raiden_id.h"
 
 namespace tpu_raiden {
+
+namespace controller {
+class RaidenController;
+}  // namespace controller
+
 namespace kv_cache {
 
 // The deployment's KVTransferSpec (see global_registry.proto), registered
@@ -72,7 +77,8 @@ class KVCacheStoreBackendFactory {
  public:
   using BackendCreator =
       std::function<absl::StatusOr<std::shared_ptr<KVCacheStoreBackend>>(
-          const BackendConfig& config)>;
+          const BackendConfig& config,
+          controller::RaidenController* controller)>;
 
   // Access the singleton instance of the factory registry.
   static KVCacheStoreBackendFactory& Instance();
@@ -84,7 +90,8 @@ class KVCacheStoreBackendFactory {
 
   // Constructs a backend instance based on the provided configuration.
   absl::StatusOr<std::shared_ptr<KVCacheStoreBackend>> CreateBackend(
-      const BackendConfig& config) const;
+      const BackendConfig& config,
+      controller::RaidenController* controller = nullptr) const;
 
   // Returns whether a backend type is registered.
   bool IsRegistered(absl::string_view type_name) const;
@@ -99,8 +106,9 @@ class KVCacheStoreBackendFactory {
   }
 
   static absl::StatusOr<std::shared_ptr<KVCacheStoreBackend>> Create(
-      const BackendConfig& config) {
-    return Instance().CreateBackend(config);
+      const BackendConfig& config,
+      controller::RaidenController* controller = nullptr) {
+    return Instance().CreateBackend(config, controller);
   }
 
  private:

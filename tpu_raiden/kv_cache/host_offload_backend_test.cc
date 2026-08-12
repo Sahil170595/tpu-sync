@@ -245,15 +245,26 @@ TEST(HostOffloadBackendTest, CreateRegistersKVTransferSpecFromConfig) {
   auto reg_server = global_registry::CreateTestGlobalRegistryServer();
   std::string server_address = reg_server->server_address;
 
+  RaidenId node_id{"node_job", "0", "data", 0};
+  rpc::RaidenIdProto unit_proto;
+  unit_proto.set_job_name(node_id.job_name);
+  unit_proto.set_job_replica_id(node_id.job_replica_id);
+  unit_proto.set_data_name(node_id.data_name);
+  unit_proto.set_data_replica_idx(node_id.data_replica_idx);
+
+  controller::RaidenController controller(unit_proto, /*num_blocks=*/100,
+                                          /*num_shards=*/1,
+                                          /*shard_size_bytes=*/1024);
+
   BackendConfig config;
   config.type = "HostOffloadBackend";
   config.capacity = 100;
   config.global_registry_address = server_address;
-  config.raiden_id = RaidenId{"node_job", "0", "data", 0};
+  config.raiden_id = node_id;
   config.kv_transfer_spec = KVTransferSpecConfig{
       .block_array_bytes = {4096, 512}, .num_kv_shards = 2, .num_workers = 2};
 
-  auto backend_or = HostOffloadBackend::Create(config);
+  auto backend_or = HostOffloadBackend::Create(config, &controller);
   ASSERT_OK(backend_or.status());
 
   // The registry now serves the registered spec.
@@ -270,20 +281,44 @@ TEST(HostOffloadBackendTest, CreateRegistersKVTransferSpecFromConfig) {
 
   // Creating another backend with the identical spec is a no-op validation;
   // a differing spec fails creation.
-  EXPECT_TRUE(HostOffloadBackend::Create(config).ok());
+  EXPECT_TRUE(HostOffloadBackend::Create(config, &controller).ok());
   config.kv_transfer_spec->num_kv_shards = 4;
-  EXPECT_TRUE(
-      absl::IsInvalidArgument(HostOffloadBackend::Create(config).status()));
+  EXPECT_TRUE(absl::IsInvalidArgument(
+      HostOffloadBackend::Create(config, &controller).status()));
 }
 
 TEST(HostOffloadBackendTest, KVTransferSpecWithoutRegistryFailsCreation) {
+  RaidenId node_id{"node_job", "0", "data", 0};
+  rpc::RaidenIdProto unit_proto;
+  unit_proto.set_job_name(node_id.job_name);
+  unit_proto.set_job_replica_id(node_id.job_replica_id);
+  unit_proto.set_data_name(node_id.data_name);
+  unit_proto.set_data_replica_idx(node_id.data_replica_idx);
+
+  controller::RaidenController controller(unit_proto, /*num_blocks=*/100,
+                                          /*num_shards=*/1,
+                                          /*shard_size_bytes=*/1024);
+
   BackendConfig config;
   config.type = "HostOffloadBackend";
   config.capacity = 100;
   config.kv_transfer_spec = KVTransferSpecConfig{
       .block_array_bytes = {4096}, .num_kv_shards = 1, .num_workers = 1};
   EXPECT_TRUE(absl::IsFailedPrecondition(
-      HostOffloadBackend::Create(config).status()));
+      HostOffloadBackend::Create(config, &controller).status()));
+}
+
+TEST(HostOffloadBackendTest, HostOffloadBackendCreateNullControllerFails) {
+  BackendConfig config;
+  config.type = "HostOffloadBackend";
+  config.capacity = 100;
+
+  controller::RaidenController* null_controller = nullptr;
+  auto status = HostOffloadBackend::Create(config, null_controller).status();
+  EXPECT_TRUE(absl::IsInvalidArgument(status));
+  EXPECT_THAT(status.message(),
+              testing::HasSubstr(
+                  "HostOffloadBackend requires a non-null RaidenController"));
 }
 
 core::controller::WorkerRegistration GeometryWorker(

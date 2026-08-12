@@ -23,10 +23,12 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "xla/tsl/concurrency/future.h"
+#include "tpu_raiden/core/controller/raiden_controller.h"
 #include "tpu_raiden/kv_cache/host_offload_backend.h"
 #include "tpu_raiden/kv_cache/kv_cache_store.h"
 #include "tpu_raiden/kv_cache/kv_cache_store_backend.h"
 #include "tpu_raiden/kv_cache/raiden_id.h"
+#include "tpu_raiden/rpc/raiden_service.pb.h"
 
 namespace tpu_raiden {
 namespace kv_cache {
@@ -67,7 +69,7 @@ class CustomTestBackend : public KVCacheStoreBackend {
 
 REGISTER_KV_CACHE_STORE_BACKEND(
     "custom_test_backend",
-    [](const BackendConfig& config)
+    [](const BackendConfig& config, controller::RaidenController* controller)
         -> absl::StatusOr<std::shared_ptr<KVCacheStoreBackend>> {
       return std::make_shared<CustomTestBackend>();
     });
@@ -98,28 +100,38 @@ TEST(BackendConfigTest, PropertyGettersAndSetters) {
 }
 
 TEST(KVCacheStoreBackendFactoryTest, BuiltInHostOffload) {
+  rpc::RaidenIdProto unit_proto;
+  controller::RaidenController controller(unit_proto, /*num_blocks=*/100,
+                                          /*num_shards=*/1,
+                                          /*shard_size_bytes=*/1024);
+
   BackendConfig config;
   config.type = "HostOffloadBackend";
   config.capacity = 50;
 
-  auto backend_or = KVCacheStoreBackendFactory::Create(config);
+  auto backend_or = KVCacheStoreBackendFactory::Create(config, &controller);
   ASSERT_TRUE(backend_or.ok()) << backend_or.status();
   EXPECT_EQ((*backend_or)->name(), "HostOffloadBackend");
   EXPECT_EQ((*backend_or)->GetCapacity(), 50);
 
   // Capacity 0 error test
   config.capacity = 0;
-  auto err_or = KVCacheStoreBackendFactory::Create(config);
+  auto err_or = KVCacheStoreBackendFactory::Create(config, &controller);
   EXPECT_EQ(err_or.status().code(), absl::StatusCode::kInvalidArgument);
 }
 
 TEST(KVCacheStoreBackendFactoryTest, HostOffloadWithGlobalRegistry) {
+  rpc::RaidenIdProto unit_proto;
+  controller::RaidenController controller(unit_proto, /*num_blocks=*/100,
+                                          /*num_shards=*/1,
+                                          /*shard_size_bytes=*/1024);
+
   BackendConfig config;
   config.type = "HostOffloadBackend";
   config.capacity = 50;
   config.global_registry_address = "localhost:50051";
 
-  auto backend_or = KVCacheStoreBackendFactory::Create(config);
+  auto backend_or = KVCacheStoreBackendFactory::Create(config, &controller);
   ASSERT_TRUE(backend_or.ok()) << backend_or.status();
   EXPECT_EQ((*backend_or)->name(), "HostOffloadBackend");
 }
@@ -139,7 +151,7 @@ TEST(KVCacheStoreBackendFactoryTest, AutoRegistrationMacro) {
 TEST(KVCacheStoreBackendFactoryTest, DuplicateRegistrationFails) {
   auto status = KVCacheStoreBackendFactory::Instance().RegisterBackend(
       "HostOffloadBackend",
-      [](const BackendConfig&)
+      [](const BackendConfig&, controller::RaidenController*)
           -> absl::StatusOr<std::shared_ptr<KVCacheStoreBackend>> {
         return nullptr;
       });

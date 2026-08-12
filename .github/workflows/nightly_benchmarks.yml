@@ -28,5 +28,5 @@ jobs:
     uses: google-ml-infra/bap/.github/workflows/run-benchmarks.yaml@fd37d1f65a06f0124d9d2022d97efa8dc8812557
     with:
       registry_file: "tpu_raiden/benchmarks/benchmark_registry.pbtxt"
-      ml_actions_ref: "fd37d1f65a06f0124d9d2022d97efa8dc8812557"
+      bap_ref: "fd37d1f65a06f0124d9d2022d97efa8dc8812557"
       runner: "linux-x86-n2-8"

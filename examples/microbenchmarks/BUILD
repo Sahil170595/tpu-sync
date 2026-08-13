@@ -32,3 +32,14 @@ cc_binary(
         "@com_google_absl//absl/time",
     ],
 )
+
+pytype_strict_binary(
+    name = "jax_d2d_read_benchmark_runner",
+    srcs = ["jax_d2d_read_benchmark_runner.py"],
+    deps = [
+        "@com_google_absl_py//absl:app",
+        "@com_google_absl_py//absl/flags",
+        "@jax//jax",
+        "@pypi//numpy",
+    ],
+)

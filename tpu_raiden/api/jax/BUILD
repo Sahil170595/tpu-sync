@@ -21,8 +21,8 @@ py_library(
     srcs = ["kv_cache_manager.py"],
     visibility = ["//visibility:public"],
     deps = [
-        "//tpu_raiden/frameworks/jax:_tpu_raiden_jax",
-        "//tpu_raiden/frameworks/jax:jax_test_utils",
+        "//tpu_sync/frameworks/jax:_tpu_raiden_jax",
+        "//tpu_sync/frameworks/jax:jax_test_utils",
     ],
 )
 
@@ -32,8 +32,8 @@ py_library(
     visibility = ["//visibility:public"],
     deps = [
         "//tpu_raiden/api:common",
-        "//tpu_raiden/frameworks/jax:_tpu_raiden_jax",
-        "//tpu_raiden/frameworks/jax:jax_test_utils",
+        "//tpu_sync/frameworks/jax:_tpu_raiden_jax",
+        "//tpu_sync/frameworks/jax:jax_test_utils",
     ],
 )
 
@@ -55,7 +55,7 @@ py_test(
         "@jax//jax/experimental:mesh_utils",
         "@pypi//numpy",
         # buildcleaner: keep
-        "//tpu_raiden/frameworks/jax:_raw_transfer",
+        "//tpu_sync/frameworks/jax:_raw_transfer",
     ],
 )
 
@@ -71,7 +71,7 @@ py_test(
         "@jax//jax",
         "@pypi//numpy",
         # buildcleaner: keep
-        "//tpu_raiden/frameworks/jax:_raw_transfer",
+        "//tpu_sync/frameworks/jax:_raw_transfer",
     ],
 )
 
@@ -81,10 +81,7 @@ py_library(
         "weight_synchronizer.py",
     ],
     visibility = ["//visibility:public"],
-    deps = [
-        "//tpu_raiden/frameworks/jax:_tpu_raiden_jax",
-        "//tpu_raiden/frameworks/jax:jax_test_utils",
-    ],
+    deps = ["//tpu_sync/frameworks/jax:_tpu_raiden_jax"],
 )
 
 py_test(
@@ -93,7 +90,7 @@ py_test(
     tags = [],
     deps = [
         ":weight_synchronizer_jax_py",
-        "//tpu_raiden/frameworks/jax:jax_test_utils",
+        "//tpu_sync/frameworks/jax:jax_test_utils",
         "//tpu_sync/rpc:raiden_service_py_pb2",
         "@com_google_absl_py//absl/testing:absltest",
         "@jax//jax",

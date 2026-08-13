@@ -35,8 +35,8 @@ py_library(
     srcs = ["perf_core.py"],
     visibility = ["//visibility:public"],
     deps = [
-        "//tpu_raiden/frameworks/jax:_tpu_raiden_jax",
-        "//tpu_raiden/frameworks/jax:jax_test_utils",
+        "//tpu_sync/frameworks/jax:_tpu_raiden_jax",
+        "//tpu_sync/frameworks/jax:jax_test_utils",
         "@jax//jax",
         "@pypi//libtpu",
         "@pypi//numpy",

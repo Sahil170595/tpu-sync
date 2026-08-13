@@ -39,6 +39,7 @@ static_assert(!std::is_move_assignable_v<MetricsBackend>,
               "MetricsBackend must not be move assignable");
 
 using ::testing::_;
+using ::testing::ElementsAre;
 using ::testing::Eq;
 using ::testing::Return;
 
@@ -77,20 +78,41 @@ TEST_F(MetricsApiTest, GlobalMetricStoreSingleton) {
 
 TEST_F(MetricsApiTest, MetricMetadataConstants) {
   EXPECT_EQ(kPrometheus, "prometheus");
-  EXPECT_EQ(metric_metadata::kSentBytesTotal.description,
-            metric_descriptions::kSentBytesTotal);
+
+  // SentBytesTotal
+  EXPECT_EQ(metric_names::kSentBytesTotal, "sent_bytes_total");
   EXPECT_EQ(metric_descriptions::kSentBytesTotal,
             "Total count of bytes sent over TPU Raiden interfaces.");
+  EXPECT_EQ(metric_metadata::kSentBytesTotal.name, "sent_bytes_total");
+  EXPECT_EQ(metric_metadata::kSentBytesTotal.description,
+            "Total count of bytes sent over TPU Raiden interfaces.");
+  EXPECT_EQ(metric_metadata::kSentBytesTotal.type, MetricType::kCounter);
 
+  // ReceivedBytesTotal
+  EXPECT_EQ(metric_names::kReceivedBytesTotal, "received_bytes_total");
+  EXPECT_EQ(metric_descriptions::kReceivedBytesTotal,
+            "Total count of bytes received over TPU Raiden interfaces.");
+  EXPECT_EQ(metric_metadata::kReceivedBytesTotal.name, "received_bytes_total");
+  EXPECT_EQ(metric_metadata::kReceivedBytesTotal.description,
+            "Total count of bytes received over TPU Raiden interfaces.");
+  EXPECT_EQ(metric_metadata::kReceivedBytesTotal.type, MetricType::kCounter);
+
+  // Direction Labels
   EXPECT_EQ(metric_labels::kDirection, "direction");
   EXPECT_EQ(metric_labels::kDirectionPush, "push");
   EXPECT_EQ(metric_labels::kDirectionPullResponse, "pull_response");
+
+  // All Metrics
+  EXPECT_THAT(metric_metadata::kAllMetrics,
+              ElementsAre(metric_metadata::kSentBytesTotal,
+                          metric_metadata::kReceivedBytesTotal));
 }
 
 TEST_F(MetricsApiTest, FastPathExitWhenNoBackends) {
   EXPECT_FALSE(store_.HasBackends());
 
   store_.IncrementCounter(metric_names::kSentBytesTotal, {}, 1024);
+  store_.IncrementCounter(metric_names::kReceivedBytesTotal, {}, 1024);
 }
 
 TEST_F(MetricsApiTest, DispatchesToRegisteredBackend) {
@@ -100,6 +122,9 @@ TEST_F(MetricsApiTest, DispatchesToRegisteredBackend) {
   EXPECT_CALL(*raw_mock,
               IncrementCounter(Eq(metric_names::kSentBytesTotal), _, 2048))
       .Times(1);
+  EXPECT_CALL(*raw_mock,
+              IncrementCounter(Eq(metric_names::kReceivedBytesTotal), _, 4096))
+      .Times(1);
   EXPECT_CALL(*raw_mock, GetTextSnapshot()).WillOnce(Return("# HELP mock\n"));
   std::vector<std::unique_ptr<MetricsBackend>> backends;
   backends.push_back(std::move(mock_backend));
@@ -107,6 +132,7 @@ TEST_F(MetricsApiTest, DispatchesToRegisteredBackend) {
   EXPECT_TRUE(store_.HasBackends());
 
   store_.IncrementCounter(metric_names::kSentBytesTotal, {}, 2048);
+  store_.IncrementCounter(metric_names::kReceivedBytesTotal, {}, 4096);
   EXPECT_EQ(store_.GetTextSnapshot(), "# HELP mock\n");
 }
 

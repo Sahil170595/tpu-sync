@@ -72,6 +72,15 @@ using ::tpu_raiden::telemetry::RaidenMetricStore;
 namespace metric_labels = ::tpu_raiden::telemetry::metric_labels;
 namespace metric_names = ::tpu_raiden::telemetry::metric_names;
 
+constexpr MetricLabel kPushLabels[] = {
+    {.key = metric_labels::kDirection, .value = metric_labels::kDirectionPush},
+};
+
+constexpr MetricLabel kPullResponseLabels[] = {
+    {.key = metric_labels::kDirection,
+     .value = metric_labels::kDirectionPullResponse},
+};
+
 constexpr uint8_t kUseBlockChunksFlag = 0x80;
 
 #ifndef UIO_MAXIOV
@@ -393,6 +402,10 @@ absl::Status BlockTransport::HandleIncomingPush(
 
         if (expected_size > 0) {
           RETURN_IF_ERROR(ReadVExact(client_fd, ToIovec(chunks)));
+          // TODO: Add interface name (e.g. eth0, lo) using
+          // GetSocketLocalNic(client_fd) as a label key.
+          RaidenMetricStore::GetGlobalMetricStore().IncrementCounter(
+              metric_names::kReceivedBytesTotal, kPushLabels, expected_size);
         }
         return absl::OkStatus();
       }));
@@ -599,13 +612,9 @@ void BlockTransport::TriggerNextSendStep(
 
           if (total_size > 0) {
             // TODO: Add interface name (e.g. eth0, lo) using
-            // GetSocketLocalNic(fd) as a label key.
-            const MetricLabel labels[] = {
-                {.key = metric_labels::kDirection,
-                 .value = metric_labels::kDirectionPullResponse},
-            };
+            // GetSocketLocalNic(state->client_fd) as a label key.
             RaidenMetricStore::GetGlobalMetricStore().IncrementCounter(
-                metric_names::kSentBytesTotal, labels, total_size);
+                metric_names::kSentBytesTotal, kPullResponseLabels, total_size);
           }
 
           state->current_step++;
@@ -957,12 +966,8 @@ void BlockTransport::H2hWriteWorker(int stream_idx, absl::string_view peer,
           RETURN_IF_ERROR(WriteVExact(fd, ToIovec(chunks)));
           // TODO: Add interface name (e.g.
           // eth0, lo) using GetSocketLocalNic(fd) as a label key.
-          const MetricLabel labels[] = {
-              {.key = metric_labels::kDirection,
-               .value = metric_labels::kDirectionPush},
-          };
           RaidenMetricStore::GetGlobalMetricStore().IncrementCounter(
-              metric_names::kSentBytesTotal, labels, total_size);
+              metric_names::kSentBytesTotal, kPushLabels, total_size);
         }
         return absl::OkStatus();
       });
@@ -1164,6 +1169,11 @@ void BlockTransport::H2hReadWorker(
 
           if (expected_size > 0) {
             RETURN_IF_ERROR(ReadVExact(fd, ToIovec(chunks)));
+            // TODO: Add interface name (e.g. eth0, lo) using
+            // GetSocketLocalNic(fd) as a label key.
+            RaidenMetricStore::GetGlobalMetricStore().IncrementCounter(
+                metric_names::kReceivedBytesTotal, kPullResponseLabels,
+                expected_size);
           }
 
           if (on_block_received != nullptr) {

@@ -39,6 +39,10 @@ struct MetricMetadata {
   absl::string_view name;
   absl::string_view description;
   MetricType type;
+
+  // Enables compile-time member-wise value equality comparisons and test
+  // assertions with zero runtime overhead.
+  bool operator==(const MetricMetadata& other) const = default;
 };
 
 inline constexpr absl::string_view kPrometheus = "prometheus";
@@ -46,6 +50,7 @@ inline constexpr absl::string_view kPrometheus = "prometheus";
 namespace metric_names {
 
 inline constexpr absl::string_view kSentBytesTotal = "sent_bytes_total";
+inline constexpr absl::string_view kReceivedBytesTotal = "received_bytes_total";
 
 }  // namespace metric_names
 
@@ -53,6 +58,8 @@ namespace metric_descriptions {
 
 inline constexpr absl::string_view kSentBytesTotal =
     "Total count of bytes sent over TPU Raiden interfaces.";
+inline constexpr absl::string_view kReceivedBytesTotal =
+    "Total count of bytes received over TPU Raiden interfaces.";
 
 }  // namespace metric_descriptions
 
@@ -63,8 +70,14 @@ inline constexpr MetricMetadata kSentBytesTotal{
     .description = metric_descriptions::kSentBytesTotal,
     .type = MetricType::kCounter};
 
+inline constexpr MetricMetadata kReceivedBytesTotal{
+    .name = metric_names::kReceivedBytesTotal,
+    .description = metric_descriptions::kReceivedBytesTotal,
+    .type = MetricType::kCounter};
+
 inline constexpr MetricMetadata kAllMetrics[] = {
     kSentBytesTotal,
+    kReceivedBytesTotal,
 };
 
 }  // namespace metric_metadata

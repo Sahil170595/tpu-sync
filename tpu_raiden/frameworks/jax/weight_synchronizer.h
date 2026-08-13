@@ -25,7 +25,7 @@
 #ifndef WITHOUT_PYTHON
 #include "tpu_raiden/frameworks/jax/jax_utils.h"
 #endif
-#include "tpu_sync/weight_sync/weight_synchronizer_base.h"
+#include "tpu_raiden/weight_sync/weight_synchronizer_base.h"
 
 namespace xla {
 class PjRtBuffer;

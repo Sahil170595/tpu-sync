@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef THIRD_PARTY_TPU_RAIDEN_TPU_SYNC_WEIGHT_SYNC_TILING_UTILS_H_
-#define THIRD_PARTY_TPU_RAIDEN_TPU_SYNC_WEIGHT_SYNC_TILING_UTILS_H_
+#ifndef THIRD_PARTY_TPU_RAIDEN_TPU_RAIDEN_WEIGHT_SYNC_TILING_UTILS_H_
+#define THIRD_PARTY_TPU_RAIDEN_TPU_RAIDEN_WEIGHT_SYNC_TILING_UTILS_H_
 
 #include <cstdint>
 
@@ -33,4 +33,4 @@ absl::Status TileBuffer(const uint8_t* src_linear, uint8_t* dst_tiled,
 
 }  // namespace tpu_raiden::weight_sync
 
-#endif  // THIRD_PARTY_TPU_RAIDEN_TPU_SYNC_WEIGHT_SYNC_TILING_UTILS_H_
+#endif  // THIRD_PARTY_TPU_RAIDEN_TPU_RAIDEN_WEIGHT_SYNC_TILING_UTILS_H_

@@ -28,9 +28,9 @@
 #include "absl/status/status.h"
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/pjrt/plugin/xla_cpu/xla_cpu_pjrt_client.h"
+#include "tpu_raiden/weight_sync/weight_synchronizer_base.h"
 #include "tpu_sync/core/raw_transfer_core.h"
 #include "tpu_sync/rpc/raiden_service.pb.h"
-#include "tpu_sync/weight_sync/weight_synchronizer_base.h"
 
 ABSL_DECLARE_FLAG(size_t, raiden_weight_sync_host_buffer_scratchpad_size);
 

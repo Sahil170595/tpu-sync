@@ -28,6 +28,45 @@
 
 namespace tpu_raiden::telemetry {
 
+enum class MetricType {
+  kCounter,
+  kGauge,
+  kHistogram,
+};
+
+// Structure defining centralized metadata for a Raiden metric.
+struct MetricMetadata {
+  absl::string_view name;
+  absl::string_view description;
+  MetricType type;
+};
+
+namespace metric_names {
+
+inline constexpr absl::string_view kSentBytesTotal = "sent_bytes_total";
+
+}  // namespace metric_names
+
+namespace metric_descriptions {
+
+inline constexpr absl::string_view kSentBytesTotal =
+    "Total count of bytes sent over TPU Raiden interfaces.";
+
+}  // namespace metric_descriptions
+
+namespace metric_metadata {
+
+inline constexpr MetricMetadata kSentBytesTotal{
+    .name = metric_names::kSentBytesTotal,
+    .description = metric_descriptions::kSentBytesTotal,
+    .type = MetricType::kCounter};
+
+inline constexpr MetricMetadata kAllMetrics[] = {
+    kSentBytesTotal,
+};
+
+}  // namespace metric_metadata
+
 // Structure defining a metric key-value label pair.
 struct MetricLabel {
   absl::string_view key;

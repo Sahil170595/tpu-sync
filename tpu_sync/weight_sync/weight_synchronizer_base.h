@@ -24,6 +24,7 @@
 
 #include "absl/base/thread_annotations.h"
 #include "absl/container/flat_hash_map.h"
+#include "absl/container/flat_hash_set.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/synchronization/mutex.h"
@@ -38,6 +39,35 @@ class StartTransferRequest;
 }  // namespace rpc
 
 namespace weight_sync {
+
+struct WeightSyncMetrics {
+  double last_d2h_time_ms = 0.0;
+  double last_h2h_time_ms = 0.0;
+  double last_staging_time_ms = 0.0;
+  double last_tiling_time_ms = 0.0;
+  double last_detiling_time_ms = 0.0;
+  double last_total_push_resharded_time_ms = 0.0;
+
+  size_t last_d2h_bytes = 0;
+  size_t last_h2h_bytes = 0;
+  size_t last_tiled_bytes = 0;
+  size_t last_detiled_bytes = 0;
+
+  double total_d2h_time_ms = 0.0;
+  double total_h2h_time_ms = 0.0;
+  double total_staging_time_ms = 0.0;
+  double total_tiling_time_ms = 0.0;
+  double total_detiling_time_ms = 0.0;
+  double total_push_resharded_time_ms = 0.0;
+
+  size_t total_d2h_bytes = 0;
+  size_t total_h2h_bytes = 0;
+  size_t total_tiled_bytes = 0;
+  size_t total_detiled_bytes = 0;
+
+  uint64_t d2h_call_count = 0;
+  uint64_t push_resharded_call_count = 0;
+};
 
 class WeightSynchronizerListener;
 
@@ -141,6 +171,16 @@ class WeightSynchronizerBase : public tpu_raiden::RaidenManagerBase {
     latest_skip_tiling_.assign(num_layers_, skip_all);
   }
 
+  WeightSyncMetrics GetMetrics() const {
+    absl::MutexLock lock(metrics_mu_);
+    return metrics_;
+  }
+
+  void ResetMetrics() {
+    absl::MutexLock lock(metrics_mu_);
+    metrics_ = WeightSyncMetrics{};
+  }
+
   absl::Status OnBlocksReceived(const std::vector<int>& block_ids,
                                 uint64_t uuid = 0) override;
 
@@ -181,6 +221,12 @@ class WeightSynchronizerBase : public tpu_raiden::RaidenManagerBase {
   absl::flat_hash_map<uint64_t, std::vector<bool>> uuid_to_skip_tiling_
       ABSL_GUARDED_BY(skip_tiling_mu_);
   std::vector<bool> latest_skip_tiling_ ABSL_GUARDED_BY(skip_tiling_mu_);
+
+  mutable absl::Mutex d2h_mu_;
+  absl::flat_hash_set<uint64_t> completed_d2h_uuids_ ABSL_GUARDED_BY(d2h_mu_);
+
+  mutable absl::Mutex metrics_mu_;
+  WeightSyncMetrics metrics_ ABSL_GUARDED_BY(metrics_mu_);
 };
 
 }  // namespace weight_sync

@@ -40,14 +40,16 @@ WeightSynchronizer::WeightSynchronizer(nanobind::list jax_arrays,
                                        int parallelism,
                                        bool unsafe_skip_buffer_lock,
                                        std::optional<int> listener_port,
-                                       std::optional<std::string> bind_ip)
+                                       std::optional<std::string> bind_ip,
+                                       bool auto_h2d)
     : unsafe_skip_buffer_lock_(unsafe_skip_buffer_lock) {
   auto layer_buffers =
       tpu_raiden::jax::UnpackJaxArrays(jax_arrays, unsafe_skip_buffer_lock);
   impl_ = std::make_unique<weight_sync::WeightSynchronizerBase>(
       layer_buffers, local_port,
       /*external_host_ptrs=*/std::nullopt, unsafe_skip_buffer_lock, parallelism,
-      listener_port, bind_ip);
+      listener_port, bind_ip, /*layer_names=*/std::vector<std::string>{},
+      auto_h2d);
 }
 
 absl::Status WeightSynchronizer::BindWeights(nanobind::list jax_arrays) {
@@ -76,6 +78,10 @@ void WeightSynchronizer::SetSkipTiling(const std::vector<bool>& skip_tiling) {
 }
 void WeightSynchronizer::SetSkipTiling(bool skip_all) {
   impl_->SetSkipTiling(skip_all);
+}
+
+weight_sync::WeightSyncMetrics WeightSynchronizer::GetMetrics() const {
+  return impl_->GetMetrics();
 }
 
 const uint8_t* WeightSynchronizer::GetHostBufferPtr(size_t layer_idx,

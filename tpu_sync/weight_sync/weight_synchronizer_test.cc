@@ -29,8 +29,8 @@
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/pjrt/plugin/xla_cpu/xla_cpu_pjrt_client.h"
 #include "tpu_sync/core/raw_transfer_core.h"
-#include "tpu_sync/rpc/raiden_service.pb.h"
 #include "tpu_sync/weight_sync/weight_synchronizer_base.h"
+#include "tpu_sync/rpc/raiden_service.pb.h"
 
 ABSL_DECLARE_FLAG(size_t, raiden_weight_sync_host_buffer_scratchpad_size);
 
@@ -889,6 +889,110 @@ TEST_F(WeightSynchronizerTest, TilingActiveByDefault) {
     // Verify that the data IS permuted on device (tiling occurred)
     EXPECT_NE(dst_host_raw[4], 4.0f);
     EXPECT_EQ(dst_host_raw[16], 4.0f);
+  }
+}
+
+TEST_F(WeightSynchronizerTest, OneDimensionalTiledTensorH2dAndD2hRoundtrip) {
+  auto client_status_or = xla::GetXlaPjrtCpuClient(xla::CpuClientOptions());
+  ASSERT_TRUE(client_status_or.ok()) << client_status_or.status().message();
+  auto client = std::move(client_status_or.value());
+
+  auto memory_space_status_or =
+      client->addressable_devices()[0]->default_memory_space();
+  ASSERT_TRUE(memory_space_status_or.ok())
+      << memory_space_status_or.status().message();
+  xla::PjRtMemorySpace* memory_space = memory_space_status_or.value();
+
+  struct TestCaseRunner {
+    xla::PjRtClient* client;
+    xla::PjRtMemorySpace* memory_space;
+
+    struct WSWrapper {
+      std::unique_ptr<xla::PjRtBuffer> pjrt_buffer;
+      std::unique_ptr<WeightSynchronizerBase> ws;
+    };
+
+    WSWrapper CreateWS(xla::PrimitiveType type, absl::Span<const int64_t> dims,
+                       const xla::Layout& layout,
+                       std::vector<uint8_t>& placeholder) {
+      // Allocate device placeholder with full physical tiled size (1024
+      // elements = 4096 bytes)
+      placeholder.resize(1024 * sizeof(float), 0);
+
+      auto buffer_status_or =
+          client->BufferFromHostBuffer(placeholder.data(), type, {1024},
+                                       /*byte_strides=*/std::nullopt,
+                                       xla::PjRtClient::HostBufferSemantics::
+                                           kImmutableUntilTransferCompletes,
+                                       /*on_done_with_host_buffer=*/nullptr,
+                                       memory_space, /*device_layout=*/nullptr);
+      EXPECT_TRUE(buffer_status_or.ok()) << buffer_status_or.status().message();
+      auto pjrt_buffer = std::move(buffer_status_or.value());
+
+      auto handle_or = raiden::RaidenBufferHandle::Acquire(pjrt_buffer.get());
+      EXPECT_TRUE(handle_or.ok()) << handle_or.status().message();
+
+      // Logical shape is {64}, with physical tile {8, 128}
+      handle_or.value().shape = xla::ShapeUtil::MakeShapeWithDenseLayout(
+          type, dims, layout.minor_to_major(), layout.tiles());
+
+      std::vector<std::vector<raiden::RaidenBufferHandle>> buffers = {
+          {handle_or.value()}};
+
+      auto ws =
+          std::make_unique<WeightSynchronizerBase>(buffers, /*local_port=*/0);
+      return WSWrapper{std::move(pjrt_buffer), std::move(ws)};
+    }
+  } runner{client.get(), memory_space};
+
+  // 1D tensor: shape {64}, F32, standard hardware 2D tile {8, 128}
+  // Logical size = 64 * 4 = 256 bytes.
+  // Physical tile size = 8 * 128 * 4 = 4096 bytes.
+  xla::Layout layout = xla::LayoutUtil::MakeLayout({0}, {xla::Tile({8, 128})});
+  std::vector<uint8_t> device_placeholder;
+  auto ws_wrap = runner.CreateWS(xla::PrimitiveType::F32, {64}, layout,
+                                 device_placeholder);
+
+  float* host_ptr = reinterpret_cast<float*>(
+      const_cast<uint8_t*>(ws_wrap.ws->GetHostPointer(0, 0)));
+  for (int i = 0; i < 64; ++i) {
+    host_ptr[i] = static_cast<float>(i + 1);
+  }
+
+  // 1. Run H2D (linear host buffer -> tiled device buffer)
+  absl::StatusOr<raiden::PjRtCopyFuture> h2d_fut = ws_wrap.ws->H2d();
+  ASSERT_TRUE(h2d_fut.ok()) << h2d_fut.status().message();
+  ASSERT_TRUE(h2d_fut.value().Await().ok());
+
+  // Inspect physical device buffer:
+  // For shape {64} with tile {8, 128}, physical buffer has 1024 elements (4096
+  // bytes). Element index 32 (value 33.0f) is placed at physical tile index 128
+  // (byte offset 512).
+  std::vector<float> dev_raw(1024, 0.0f);
+  auto handle_or =
+      raiden::RaidenBufferHandle::Acquire(ws_wrap.pjrt_buffer.get());
+  ASSERT_TRUE(handle_or.ok());
+  auto raw_fut = handle_or.value().CopyRawDeviceToHost(dev_raw.data(), 0,
+                                                       1024 * sizeof(float));
+  ASSERT_TRUE(raw_fut.Await().ok());
+  // Verify element 32 (value 33.0f) is written to device memory:
+  EXPECT_EQ(dev_raw[32], 33.0f);
+
+  // 2. Zero out host memory to verify D2H roundtrip
+  for (int i = 0; i < 64; ++i) {
+    host_ptr[i] = 0.0f;
+  }
+
+  // 3. Run D2H (tiled device buffer -> linear host buffer)
+  absl::StatusOr<raiden::PjRtCopyFuture> d2h_fut = ws_wrap.ws->D2h();
+  ASSERT_TRUE(d2h_fut.ok()) << d2h_fut.status().message();
+  ASSERT_TRUE(d2h_fut.value().Await().ok());
+
+  // 4. Verify all 64 elements preserved exact numerical values after D2H
+  // detiling
+  for (int i = 0; i < 64; ++i) {
+    EXPECT_EQ(host_ptr[i], static_cast<float>(i + 1))
+        << "Numerical mismatch at index " << i << " after D2H detiling!";
   }
 }
 

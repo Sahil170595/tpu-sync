@@ -52,7 +52,8 @@ class WeightSynchronizer {
                      std::optional<int> local_port = std::nullopt,
                      int parallelism = 1, bool unsafe_skip_buffer_lock = false,
                      std::optional<int> listener_port = std::nullopt,
-                     std::optional<std::string> bind_ip = std::nullopt);
+                     std::optional<std::string> bind_ip = std::nullopt,
+                     bool auto_h2d = false);
   absl::Status BindWeights(nanobind::list jax_arrays);
 #endif
 
@@ -62,6 +63,8 @@ class WeightSynchronizer {
   absl::StatusOr<raiden::PjRtCopyFuture> H2d();
   void SetSkipTiling(const std::vector<bool>& skip_tiling);
   void SetSkipTiling(bool skip_all);
+
+  weight_sync::WeightSyncMetrics GetMetrics() const;
 
   const uint8_t* GetHostBufferPtr(size_t layer_idx, size_t shard_idx) const;
   std::optional<int> local_port() const;

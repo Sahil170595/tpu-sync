@@ -970,7 +970,7 @@ def is_nd_slice_tile_aligned(
   """Checks if slices and their intersection align with hardware tile boundaries."""
   rank = len(src_shard_slice)
   if rank < 2:
-    return True
+    return False
   t_row, t_col = tile_shape
   s_row_s, s_row_e = src_shard_slice[-2]
   s_col_s, s_col_e = src_shard_slice[-1]
@@ -1069,6 +1069,27 @@ def generate_strided_copy_chunks_tile_aware(
     ]
 
     num_outer = math.prod(outer_shape) if outer_shape else 1
+    if (
+        (count == 1 or (size_bytes == src_stride and size_bytes == dst_stride))
+        and num_outer_dims == 1
+    ):
+      inner_size = size_bytes * count
+      s_stride_outer = src_outer_strides[-1] * itemsize
+      d_stride_outer = dst_outer_strides[-1] * itemsize
+      base_src = src_offset + src_local_outer_start[0] * s_stride_outer
+      base_dst = dst_offset + dst_local_outer_start[0] * d_stride_outer
+      if inner_size == s_stride_outer and inner_size == d_stride_outer:
+        return [(base_src, base_dst, inner_size * num_outer, 0, 0, 1)]
+      elif inner_size == d_stride_outer:
+        return [(
+            base_src,
+            base_dst,
+            inner_size,
+            s_stride_outer,
+            d_stride_outer,
+            num_outer,
+        )]
+
     chunks = []
     for i in range(num_outer):
       multi_idx = []
@@ -1493,9 +1514,6 @@ class RaidenController:
             k_layer_idx = key[7]
             k_pool_group = key[8]
 
-            skip = final_plan.skip_tiling.get(k_layer_idx, False)
-            push_count = k_count
-
             for idx in dst_indices:
               k_target = k_targets[idx]
               (
@@ -1522,6 +1540,11 @@ class RaidenController:
                   k_pool_group,
               )
               sub_schedule[s][s_shard_idx].append(entry)
+
+              is_contiguous = (k_count == 1) or (
+                  k_s_stride == k_size and k_dst_stride == k_size
+              )
+              push_count = 1 if is_contiguous else k_count
               hop_expected_block_count += push_count
 
           hop_uuid = random.randint(1, 2**63 - 1)
@@ -1534,7 +1557,7 @@ class RaidenController:
               shard_push_schedules=sub_schedule,
               worker_rpc_addresses=dict(final_plan.worker_rpc_addresses),
               worker_data_addresses=dict(final_plan.worker_data_addresses),
-              uuid=hop_uuid,
+              uuid=final_plan.uuid,
               dst_mem_type=dst_mem_type,
               use_block_chunks=True,
               is_sender=True,
@@ -2279,7 +2302,7 @@ class RaidenController:
           local_skip_tiling = skip_tiling
           if local_skip_tiling is None:
             local_skip_tiling = {}
-            if not shard_push_schedules and src_units and dst_units:
+            if src_units and dst_units:
               reference_src_unit = src_units[0]
               with self._lock:
                 reference_src_vars = self._registered_variables.get(
@@ -2446,7 +2469,12 @@ class RaidenController:
             # Group broadcast tasks by routing compatibility and layer_group_idx
             broadcast_groups = {}
             for key, targets in groups.items():
-              if len(targets) <= 1:
+              unique_dst_units = set(t[0] for t in targets)
+              is_tree_broadcast = (
+                  len(unique_dst_units) > 1
+                  and len(unique_dst_units) > self.broadcast_k
+              )
+              if not is_tree_broadcast:
                 # Re-assemble entry for flat schedule (direct transfer)
                 (
                     src_unit,
@@ -2544,12 +2572,16 @@ class RaidenController:
                     dst_peer = entry[0]
                     dst_unit = data_address_to_unit.get(dst_peer)
                     if dst_unit:
+                      size = entry[4]
+                      src_stride = entry[7]
+                      dst_stride = entry[8]
                       count = entry[9]
-                      layer_idx = entry[10]
-                      skip = local_skip_tiling.get(layer_idx, False)
-                      push_count = 1 if skip else count
+                      is_contiguous = (count == 1) or (
+                          src_stride == size and dst_stride == size
+                      )
+                      tasks_count = 1 if is_contiguous else count
                       dst_unit_counts[dst_unit] = (
-                          dst_unit_counts.get(dst_unit, 0) + push_count
+                          dst_unit_counts.get(dst_unit, 0) + tasks_count
                       )
               if dst_unit_counts:
                 expected_block_count = max(dst_unit_counts.values())

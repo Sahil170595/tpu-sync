@@ -81,7 +81,10 @@ py_library(
         "weight_synchronizer.py",
     ],
     visibility = ["//visibility:public"],
-    deps = ["//tpu_sync/frameworks/jax:_tpu_raiden_jax"],
+    deps = [
+        "//tpu_sync/frameworks/jax:_tpu_raiden_jax",
+        "//tpu_sync/frameworks/jax:jax_test_utils",
+    ],
 )
 
 py_test(

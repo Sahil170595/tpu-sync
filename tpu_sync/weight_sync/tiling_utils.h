@@ -23,6 +23,9 @@
 
 namespace tpu_raiden::weight_sync {
 
+// Calculates the total number of physical elements required for a tiled buffer.
+int64_t GetTiledBufferElements(const xla::Shape& shape);
+
 // Reconstructs a linear buffer from a tiled buffer based on shape and layout.
 absl::Status DetileBuffer(const uint8_t* src_tiled, uint8_t* dst_linear,
                           const xla::Shape& shape, const xla::Layout& layout);

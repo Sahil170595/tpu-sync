@@ -299,12 +299,13 @@ NB_MODULE(_tpu_raiden_jax, m) {
   // =========================================================================
   nb::class_<WeightSynchronizer>(m, "WeightSynchronizer")
       .def(nb::init<nb::list, std::optional<int>, int, bool, std::optional<int>,
-                    std::optional<std::string>>(),
+                    std::optional<std::string>, bool>(),
            nb::arg("jax_arrays"), nb::arg("local_port") = nb::none(),
            nb::arg("parallelism") = 1,
            nb::arg("unsafe_skip_buffer_lock") = false,
            nb::arg("listener_port") = nb::none(),
-           nb::arg("bind_ip") = nb::none())
+           nb::arg("bind_ip") = nb::none(),
+           nb::arg("auto_h2d") = false)
 
       .def(
           "D2h",
@@ -382,7 +383,59 @@ NB_MODULE(_tpu_raiden_jax, m) {
                    &WeightSynchronizer::is_listener_active)
       .def_prop_ro("num_layers", &WeightSynchronizer::num_layers)
       .def_prop_ro("num_shards", &WeightSynchronizer::num_shards)
-      .def_prop_ro("slice_byte_size", &WeightSynchronizer::slice_byte_size);
+      .def_prop_ro("slice_byte_size", &WeightSynchronizer::slice_byte_size)
+      .def("get_metrics", &WeightSynchronizer::GetMetrics);
+
+  nb::class_<tpu_raiden::weight_sync::WeightSyncMetrics>(m, "WeightSyncMetrics")
+      .def_ro("last_d2h_time_ms",
+              &tpu_raiden::weight_sync::WeightSyncMetrics::last_d2h_time_ms)
+      .def_ro("last_h2h_time_ms",
+              &tpu_raiden::weight_sync::WeightSyncMetrics::last_h2h_time_ms)
+      .def_ro("last_staging_time_ms",
+              &tpu_raiden::weight_sync::WeightSyncMetrics::last_staging_time_ms)
+      .def_ro("last_tiling_time_ms",
+              &tpu_raiden::weight_sync::WeightSyncMetrics::last_tiling_time_ms)
+      .def_ro("last_detiling_time_ms",
+              &tpu_raiden::weight_sync::WeightSyncMetrics::last_detiling_time_ms)
+      .def_ro("last_total_push_resharded_time_ms",
+              &tpu_raiden::weight_sync::WeightSyncMetrics::
+                  last_total_push_resharded_time_ms)
+      .def_ro("last_d2h_bytes",
+              &tpu_raiden::weight_sync::WeightSyncMetrics::last_d2h_bytes)
+      .def_ro("last_h2h_bytes",
+              &tpu_raiden::weight_sync::WeightSyncMetrics::last_h2h_bytes)
+      .def_ro("last_tiled_bytes",
+              &tpu_raiden::weight_sync::WeightSyncMetrics::last_tiled_bytes)
+      .def_ro("last_detiled_bytes",
+              &tpu_raiden::weight_sync::WeightSyncMetrics::last_detiled_bytes)
+      .def_ro("total_d2h_time_ms",
+              &tpu_raiden::weight_sync::WeightSyncMetrics::total_d2h_time_ms)
+      .def_ro("total_h2h_time_ms",
+              &tpu_raiden::weight_sync::WeightSyncMetrics::total_h2h_time_ms)
+      .def_ro(
+          "total_staging_time_ms",
+          &tpu_raiden::weight_sync::WeightSyncMetrics::total_staging_time_ms)
+      .def_ro("total_tiling_time_ms",
+              &tpu_raiden::weight_sync::WeightSyncMetrics::total_tiling_time_ms)
+      .def_ro(
+          "total_detiling_time_ms",
+          &tpu_raiden::weight_sync::WeightSyncMetrics::total_detiling_time_ms)
+      .def_ro("total_push_resharded_time_ms",
+              &tpu_raiden::weight_sync::WeightSyncMetrics::
+                  total_push_resharded_time_ms)
+      .def_ro("total_d2h_bytes",
+              &tpu_raiden::weight_sync::WeightSyncMetrics::total_d2h_bytes)
+      .def_ro("total_h2h_bytes",
+              &tpu_raiden::weight_sync::WeightSyncMetrics::total_h2h_bytes)
+      .def_ro("total_tiled_bytes",
+              &tpu_raiden::weight_sync::WeightSyncMetrics::total_tiled_bytes)
+      .def_ro("total_detiled_bytes",
+              &tpu_raiden::weight_sync::WeightSyncMetrics::total_detiled_bytes)
+      .def_ro("d2h_call_count",
+              &tpu_raiden::weight_sync::WeightSyncMetrics::d2h_call_count)
+      .def_ro("push_resharded_call_count",
+              &tpu_raiden::weight_sync::WeightSyncMetrics::
+                  push_resharded_call_count);
 
   // =========================================================================
   // 3. Bind KVCacheStore

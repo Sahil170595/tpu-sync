@@ -31,6 +31,7 @@ class WeightSynchronizer:
       unsafe_skip_buffer_lock: bool = False,
       listener_port: Optional[int] = None,
       bind_ip: Optional[str] = None,
+      auto_h2d: bool = False,
   ):
     """Instantiates the Weight Synchronizer on a JAX weights list.
 
@@ -41,6 +42,7 @@ class WeightSynchronizer:
       unsafe_skip_buffer_lock: Skip PJRT buffer locks during weights unpack.
       listener_port: Sockets server port for incoming C++ Listener commands.
       bind_ip: Sockets server bind IP address.
+      auto_h2d: Automatically execute H2D ingestion upon data arrival.
     """
     self._impl = _weight_synchronizer.WeightSynchronizer(
         jax_arrays,
@@ -49,6 +51,7 @@ class WeightSynchronizer:
         unsafe_skip_buffer_lock,
         listener_port,
         bind_ip,
+        auto_h2d,
     )
 
   def d2h(self) -> None:
@@ -113,3 +116,61 @@ class WeightSynchronizer:
   def slice_byte_size(self) -> int:
     """Returns the slice capacity per device block."""
     return self._impl.slice_byte_size
+
+  def get_metrics(self) -> dict[str, float | int]:
+    """Returns a dictionary of internal performance metrics."""
+    m = self._impl.get_metrics()
+    d2h_time_s = max(m.last_d2h_time_ms / 1000.0, 1e-9)
+    h2h_time_s = max(m.last_h2h_time_ms / 1000.0, 1e-9)
+    tiling_time_s = max(m.last_tiling_time_ms / 1000.0, 1e-9)
+    detiling_time_s = max(m.last_detiling_time_ms / 1000.0, 1e-9)
+
+    d2h_bytes_gb = m.last_d2h_bytes / 1e9
+    h2h_bytes_gb = m.last_h2h_bytes / 1e9
+    tiled_bytes_gb = m.last_tiled_bytes / 1e9
+    detiled_bytes_gb = m.last_detiled_bytes / 1e9
+
+    return {
+        "last_d2h_time_ms": m.last_d2h_time_ms,
+        "last_h2h_time_ms": m.last_h2h_time_ms,
+        "last_staging_time_ms": m.last_staging_time_ms,
+        "last_tiling_time_ms": m.last_tiling_time_ms,
+        "last_detiling_time_ms": m.last_detiling_time_ms,
+        "last_total_push_resharded_time_ms": (
+            m.last_total_push_resharded_time_ms
+        ),
+        "last_d2h_bytes": m.last_d2h_bytes,
+        "last_h2h_bytes": m.last_h2h_bytes,
+        "last_tiled_bytes": m.last_tiled_bytes,
+        "last_detiled_bytes": m.last_detiled_bytes,
+        "total_d2h_time_ms": m.total_d2h_time_ms,
+        "total_h2h_time_ms": m.total_h2h_time_ms,
+        "total_staging_time_ms": m.total_staging_time_ms,
+        "total_tiling_time_ms": m.total_tiling_time_ms,
+        "total_detiling_time_ms": m.total_detiling_time_ms,
+        "total_push_resharded_time_ms": m.total_push_resharded_time_ms,
+        "total_d2h_bytes": m.total_d2h_bytes,
+        "total_h2h_bytes": m.total_h2h_bytes,
+        "total_tiled_bytes": m.total_tiled_bytes,
+        "total_detiled_bytes": m.total_detiled_bytes,
+        "d2h_call_count": m.d2h_call_count,
+        "push_resharded_call_count": m.push_resharded_call_count,
+        "d2h_bandwidth_gbps": (
+            d2h_bytes_gb / d2h_time_s if m.last_d2h_bytes > 0 else 0.0
+        ),
+        "h2h_bandwidth_gbps": (
+            h2h_bytes_gb / h2h_time_s if m.last_h2h_bytes > 0 else 0.0
+        ),
+        "tiling_bandwidth_gbps": (
+            tiled_bytes_gb / tiling_time_s if m.last_tiled_bytes > 0 else 0.0
+        ),
+        "detiling_bandwidth_gbps": (
+            detiled_bytes_gb / detiling_time_s
+            if m.last_detiled_bytes > 0
+            else 0.0
+        ),
+    }
+
+  def reset_metrics(self) -> None:
+    """Resets all recorded internal metrics."""
+    self._impl.reset_metrics()

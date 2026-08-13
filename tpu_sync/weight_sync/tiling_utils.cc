@@ -46,62 +46,13 @@ tpu_raiden::NumaThreadPool* GetThreadPool() {
   return global_pool.get();
 }
 
-int64_t GetTiledBufferElements(const xla::Shape& shape) {
-  const int num_dims = shape.dimensions().size();
-  if (num_dims == 0) {
-    return 1;
-  }
-
-  std::vector<int64_t> current_shape;
-  current_shape.reserve(num_dims);
-  for (int64_t i = num_dims - 1; i >= 0; --i) {
-    int64_t logical_dim = shape.layout().minor_to_major(i);
-    current_shape.push_back(shape.dimensions(logical_dim));
-  }
-
-  for (const xla::Tile& tile : shape.layout().tiles()) {
-    const int64_t tile_rank = tile.dimensions().size();
-    if (tile_rank > current_shape.size()) {
-      int64_t pad_size = tile_rank - current_shape.size();
-      current_shape.insert(current_shape.begin(), pad_size, 1);
-    }
-
-    const int64_t suffix_start = current_shape.size() - tile_rank;
-    std::vector<int64_t> next_shape;
-    next_shape.reserve(current_shape.size() + tile_rank);
-
-    for (int i = 0; i < suffix_start; ++i) {
-      next_shape.push_back(current_shape[i]);
-    }
-
-    for (int i = 0; i < tile_rank; ++i) {
-      int64_t d = current_shape[suffix_start + i];
-      int64_t t = tile.dimension(i);
-      next_shape.push_back(xla::CeilOfRatio(d, t));
-    }
-
-    for (int i = 0; i < tile_rank; ++i) {
-      int64_t t = tile.dimension(i);
-      next_shape.push_back(t);
-    }
-
-    current_shape = std::move(next_shape);
-  }
-
-  int64_t total_elements = 1;
-  for (int64_t dim_size : current_shape) {
-    total_elements *= dim_size;
-  }
-  return total_elements;
-}
-
 bool IsStandardRowMajorTiled(const xla::Shape& shape,
                              const xla::Layout& layout) {
   if (layout.tiles().size() != 1) return false;
   if (layout.tiles(0).dimensions().size() != 2) return false;
 
   const int R = shape.dimensions().size();
-  if (R < 2) return false;
+  if (R < 1) return false;
 
   for (int i = 0; i < R; ++i) {
     if (layout.minor_to_major(i) != R - 1 - i) {
@@ -167,7 +118,7 @@ absl::Status TileBufferNDOptimized(const uint8_t* src_linear,
                                    uint8_t* dst_tiled, const xla::Shape& shape,
                                    const xla::Layout& layout) {
   const int R = shape.dimensions().size();
-  int64_t H = shape.dimensions(layout.minor_to_major(1));
+  int64_t H = (R == 1) ? 1 : shape.dimensions(layout.minor_to_major(1));
   int64_t W = shape.dimensions(layout.minor_to_major(0));
   int64_t itemsize =
       xla::ShapeUtil::ByteSizeOfPrimitiveType(shape.element_type());
@@ -275,7 +226,7 @@ absl::Status DetileBufferNDOptimized(const uint8_t* src_tiled,
                                      const xla::Shape& shape,
                                      const xla::Layout& layout) {
   const int R = shape.dimensions().size();
-  int64_t H = shape.dimensions(layout.minor_to_major(1));
+  int64_t H = (R == 1) ? 1 : shape.dimensions(layout.minor_to_major(1));
   int64_t W = shape.dimensions(layout.minor_to_major(0));
   int64_t itemsize =
       xla::ShapeUtil::ByteSizeOfPrimitiveType(shape.element_type());
@@ -385,6 +336,60 @@ absl::Status DetileBufferNDOptimized(const uint8_t* src_tiled,
 }
 
 }  // namespace
+
+int64_t GetTiledBufferElements(const xla::Shape& shape) {
+  const int num_dims = shape.dimensions().size();
+  if (num_dims == 0) {
+    return 1;
+  }
+
+  std::vector<int64_t> current_shape;
+  current_shape.reserve(std::max(num_dims, 2));
+  if (num_dims == 1) {
+    current_shape.push_back(1);
+    current_shape.push_back(shape.dimensions(0));
+  } else {
+    for (int64_t i = num_dims - 1; i >= 0; --i) {
+      int64_t logical_dim = shape.layout().minor_to_major(i);
+      current_shape.push_back(shape.dimensions(logical_dim));
+    }
+  }
+
+  for (const xla::Tile& tile : shape.layout().tiles()) {
+    const int64_t tile_rank = tile.dimensions().size();
+    if (tile_rank > current_shape.size()) {
+      int64_t pad_size = tile_rank - current_shape.size();
+      current_shape.insert(current_shape.begin(), pad_size, 1);
+    }
+
+    const int64_t suffix_start = current_shape.size() - tile_rank;
+    std::vector<int64_t> next_shape;
+    next_shape.reserve(current_shape.size() + tile_rank);
+
+    for (int i = 0; i < suffix_start; ++i) {
+      next_shape.push_back(current_shape[i]);
+    }
+
+    for (int i = 0; i < tile_rank; ++i) {
+      int64_t d = current_shape[suffix_start + i];
+      int64_t t = tile.dimension(i);
+      next_shape.push_back(xla::CeilOfRatio(d, t));
+    }
+
+    for (int i = 0; i < tile_rank; ++i) {
+      int64_t t = tile.dimension(i);
+      next_shape.push_back(t);
+    }
+
+    current_shape = std::move(next_shape);
+  }
+
+  int64_t total_elements = 1;
+  for (int64_t dim_size : current_shape) {
+    total_elements *= dim_size;
+  }
+  return total_elements;
+}
 
 absl::Status DetileBuffer(const uint8_t* src_tiled, uint8_t* dst_linear,
                           const xla::Shape& shape, const xla::Layout& layout) {

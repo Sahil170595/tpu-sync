@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "tpu_raiden/store_node/grs_kv_transfer_spec_source.h"
+#include "tpu_sync/store_node/grs_kv_transfer_spec_source.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -22,10 +22,9 @@
 #include "absl/strings/string_view.h"
 #include "grpcpp/create_channel.h"
 #include "grpcpp/security/credentials.h"
-#include "tpu_raiden/store_node/kv_transfer_spec_source.h"
 #include "tpu_sync/core/status_macros.h"
 #include "tpu_sync/kv_cache/global_registry/global_registry.pb.h"
-
+#include "tpu_sync/store_node/kv_transfer_spec_source.h"
 namespace tpu_raiden {
 namespace store_node {
 

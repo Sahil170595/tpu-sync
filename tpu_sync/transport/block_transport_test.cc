@@ -20,6 +20,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <memory>
 #include <optional>
 #include <string>
 #include <thread>  // NOLINT
@@ -27,16 +28,24 @@
 #include <utility>
 #include <vector>
 
+#include <gmock/gmock.h>
 #include <gtest/gtest.h>
+#include "absl/cleanup/cleanup.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "absl/synchronization/mutex.h"
 #include "absl/types/span.h"
+#include "tpu_sync/telemetry/metrics_api.h"
+#include "tpu_sync/telemetry/prometheus_exporter.h"
+#include "tpu_sync/transport/block_transport_delegate.h"
 
 namespace tpu_raiden {
 namespace transport {
 namespace {
+
+using ::testing::HasSubstr;
 
 class MockDelegate : public BlockTransportDelegate {
  public:
@@ -637,6 +646,56 @@ TEST(BlockTransportTest, RoundRobinDistribution) {
   }
 }
 #endif
+
+TEST(BlockTransportTest, SentBytesTelemetryIncrementedOnPushAndPull) {
+  auto exporter = std::make_unique<telemetry::PrometheusExporter>();
+  std::vector<std::unique_ptr<telemetry::MetricsBackend>> backends;
+  backends.push_back(std::move(exporter));
+  telemetry::RaidenMetricStore::GetGlobalMetricStore().SetBackends(
+      std::move(backends));
+
+  auto reset_backends = absl::MakeCleanup([] {
+    telemetry::RaidenMetricStore::GetGlobalMetricStore().SetBackends({});
+  });
+
+  constexpr size_t kSize = 1024;
+  MockDelegate delegate1(kSize);
+  MockDelegate delegate2(kSize);
+
+  std::memset(delegate1.data(), 0xAB, kSize);
+  std::memset(delegate2.data(), 0x00, kSize);
+
+  BlockTransport transport1(&delegate1, 0);
+  BlockTransport transport2(&delegate2, 0);
+
+  const std::string peer2 = absl::StrCat("localhost:", transport2.local_port());
+
+  auto push_res = transport1.SyncPush(
+      {peer2}, /*src_block_ids=*/{0}, /*dst_block_ids=*/{},
+      /*parallelism=*/1, MajorOrder::kLayerMajor, /*uuid=*/0, /*layer_idx=*/-1);
+  ASSERT_OK(push_res);
+
+  const std::string snapshot1 =
+      telemetry::RaidenMetricStore::GetGlobalMetricStore().GetTextSnapshot();
+  EXPECT_THAT(
+      snapshot1,
+      HasSubstr("tpu_raiden_sent_bytes_total{direction=\"push\"} 1024"));
+
+  const std::string peer1 = absl::StrCat("localhost:", transport1.local_port());
+  ASSERT_OK_AND_ASSIGN(
+      auto pull_res,
+      transport2.SyncPull({peer1}, /*src_block_ids=*/{0},
+                          /*local_block_ids=*/{}, /*explicit_dst_ptrs=*/{},
+                          /*parallelism=*/1, MajorOrder::kLayerMajor,
+                          /*on_block_received=*/{}, /*uuid=*/0));
+
+  const std::string snapshot2 =
+      telemetry::RaidenMetricStore::GetGlobalMetricStore().GetTextSnapshot();
+  EXPECT_THAT(
+      snapshot2,
+      HasSubstr(
+          "tpu_raiden_sent_bytes_total{direction=\"pull_response\"} 1024"));
+}
 
 }  // namespace
 }  // namespace transport

@@ -47,6 +47,7 @@
 #include "absl/synchronization/mutex.h"
 #include "absl/types/span.h"
 #include "tpu_sync/core/status_macros.h"
+#include "tpu_sync/telemetry/metrics_api.h"
 #include "tpu_sync/transport/block_transport_delegate.h"
 #include "tpu_sync/transport/lib/chunk.h"
 #include "tpu_sync/transport/lib/chunk_serializer.h"
@@ -66,6 +67,10 @@ using ::peregrine::ReadExact;
 using ::peregrine::ReadVExact;
 using ::peregrine::WriteExact;
 using ::peregrine::WriteVExact;
+using ::tpu_raiden::telemetry::MetricLabel;
+using ::tpu_raiden::telemetry::RaidenMetricStore;
+namespace metric_labels = ::tpu_raiden::telemetry::metric_labels;
+namespace metric_names = ::tpu_raiden::telemetry::metric_names;
 
 constexpr uint8_t kUseBlockChunksFlag = 0x80;
 
@@ -592,6 +597,17 @@ void BlockTransport::TriggerNextSendStep(
             return;
           }
 
+          if (total_size > 0) {
+            // TODO: Add interface name (e.g. eth0, lo) using
+            // GetSocketLocalNic(fd) as a label key.
+            const MetricLabel labels[] = {
+                {.key = metric_labels::kDirection,
+                 .value = metric_labels::kDirectionPullResponse},
+            };
+            RaidenMetricStore::GetGlobalMetricStore().IncrementCounter(
+                metric_names::kSentBytesTotal, labels, total_size);
+          }
+
           state->current_step++;
           TriggerNextSendStep(state);
         });
@@ -938,7 +954,15 @@ void BlockTransport::H2hWriteWorker(int stream_idx, absl::string_view peer,
 
         RETURN_IF_ERROR(WriteExact(fd, &total_size, sizeof(total_size)));
         if (total_size > 0) {
-          return WriteVExact(fd, ToIovec(chunks));
+          RETURN_IF_ERROR(WriteVExact(fd, ToIovec(chunks)));
+          // TODO: Add interface name (e.g.
+          // eth0, lo) using GetSocketLocalNic(fd) as a label key.
+          const MetricLabel labels[] = {
+              {.key = metric_labels::kDirection,
+               .value = metric_labels::kDirectionPush},
+          };
+          RaidenMetricStore::GetGlobalMetricStore().IncrementCounter(
+              metric_names::kSentBytesTotal, labels, total_size);
         }
         return absl::OkStatus();
       });

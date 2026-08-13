@@ -81,6 +81,10 @@ TEST_F(MetricsApiTest, MetricMetadataConstants) {
             metric_descriptions::kSentBytesTotal);
   EXPECT_EQ(metric_descriptions::kSentBytesTotal,
             "Total count of bytes sent over TPU Raiden interfaces.");
+
+  EXPECT_EQ(metric_labels::kDirection, "direction");
+  EXPECT_EQ(metric_labels::kDirectionPush, "push");
+  EXPECT_EQ(metric_labels::kDirectionPullResponse, "pull_response");
 }
 
 TEST_F(MetricsApiTest, FastPathExitWhenNoBackends) {

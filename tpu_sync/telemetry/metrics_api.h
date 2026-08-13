@@ -69,6 +69,14 @@ inline constexpr MetricMetadata kAllMetrics[] = {
 
 }  // namespace metric_metadata
 
+namespace metric_labels {
+
+inline constexpr absl::string_view kDirection = "direction";
+inline constexpr absl::string_view kDirectionPush = "push";
+inline constexpr absl::string_view kDirectionPullResponse = "pull_response";
+
+}  // namespace metric_labels
+
 // Structure defining a metric key-value label pair.
 struct MetricLabel {
   absl::string_view key;

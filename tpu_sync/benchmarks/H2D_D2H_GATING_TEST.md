@@ -76,7 +76,7 @@ A perf-floor failure blocks the PR, unless the author adds `[skip-perf-gate]`
 
 ```bash
 bazel run -c opt --config=oss --config=ci \
-  //tpu_raiden/benchmarks:h2d_d2h_benchmark_gating
+  //tpu_sync/benchmarks:h2d_d2h_benchmark_gating
 ```
 
 In CI it runs as the `h2d_d2h_gating` workload in `benchmark_registry.pbtxt` via

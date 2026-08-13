@@ -1,6 +1,6 @@
 {
   "_comment": [
-    "Regenerate with:  bazel run //tpu_raiden/benchmarks:h2d_d2h_benchmark_gating --",
+    "Regenerate with:  bazel run //tpu_sync/benchmarks:h2d_d2h_benchmark_gating --",
     "                    --record --iters=<large>",
     "Use a large --iters when recording: the floor depends on a MAD estimate, which",
     "needs many samples to be stable. Record mode rewrites this file in place and",

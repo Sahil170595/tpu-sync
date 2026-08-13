@@ -26,8 +26,8 @@ import sys
 from absl import app
 from absl import flags
 
-from tpu_raiden.benchmarks import bap_metrics
-from tpu_raiden.benchmarks import perf_core
+from tpu_sync.benchmarks import bap_metrics
+from tpu_sync.benchmarks import perf_core
 
 # --- flags (dtype/layers match the DMA benchmark's @parameterized groups) ---
 _CACHE_SHAPE = flags.DEFINE_string(

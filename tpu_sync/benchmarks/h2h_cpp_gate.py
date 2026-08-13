@@ -43,7 +43,7 @@ import time
 from absl import app
 from absl import flags
 
-from tpu_raiden.benchmarks import bap_metrics
+from tpu_sync.benchmarks import bap_metrics
 
 _SENDER_NUMA = flags.DEFINE_integer('sender_numa', 0, 'NUMA node for the sender.')
 _RECEIVER_NUMA = flags.DEFINE_integer('receiver_numa', 1,

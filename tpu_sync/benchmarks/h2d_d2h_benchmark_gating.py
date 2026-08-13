@@ -21,8 +21,8 @@ from absl import app
 from absl import flags
 import numpy as np
 
-from tpu_raiden.benchmarks import bap_metrics
-from tpu_raiden.benchmarks import perf_core
+from tpu_sync.benchmarks import bap_metrics
+from tpu_sync.benchmarks import perf_core
 
 _BASELINES = flags.DEFINE_string(
     'baselines', None,

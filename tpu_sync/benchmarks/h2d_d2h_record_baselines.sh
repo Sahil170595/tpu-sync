@@ -34,8 +34,8 @@ RECORD_ITERS="${RECORD_ITERS:-1000}"   # many samples -> stable MAD/floor
 cd "${WORKSPACE_DIR}"
 echo "Recording baselines+floors (iters=${RECORD_ITERS}) into: ${BASELINES}"
 bazel run ${BAZEL_CONFIG} \
-  //tpu_raiden/benchmarks:h2d_d2h_benchmark_gating -- \
+  //tpu_sync/benchmarks:h2d_d2h_benchmark_gating -- \
   --record --iters="${RECORD_ITERS}" --baselines="${BASELINES}"
 
 echo "Done. Review before committing:"
-echo "  git diff -- tpu_raiden/benchmarks/h2d_d2h_gating_baselines.json"
+echo "  git diff -- tpu_sync/benchmarks/h2d_d2h_gating_baselines.json"

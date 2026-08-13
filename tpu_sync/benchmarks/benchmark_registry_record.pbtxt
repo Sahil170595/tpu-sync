@@ -4,7 +4,7 @@ benchmarks {
   owner: "raiden-dev"
   workload {
     action: "./ml_actions/actions/workload_executors/bazel"
-    action_inputs { key: "target" value: "//tpu_raiden/benchmarks:h2d_d2h_benchmark_gating" }
+    action_inputs { key: "target" value: "//tpu_sync/benchmarks:h2d_d2h_benchmark_gating" }
     action_inputs { key: "runtime_flags" value: "--record --iters=500" }
   }
   environment_configs {

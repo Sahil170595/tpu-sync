@@ -73,7 +73,7 @@ needed — the check is self-contained, so the gate is stateless.
 
 ```bash
 bazel run -c opt --config=oss --config=ci \
-  //tpu_raiden/benchmarks:h2h_cpp_gate
+  //tpu_sync/benchmarks:h2h_cpp_gate
 ```
 
 In CI it runs as the `h2h_cpp_gate` workload in `benchmark_registry.pbtxt` via

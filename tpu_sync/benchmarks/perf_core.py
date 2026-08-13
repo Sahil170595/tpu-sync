@@ -30,7 +30,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from tpu_raiden.frameworks.jax import _tpu_raiden_jax as kv_cache_manager
+from tpu_sync.frameworks.jax import _tpu_raiden_jax as kv_cache_manager
 
 DTYPE_MAP = {'float32': jnp.float32, 'bfloat16': jnp.bfloat16, 'float16': jnp.float16,
              'int32': jnp.int32, 'float8_e4m3fn': jnp.float8_e4m3fn}

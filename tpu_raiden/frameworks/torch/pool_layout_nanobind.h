@@ -29,7 +29,7 @@
 #include "nanobind/stl/vector.h"
 #include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
-#include "tpu_raiden/kv_cache/pool_layout.h"
+#include "tpu_sync/kv_cache/pool_layout.h"
 
 namespace tpu_raiden {
 namespace torch_bindings {

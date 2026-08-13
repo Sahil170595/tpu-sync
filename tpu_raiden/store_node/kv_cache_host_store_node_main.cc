@@ -29,9 +29,9 @@
 #include "absl/log/initialize.h"
 #include "absl/log/log.h"
 #include "absl/status/statusor.h"
-#include "tpu_raiden/kv_cache/raiden_id.h"
 #include "tpu_raiden/store_node/grs_kv_transfer_spec_source.h"
 #include "tpu_raiden/store_node/kv_cache_host_store_node.h"
+#include "tpu_sync/kv_cache/raiden_id.h"
 
 // Identity: the RaidenId this node registers under. Raiden treats the four
 // fields as one opaque composite key -- no field is matched individually

@@ -29,7 +29,7 @@ import time
 import typing
 from typing import Any, Optional
 
-from tpu_raiden.kv_cache import nd_slice_math
+from tpu_sync.kv_cache import nd_slice_math
 from tpu_sync.rpc import controller_service_pb2
 from tpu_sync.rpc import raiden_service_pb2
 

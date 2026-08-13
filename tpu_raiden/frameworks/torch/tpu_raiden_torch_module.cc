@@ -36,11 +36,11 @@
 #include "tpu_raiden/frameworks/torch/pool_layout_nanobind.h"
 #include "tpu_raiden/frameworks/torch/torch_nanobind_utils.h"
 #include "tpu_raiden/frameworks/torch/weight_synchronizer.h"
-#include "tpu_raiden/kv_cache/kv_cache_store.h"
-#include "tpu_raiden/kv_cache/kv_cache_store_wrapper.h"
-#include "tpu_raiden/kv_cache/reshard/reshard_client.h"
 #include "tpu_sync/core/raiden_future.h"
 #include "tpu_sync/core/raw_transfer_core.h"
+#include "tpu_sync/kv_cache/kv_cache_store.h"
+#include "tpu_sync/kv_cache/kv_cache_store_wrapper.h"
+#include "tpu_sync/kv_cache/reshard/reshard_client.h"
 #include "tpu_sync/rpc/raiden_service.pb.h"
 
 namespace nb = nanobind;

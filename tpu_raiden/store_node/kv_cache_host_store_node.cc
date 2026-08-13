@@ -33,14 +33,14 @@
 #include "absl/strings/string_view.h"
 #include "absl/time/clock.h"
 #include "absl/time/time.h"
-#include "tpu_raiden/kv_cache/kv_cache_store.h"
-#include "tpu_raiden/kv_cache/kv_cache_store_backend_factory.h"
 #include "tpu_raiden/store_node/kv_transfer_spec_source.h"
 #include "tpu_sync/core/controller/controller_client.h"
 #include "tpu_sync/core/controller/worker_service_server.h"
 #include "tpu_sync/core/kv_cache_manager_with_transfer.h"
 #include "tpu_sync/core/kv_manager_holder.h"
 #include "tpu_sync/core/status_macros.h"
+#include "tpu_sync/kv_cache/kv_cache_store.h"
+#include "tpu_sync/kv_cache/kv_cache_store_backend_factory.h"
 
 namespace tpu_raiden {
 namespace store_node {

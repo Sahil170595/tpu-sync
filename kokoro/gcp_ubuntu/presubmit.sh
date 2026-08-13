@@ -120,7 +120,7 @@ if [[ ! -f "${WORK_DIR}/venv/bin/activate" ]] || ! "${WORK_DIR}/venv/bin/python3
   rm -rf "${WORK_DIR}/venv"
 
   echo "Fetching hermetic Python 3.12 toolchain via Bazel..."
-  "${BAZEL_BIN}" "${BAZEL_STARTUP_FLAGS[@]}" fetch --repo_env=HERMETIC_PYTHON_VERSION="${HERMETIC_PYTHON_VERSION:-3.12}" "${BAZEL_COMMAND_FLAGS[@]}" "@rules_python//python:current_py_toolchain" //tpu_raiden/kv_cache:logical_block_manager_test || true
+  "${BAZEL_BIN}" "${BAZEL_STARTUP_FLAGS[@]}" fetch --repo_env=HERMETIC_PYTHON_VERSION="${HERMETIC_PYTHON_VERSION:-3.12}" "${BAZEL_COMMAND_FLAGS[@]}" "@rules_python//python:current_py_toolchain" //tpu_sync/kv_cache:logical_block_manager_test || true
 
   # 1. Primary deterministic lookup via Bazel cquery for current_py_toolchain
   HERMETIC_PYTHON_BIN=$("${BAZEL_BIN}" "${BAZEL_STARTUP_FLAGS[@]}" cquery --repo_env=HERMETIC_PYTHON_VERSION="${HERMETIC_PYTHON_VERSION:-3.12}" "${BAZEL_COMMAND_FLAGS[@]}" --output=files "@rules_python//python:current_py_toolchain" 2>/dev/null | grep -E "/bin/python3$" | head -n 1 || true)
@@ -162,7 +162,7 @@ echo "Running build.sh..."
 echo "=== 5. Running CPU-bound standard unit tests ==="
 "${BAZEL_BIN}" "${BAZEL_STARTUP_FLAGS[@]}" test -c opt --check_visibility=false --verbose_failures \
   "${BAZEL_COMMAND_FLAGS[@]}" \
-  //tpu_raiden/kv_cache:logical_block_manager_test
+  //tpu_sync/kv_cache:logical_block_manager_test
 
 echo "=== 6. Verifying dynamic module binding linkage ==="
 export PYTHONPATH="${REPO_ROOT}:${REPO_ROOT}/bazel-bin:${REPO_ROOT}/tpu_raiden/api/jax:${REPO_ROOT}/tpu_raiden/frameworks/jax:${PYTHONPATH}"

@@ -33,13 +33,13 @@
 #include "absl/synchronization/mutex.h"
 #include "xla/pjrt/pjrt_client.h"
 #include "tpu_raiden/frameworks/torch/torch_utils.h"
-#include "tpu_raiden/kv_cache/kv_cache_listener.h"
 #include "tpu_sync/core/controller/controller_client.h"
 #include "tpu_sync/core/controller/worker_service_server.h"
 #include "tpu_sync/core/kv_cache_manager_with_transfer.h"
 #include "tpu_sync/core/kv_manager_holder.h"
 #include "tpu_sync/core/tpu_utils.h"
 #include "tpu_sync/core/utils.h"
+#include "tpu_sync/kv_cache/kv_cache_listener.h"
 #include "tpu_sync/transport/block_transport.h"
 
 namespace tpu_raiden {

@@ -142,10 +142,10 @@ nanobind_extension(
         ":nb_statusor",
         ":raw_transfer_jax",
         ":weight_synchronizer_jax",
-        "//tpu_raiden/kv_cache:kv_cache_store",
-        "//tpu_raiden/kv_cache:kv_cache_store_wrapper",
         "//tpu_raiden/weight_sync:weight_synchronizer_base",
         "//tpu_sync/core:raw_transfer_core",
+        "//tpu_sync/kv_cache:kv_cache_store",
+        "//tpu_sync/kv_cache:kv_cache_store_wrapper",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
@@ -549,7 +549,7 @@ py_library(
     srcs = ["resharding_planner.py"],
     visibility = ["//visibility:public"],
     deps = [
-        "//tpu_raiden/kv_cache:nd_slice_math",
+        "//tpu_sync/kv_cache:nd_slice_math",
         "@jax//jax",
     ],
 )

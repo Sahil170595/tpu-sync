@@ -29,8 +29,8 @@
 #include <gtest/gtest.h>
 #include "absl/status/status.h"
 #include "absl/types/span.h"
-#include "tpu_raiden/kv_cache/pool_layout.h"
 #include "tpu_sync/core/kv_cache_manager_with_transfer.h"
+#include "tpu_sync/kv_cache/pool_layout.h"
 #include "tpu_sync/rpc/raiden_service.pb.h"
 
 namespace tpu_raiden {

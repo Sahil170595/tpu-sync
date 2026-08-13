@@ -64,8 +64,6 @@
 #include "absl/types/span.h"
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/tsl/platform/errors.h"
-#include "tpu_raiden/kv_cache/kv_cache_manager_base.h"
-#include "tpu_raiden/kv_cache/pool_layout.h"
 #include "tpu_sync/core/host_memory_allocator.h"
 #include "tpu_sync/core/metrics_collector.h"
 #include "tpu_sync/core/raiden_manager_base.h"
@@ -73,6 +71,8 @@
 #include "tpu_sync/core/raw_transfer_core.h"
 #include "tpu_sync/core/status_macros.h"
 #include "tpu_sync/core/tpu_utils.h"
+#include "tpu_sync/kv_cache/kv_cache_manager_base.h"
+#include "tpu_sync/kv_cache/pool_layout.h"
 #include "tpu_sync/transport/block_transport.h"
 #include "tpu_sync/transport/block_transport_delegate.h"
 

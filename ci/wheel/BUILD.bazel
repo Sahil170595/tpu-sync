@@ -96,7 +96,7 @@ JAX_DEPS = [
 ]
 # Excluded (non-OSS internal grpc / global registry):
 # //tpu_raiden/api/jax:kv_cache_store depends on
-# //tpu_raiden/kv_cache:kv_cache_store -> //kv_cache/global_registry.
+# //tpu_sync/kv_cache:kv_cache_store -> //kv_cache/global_registry.
 
 # Torch native extensions + public API (require the torch_tpu module at build).
 TORCH_DEPS = [

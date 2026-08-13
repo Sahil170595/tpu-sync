@@ -125,7 +125,7 @@ def start_servers():
   _registry_port = pick_unused_ports(1)[0]
   if resources:
     registry_binary = resources.GetResourceFilename(
-        "google3/third_party/tpu_raiden/tpu_raiden/kv_cache/global_registry/global_registry_server"
+        "google3/third_party/tpu_raiden/tpu_sync/kv_cache/global_registry/global_registry_server"
     )
     extra_flags = ["--alsologtostderr"]
   else:

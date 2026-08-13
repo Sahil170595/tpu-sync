@@ -17,7 +17,7 @@
 from dataclasses import dataclass
 from typing import List, Tuple
 import jax
-from tpu_raiden.kv_cache.nd_slice_math import (
+from tpu_sync.kv_cache.nd_slice_math import (
     compute_nd_shard_slices as compute_nd_shard_slices,
 )
 

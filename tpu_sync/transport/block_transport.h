@@ -189,17 +189,20 @@ class BlockTransport final {
   absl::Status HandleCustomRequest(int client_fd,
                                    const lib::ChunkHeader& header);
 
+  using SendMap =
+      absl::flat_hash_map<uint64_t, std::shared_ptr<SendStreamState>>;
+  using ProgressMap =
+      absl::flat_hash_map<std::pair<uint64_t, int>, LayerProgress>;
+
  private:
   BlockTransportDelegate* const block_delegate_;
   const int parallelism_;
 
   absl::Mutex active_sends_mu_;
-  absl::flat_hash_map<uint64_t, std::shared_ptr<SendStreamState>> active_sends_
-      ABSL_GUARDED_BY(active_sends_mu_);
+  SendMap active_sends_ ABSL_GUARDED_BY(active_sends_mu_);
 
   absl::Mutex progress_mu_;
-  absl::flat_hash_map<std::pair<uint64_t, int>, LayerProgress> layer_progress_
-      ABSL_GUARDED_BY(progress_mu_);
+  ProgressMap layer_progress_ ABSL_GUARDED_BY(progress_mu_);
 
   absl::Mutex scheduler_mu_;
   absl::CondVar scheduler_cv_;

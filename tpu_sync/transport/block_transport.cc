@@ -188,6 +188,16 @@ BlockTransport::~BlockTransport() {
   for (auto& t : socket_workers_) {
     if (t.joinable()) t.join();
   }
+  {
+    absl::MutexLock lock(active_sends_mu_);
+    for (const auto& [uuid, state] : active_sends_) {
+      if (state && state->client_fd >= 0) {
+        shutdown(state->client_fd, SHUT_RDWR);
+      }
+    }
+    active_sends_mu_.Await(absl::Condition(
+        +[](const SendMap* s) { return s->empty(); }, &active_sends_));
+  }
 }
 
 void BlockTransport::SocketWorkerLoop() {

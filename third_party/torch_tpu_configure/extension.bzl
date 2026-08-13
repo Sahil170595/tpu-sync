@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Copyright 2026 The TPU Raiden Authors. All Rights Reserved.
 # ==============================================================================
 
 """Module extension to import TPU Raiden dependencies."""

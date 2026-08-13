@@ -21,7 +21,7 @@
 
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
-#include "tpu_raiden/core/raiden_future.h"
+#include "tpu_sync/core/raiden_future.h"
 #ifndef WITHOUT_PYTHON
 #include "tpu_raiden/frameworks/jax/jax_utils.h"
 #endif

@@ -26,8 +26,8 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "xla/tsl/platform/errors.h"
-#include "tpu_raiden/core/raw_transfer_core.h"
 #include "tpu_raiden/weight_sync/weight_synchronizer_base.h"
+#include "tpu_sync/core/raw_transfer_core.h"
 
 namespace tpu_raiden {
 namespace jax {

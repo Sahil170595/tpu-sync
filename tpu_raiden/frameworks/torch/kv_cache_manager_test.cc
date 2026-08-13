@@ -24,9 +24,9 @@
 #include "xla/pjrt/plugin/xla_cpu/xla_cpu_pjrt_client.h"
 #include "xla/tsl/platform/statusor.h"
 #include "xla/tsl/platform/test.h"
-#include "tpu_raiden/core/controller/controller_service.h"
-#include "tpu_raiden/core/controller/test_util.h"
 #include "tpu_raiden/frameworks/torch/torch_tpu_utils_mock.h"
+#include "tpu_sync/core/controller/controller_service.h"
+#include "tpu_sync/core/controller/test_util.h"
 #include "torch/torch.h"
 
 namespace tpu_raiden {

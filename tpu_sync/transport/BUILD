@@ -52,8 +52,8 @@ cc_library(
     deps = [
         ":block_transport_delegate",
         ":buffer_push_task",
-        "//tpu_raiden/core:status_macros",
-        "//tpu_raiden/core:tsl_platform_headers",
+        "//tpu_sync/core:status_macros",
+        "//tpu_sync/core:tsl_platform_headers",
         "//tpu_sync/transport/lib:chunk",
         "//tpu_sync/transport/lib:chunk_serializer",
         "//tpu_sync/transport/lib:raw_buffer_transport",

@@ -31,9 +31,9 @@
 #include "grpcpp/server_context.h"
 #include "grpcpp/support/status.h"
 #include "xla/tsl/concurrency/future.h"
-#include "tpu_raiden/core/buffer.h"
-#include "tpu_raiden/core/controller/raiden_controller.h"
 #include "tpu_raiden/kv_cache/kv_cache_store_backend.h"
+#include "tpu_sync/core/buffer.h"
+#include "tpu_sync/core/controller/raiden_controller.h"
 #include "tpu_sync/proto/kv_cache_store_service.grpc.pb.h"
 #include "tpu_sync/proto/kv_cache_store_service.pb.h"
 

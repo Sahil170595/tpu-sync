@@ -30,7 +30,7 @@ namespace tpu_raiden {
 namespace kv_cache {
 
 // Fixed-layout header at the start of a KV cache metadata region, aligned
-// with SharedMemoryHeader in tpu_raiden/core/host_memory_allocator.h.
+// with SharedMemoryHeader in tpu_sync/core/host_memory_allocator.h.
 struct alignas(64) KVCacheMetadataHeader {
   uint64_t magic = 0x52414944454E4B4D;  // "RAIDENKM", offset 0, 8 bytes
   uint32_t version = 1;                 // offset 8, 4 bytes

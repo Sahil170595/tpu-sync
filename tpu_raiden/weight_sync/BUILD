@@ -26,7 +26,7 @@ cc_library(
     ],
     features = ["-use_header_modules"],
     deps = [
-        "//tpu_raiden/core:numa_thread_pool",
+        "//tpu_sync/core:numa_thread_pool",
         "@com_google_absl//absl/base:no_destructor",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/synchronization",
@@ -54,10 +54,10 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         ":tiling_utils",
-        "//tpu_raiden/core:raiden_manager_base",
-        "//tpu_raiden/core:raw_transfer_core",
-        "//tpu_raiden/core:status_macros",
-        "//tpu_raiden/core:xla_raw_transfer_headers",
+        "//tpu_sync/core:raiden_manager_base",
+        "//tpu_sync/core:raw_transfer_core",
+        "//tpu_sync/core:status_macros",
+        "//tpu_sync/core:xla_raw_transfer_headers",
         "//tpu_sync/rpc:raiden_service_cc_proto",
         "//tpu_sync/transport:buffer_push_task",
         "@com_google_absl//absl/base:core_headers",
@@ -86,7 +86,7 @@ cc_test(
     linkopts = ["-Wl,--allow-shlib-undefined"],
     deps = [
         ":weight_synchronizer_base",
-        "//tpu_raiden/core:raw_transfer_core",
+        "//tpu_sync/core:raw_transfer_core",
         "//tpu_sync/rpc:raiden_service_cc_proto",
         "@com_google_absl//absl/flags:flag",
         "@com_google_absl//absl/log",

@@ -49,9 +49,9 @@
 #include "third_party/protobuf/io/coded_stream.h"
 #include "third_party/protobuf/io/zero_copy_stream_impl_lite.h"
 #include "third_party/protobuf/util/message_differencer.h"
-#include "tpu_raiden/core/transfer_program_reshard.h"
 #include "tpu_raiden/kv_cache/reshard/framed_rpc.h"
 #include "tpu_raiden/kv_cache/reshard/reshard_service.h"
+#include "tpu_sync/core/transfer_program_reshard.h"
 #include "tpu_sync/rpc/raiden_service.pb.h"
 
 ABSL_FLAG(std::string, log, "", "Recorded controller jsonl to replay.");

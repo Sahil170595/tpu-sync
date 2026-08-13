@@ -36,10 +36,10 @@
 #include "xla/layout.h"
 #include "xla/tsl/platform/errors.h"
 #include "xla/tsl/platform/statusor.h"
-#include "tpu_raiden/core/raiden_manager_base.h"
-#include "tpu_raiden/core/raw_transfer_core.h"
 #include "tpu_raiden/weight_sync/tiling_utils.h"
 #include "tpu_raiden/weight_sync/weight_synchronizer_listener.h"
+#include "tpu_sync/core/raiden_manager_base.h"
+#include "tpu_sync/core/raw_transfer_core.h"
 #include "tpu_sync/rpc/raiden_service.pb.h"
 #include "tpu_sync/transport/buffer_push_task.h"
 

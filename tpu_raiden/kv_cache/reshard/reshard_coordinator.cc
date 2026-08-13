@@ -32,14 +32,14 @@
 #include "absl/time/clock.h"
 #include "absl/time/time.h"
 #include "xla/tsl/concurrency/future.h"
-#include "tpu_raiden/core/controller/raiden_controller.h"
-#include "tpu_raiden/core/transfer_program_reshard.h"
 #include "tpu_raiden/kv_cache/raiden_id.h"
 #include "tpu_raiden/kv_cache/reshard/declaration_types.h"
 #include "tpu_raiden/kv_cache/reshard/framed_rpc.h"
 #include "tpu_raiden/kv_cache/reshard/pool_reshard_planner.h"
 #include "tpu_raiden/kv_cache/reshard/request_block_registry.h"
 #include "tpu_raiden/kv_cache/reshard/work_unit_directory.h"
+#include "tpu_sync/core/controller/raiden_controller.h"
+#include "tpu_sync/core/transfer_program_reshard.h"
 #include "tpu_sync/proto/transfer_program.pb.h"
 
 namespace tpu_raiden {

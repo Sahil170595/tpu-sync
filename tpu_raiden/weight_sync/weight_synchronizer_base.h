@@ -29,8 +29,8 @@
 #include "absl/synchronization/mutex.h"
 #include "xla/pjrt/c/pjrt_c_api.h"
 #include "xla/pjrt/c/pjrt_c_api_raw_buffer_extension.h"
-#include "tpu_raiden/core/raiden_manager_base.h"
-#include "tpu_raiden/core/raw_transfer_core.h"
+#include "tpu_sync/core/raiden_manager_base.h"
+#include "tpu_sync/core/raw_transfer_core.h"
 
 namespace tpu_raiden {
 namespace rpc {

@@ -25,11 +25,11 @@
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "xla/tsl/concurrency/future.h"
-#include "tpu_raiden/core/controller/raiden_controller.h"
 #include "tpu_raiden/kv_cache/host_offload_backend.h"
 #include "tpu_raiden/kv_cache/kv_cache_store.h"
 #include "tpu_raiden/kv_cache/kv_cache_store_backend.h"
 #include "tpu_raiden/kv_cache/raiden_id.h"
+#include "tpu_sync/core/controller/raiden_controller.h"
 #include "tpu_sync/rpc/raiden_service.pb.h"
 
 namespace tpu_raiden {

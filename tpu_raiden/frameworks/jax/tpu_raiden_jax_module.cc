@@ -33,14 +33,14 @@
 #include <nanobind/stl/tuple.h>  // IWYU pragma: keep
 #include <nanobind/stl/vector.h>  // IWYU pragma: keep
 #include "xla/pjrt/status_casters.h"
-#include "tpu_raiden/core/raiden_future.h"
-#include "tpu_raiden/core/raw_transfer_core.h"
 #include "tpu_raiden/frameworks/jax/kv_cache_manager.h"
 #include "tpu_raiden/frameworks/jax/nb_statusor.h"  // IWYU pragma: keep
 #include "tpu_raiden/frameworks/jax/raw_transfer_internal.h"
 #include "tpu_raiden/frameworks/jax/weight_synchronizer.h"
 #include "tpu_raiden/kv_cache/kv_cache_store.h"
 #include "tpu_raiden/kv_cache/kv_cache_store_wrapper.h"
+#include "tpu_sync/core/raiden_future.h"
+#include "tpu_sync/core/raw_transfer_core.h"
 
 namespace nb = nanobind;
 

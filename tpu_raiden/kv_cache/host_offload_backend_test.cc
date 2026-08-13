@@ -32,11 +32,6 @@
 #include "absl/types/span.h"
 #include "grpcpp/create_channel.h"
 #include "grpcpp/security/credentials.h"
-#include "tpu_raiden/core/controller/controller_client.h"
-#include "tpu_raiden/core/controller/raiden_controller.h"
-#include "tpu_raiden/core/controller/test_util.h"
-#include "tpu_raiden/core/controller/worker_registry.h"
-#include "tpu_raiden/core/kv_manager_holder.h"
 #include "tpu_raiden/kv_cache/global_registry/global_registry_client.h"
 #include "tpu_raiden/kv_cache/global_registry/test_util.h"
 #include "tpu_raiden/kv_cache/kv_cache_store_backend.h"
@@ -44,6 +39,11 @@
 #include "tpu_raiden/kv_cache/kv_cache_store_client.h"
 #include "tpu_raiden/kv_cache/kv_cache_store_server.h"
 #include "tpu_raiden/kv_cache/raiden_id.h"
+#include "tpu_sync/core/controller/controller_client.h"
+#include "tpu_sync/core/controller/raiden_controller.h"
+#include "tpu_sync/core/controller/test_util.h"
+#include "tpu_sync/core/controller/worker_registry.h"
+#include "tpu_sync/core/kv_manager_holder.h"
 
 namespace tpu_raiden {
 namespace kv_cache {

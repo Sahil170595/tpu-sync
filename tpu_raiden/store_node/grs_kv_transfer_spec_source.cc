@@ -22,9 +22,9 @@
 #include "absl/strings/string_view.h"
 #include "grpcpp/create_channel.h"
 #include "grpcpp/security/credentials.h"
-#include "tpu_raiden/core/status_macros.h"
 #include "tpu_raiden/kv_cache/global_registry/global_registry.pb.h"
 #include "tpu_raiden/store_node/kv_transfer_spec_source.h"
+#include "tpu_sync/core/status_macros.h"
 
 namespace tpu_raiden {
 namespace store_node {

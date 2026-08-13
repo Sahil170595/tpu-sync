@@ -23,9 +23,9 @@
 #include "absl/strings/string_view.h"
 #include "absl/synchronization/mutex.h"
 #include "grpcpp/server.h"
-#include "tpu_raiden/core/controller/raiden_controller.h"
 #include "tpu_raiden/kv_cache/kv_cache_store_backend.h"
 #include "tpu_raiden/kv_cache/kv_cache_store_service.h"
+#include "tpu_sync/core/controller/raiden_controller.h"
 
 namespace tpu_raiden {
 namespace kv_cache {

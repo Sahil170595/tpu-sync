@@ -36,13 +36,14 @@
 #include "absl/time/time.h"
 #include "absl/types/span.h"
 #include "xla/tsl/concurrency/future.h"
-#include "tpu_raiden/core/numa_thread_pool.h"
 #include "tpu_raiden/kv_cache/kv_cache_metadata.h"
 #include "tpu_raiden/kv_cache/kv_cache_store_backend.h"
 #include "tpu_raiden/kv_cache/kv_cache_store_backend_factory.h"
 #include "tpu_raiden/kv_cache/kv_cache_store_server.h"
 #include "tpu_raiden/kv_cache/raiden_id.h"
 #include "tpu_raiden/kv_cache/reshard/reshard_service.h"
+#include "tpu_sync/core/numa_thread_pool.h"
+#include "tpu_sync/core/raw_transfer_core.h"
 
 namespace tpu_raiden {
 

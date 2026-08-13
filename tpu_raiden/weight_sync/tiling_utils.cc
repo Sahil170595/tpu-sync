@@ -30,7 +30,7 @@
 #include "xla/shape.h"
 #include "xla/shape_util.h"
 #include "xla/util.h"
-#include "tpu_raiden/core/numa_thread_pool.h"
+#include "tpu_sync/core/numa_thread_pool.h"
 
 namespace tpu_raiden::weight_sync {
 

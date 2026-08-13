@@ -16,7 +16,7 @@
 #define THIRD_PARTY_TPU_RAIDEN_TPU_RAIDEN_FRAMEWORKS_JAX_RAW_TRANSFER_INTERNAL_H_
 
 #include "absl/status/statusor.h"  // IWYU pragma: keep
-#include "tpu_raiden/core/raw_transfer_impl.h"  // IWYU pragma: keep
+#include "tpu_sync/core/raw_transfer_impl.h"  // IWYU pragma: keep
 #ifndef WITHOUT_PYTHON
 #include <nanobind/nanobind.h>
 #else

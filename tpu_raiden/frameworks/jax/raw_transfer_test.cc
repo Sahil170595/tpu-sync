@@ -26,9 +26,9 @@
 #include "xla/pjrt/raw_buffer.h"
 #include "xla/tsl/platform/statusor.h"
 #include "xla/tsl/platform/test.h"
-#include "tpu_raiden/core/raw_transfer_core.h"
 #include "tpu_raiden/frameworks/jax/mock_nanobind.h"
 #include "tpu_raiden/frameworks/jax/raw_transfer_internal.h"
+#include "tpu_sync/core/raw_transfer_core.h"
 
 namespace raiden {
 namespace {

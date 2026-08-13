@@ -40,17 +40,17 @@
 #include "absl/types/span.h"
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/tsl/platform/logging.h"
-#include "tpu_raiden/core/controller/controller_client.h"
-#include "tpu_raiden/core/controller/worker_service_server.h"
-#include "tpu_raiden/core/host_memory_allocator.h"
-#include "tpu_raiden/core/kv_cache_manager_with_transfer.h"
-#include "tpu_raiden/core/kv_manager_holder.h"
-#include "tpu_raiden/core/metrics_collector.h"  // IWYU pragma: keep
-#include "tpu_raiden/core/raiden_transfer_endpoint.h"
-#include "tpu_raiden/core/raw_transfer_core.h"
-#include "tpu_raiden/core/status_macros.h"
-#include "tpu_raiden/core/tpu_utils.h"
-#include "tpu_raiden/core/utils.h"  // IWYU pragma: keep
+#include "tpu_sync/core/controller/controller_client.h"
+#include "tpu_sync/core/controller/worker_service_server.h"
+#include "tpu_sync/core/host_memory_allocator.h"
+#include "tpu_sync/core/kv_cache_manager_with_transfer.h"
+#include "tpu_sync/core/kv_manager_holder.h"
+#include "tpu_sync/core/metrics_collector.h"  // IWYU pragma: keep
+#include "tpu_sync/core/raiden_transfer_endpoint.h"
+#include "tpu_sync/core/raw_transfer_core.h"
+#include "tpu_sync/core/status_macros.h"
+#include "tpu_sync/core/tpu_utils.h"
+#include "tpu_sync/core/utils.h"  // IWYU pragma: keep
 #ifndef WITHOUT_PYTHON
 #include "tpu_raiden/frameworks/jax/utils.h"
 

@@ -32,8 +32,6 @@
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
-#include "tpu_raiden/core/raiden_future.h"
-#include "tpu_raiden/core/raw_transfer_core.h"
 #include "tpu_raiden/frameworks/torch/kv_cache_manager.h"
 #include "tpu_raiden/frameworks/torch/pool_layout_nanobind.h"
 #include "tpu_raiden/frameworks/torch/torch_nanobind_utils.h"
@@ -41,6 +39,8 @@
 #include "tpu_raiden/kv_cache/kv_cache_store.h"
 #include "tpu_raiden/kv_cache/kv_cache_store_wrapper.h"
 #include "tpu_raiden/kv_cache/reshard/reshard_client.h"
+#include "tpu_sync/core/raiden_future.h"
+#include "tpu_sync/core/raw_transfer_core.h"
 #include "tpu_sync/rpc/raiden_service.pb.h"
 
 namespace nb = nanobind;

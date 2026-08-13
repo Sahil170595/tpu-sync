@@ -20,9 +20,9 @@ cc_binary(
     name = "h2h_benchmark_runner",
     srcs = ["h2h_benchmark_runner.cc"],
     deps = [
-        "//tpu_raiden/core:tpu_utils",
         "//tpu_raiden/kv_cache:kv_cache_manager_base",
         "//tpu_raiden/kv_cache:logical_block_manager",
+        "//tpu_sync/core:tpu_utils",
         "@com_google_absl//absl/flags:flag",
         "@com_google_absl//absl/flags:parse",
         "@com_google_absl//absl/status",

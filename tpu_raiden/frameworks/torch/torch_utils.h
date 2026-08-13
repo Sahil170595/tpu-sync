@@ -22,7 +22,7 @@
 #include "ATen/core/TensorBody.h"
 #include "torch_tpu/eager/tensor_to_buffer.h"
 #include "xla/pjrt/pjrt_client.h"
-#include "tpu_raiden/core/raw_transfer_core.h"
+#include "tpu_sync/core/raw_transfer_core.h"
 
 namespace tpu_raiden {
 namespace torch {

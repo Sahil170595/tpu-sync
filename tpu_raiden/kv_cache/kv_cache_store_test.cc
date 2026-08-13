@@ -52,11 +52,6 @@
 #include "grpcpp/support/status.h"
 #include "grpcpp/support/sync_stream.h"
 #include "xla/tsl/concurrency/future.h"
-#include "tpu_raiden/core/controller/controller_client.h"
-#include "tpu_raiden/core/controller/raiden_controller.h"
-#include "tpu_raiden/core/controller/test_util.h"
-#include "tpu_raiden/core/kv_manager_holder.h"
-#include "tpu_raiden/core/raiden_transfer_endpoint.h"
 #include "tpu_raiden/kv_cache/global_registry/global_registry.grpc.pb.h"
 #include "tpu_raiden/kv_cache/global_registry/global_registry_client.h"
 #include "tpu_raiden/kv_cache/global_registry/global_registry_server.h"
@@ -68,6 +63,11 @@
 #include "tpu_raiden/kv_cache/kv_cache_store_client.h"
 #include "tpu_raiden/kv_cache/lru_cache.h"
 #include "tpu_raiden/kv_cache/raiden_id.h"
+#include "tpu_sync/core/controller/controller_client.h"
+#include "tpu_sync/core/controller/raiden_controller.h"
+#include "tpu_sync/core/controller/test_util.h"
+#include "tpu_sync/core/kv_manager_holder.h"
+#include "tpu_sync/core/raiden_transfer_endpoint.h"
 #include "tpu_sync/proto/kv_cache_store_service.grpc.pb.h"
 
 #ifndef _WIN32

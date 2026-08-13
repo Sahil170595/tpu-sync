@@ -33,7 +33,7 @@
 #include "tpu_raiden/frameworks/jax/mock_nanobind.h"
 #endif
 #include "xla/pjrt/pjrt_client.h"
-#include "tpu_raiden/core/raw_transfer_core.h"
+#include "tpu_sync/core/raw_transfer_core.h"
 
 namespace nb = nanobind;
 

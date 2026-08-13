@@ -35,10 +35,10 @@
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/shape.h"
 #include "xla/shape_util.h"
-#include "tpu_raiden/core/host_memory_allocator.h"
-#include "tpu_raiden/core/raw_transfer_core.h"
-#include "tpu_raiden/core/utils.h"
 #include "tpu_raiden/frameworks/torch/torch_tpu_utils.h"
+#include "tpu_sync/core/host_memory_allocator.h"
+#include "tpu_sync/core/raw_transfer_core.h"
+#include "tpu_sync/core/utils.h"
 
 namespace raiden {
 namespace {

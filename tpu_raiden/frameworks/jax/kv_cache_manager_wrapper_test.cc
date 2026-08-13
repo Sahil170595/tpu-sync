@@ -27,13 +27,13 @@
 #include "absl/strings/str_cat.h"
 #include "xla/tsl/platform/test.h"
 // clang-format off
-#include "tpu_raiden/core/kv_cache_manager_with_transfer.h"
-#include "tpu_raiden/core/raiden_transfer_endpoint.h"
-#include "tpu_raiden/core/raw_transfer_core.h"
+#include "tpu_sync/core/kv_cache_manager_with_transfer.h"
+#include "tpu_sync/core/raiden_transfer_endpoint.h"
+#include "tpu_sync/core/raw_transfer_core.h"
 #include "tpu_raiden/frameworks/jax/kv_cache_manager.h"
-#include "tpu_raiden/core/controller/controller_service.h"
-#include "tpu_raiden/core/controller/test_util.h"
-#include "tpu_raiden/core/controller/raiden_controller.h"
+#include "tpu_sync/core/controller/controller_service.h"
+#include "tpu_sync/core/controller/test_util.h"
+#include "tpu_sync/core/controller/raiden_controller.h"
 // clang-format on
 #include "tpu_sync/rpc/raiden_service.pb.h"
 

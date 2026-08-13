@@ -44,10 +44,6 @@
 #include "grpcpp/create_channel.h"
 #include "grpcpp/security/credentials.h"
 #include "xla/tsl/concurrency/future.h"
-#include "tpu_raiden/core/buffer.h"
-#include "tpu_raiden/core/controller/raiden_controller.h"
-#include "tpu_raiden/core/numa_thread_pool.h"
-#include "tpu_raiden/core/status_macros.h"
 #include "tpu_raiden/kv_cache/global_registry/global_registry_client.h"
 #include "tpu_raiden/kv_cache/host_offload_backend.h"
 #include "tpu_raiden/kv_cache/kv_cache_metadata.h"
@@ -55,6 +51,10 @@
 #include "tpu_raiden/kv_cache/kv_cache_store_backend_factory.h"
 #include "tpu_raiden/kv_cache/raiden_id.h"
 #include "tpu_raiden/kv_cache/reshard/reshard_service.h"
+#include "tpu_sync/core/buffer.h"
+#include "tpu_sync/core/controller/raiden_controller.h"
+#include "tpu_sync/core/numa_thread_pool.h"
+#include "tpu_sync/core/status_macros.h"
 #include "tpu_sync/rpc/raiden_service.pb.h"
 
 namespace tpu_raiden {

@@ -41,6 +41,8 @@ struct MetricMetadata {
   MetricType type;
 };
 
+inline constexpr absl::string_view kPrometheus = "prometheus";
+
 namespace metric_names {
 
 inline constexpr absl::string_view kSentBytesTotal = "sent_bytes_total";

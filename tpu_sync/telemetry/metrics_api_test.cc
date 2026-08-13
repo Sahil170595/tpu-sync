@@ -76,6 +76,7 @@ TEST_F(MetricsApiTest, GlobalMetricStoreSingleton) {
 }
 
 TEST_F(MetricsApiTest, MetricMetadataConstants) {
+  EXPECT_EQ(kPrometheus, "prometheus");
   EXPECT_EQ(metric_metadata::kSentBytesTotal.description,
             metric_descriptions::kSentBytesTotal);
   EXPECT_EQ(metric_descriptions::kSentBytesTotal,

@@ -51,12 +51,24 @@ struct StoreRecord {
   std::string store_server_address;
   std::string controller_address;
   absl::Time expire_time;
+  // Used to refresh the expiration time in Heartbeat; InfiniteDuration when the
+  // registration never expires (ttl_seconds <= 0).
+  absl::Duration ttl;
+  std::string kv_pool_group;
+  int32_t evict_tier = 0;
+  // Last reported status; default-initialized until the first Heartbeat.
+  StoreStatus status;
 };
 
 class GlobalRegistryServiceImpl final : public GlobalRegistryService::Service {
  public:
   // Default maximum number of entries per streamed PullOwned response.
   static constexpr int64_t kDefaultPullOwnedBatchSize = 4096;
+
+  // Targets returned by GetPlacementTargets when the request does not set
+  // max_targets: enough fallbacks to probe past a couple of full stores,
+  // small enough that a stale-capacity herd cannot pile onto many at once.
+  static constexpr int32_t kDefaultMaxPlacementTargets = 3;
 
   explicit GlobalRegistryServiceImpl(
       absl::Duration default_ttl = absl::Hours(1),
@@ -93,6 +105,14 @@ class GlobalRegistryServiceImpl final : public GlobalRegistryService::Service {
   grpc::Status ResolveStore(grpc::ServerContext* context,
                             const ResolveStoreRequest* request,
                             ResolveStoreResponse* response) override;
+
+  grpc::Status Heartbeat(grpc::ServerContext* context,
+                         const HeartbeatRequest* request,
+                         HeartbeatResponse* response) override;
+
+  grpc::Status GetPlacementTargets(
+      grpc::ServerContext* context, const GetPlacementTargetsRequest* request,
+      GetPlacementTargetsResponse* response) override;
 
   grpc::Status UnregisterStore(grpc::ServerContext* context,
                                const UnregisterStoreRequest* request,

@@ -159,7 +159,8 @@ absl::Status GlobalRegistryClient::Unregister(
 
 absl::Status GlobalRegistryClient::RegisterStore(
     const RaidenId& raiden_id, absl::string_view store_server_address,
-    absl::string_view controller_address, absl::Duration ttl) {
+    absl::string_view controller_address, absl::Duration ttl,
+    absl::string_view kv_pool_group, int32_t evict_tier) {
   RegisterStoreRequest request;
   StoreInfo* store = request.mutable_store();
   ToProto(raiden_id, store->mutable_raiden_id());
@@ -168,6 +169,8 @@ absl::Status GlobalRegistryClient::RegisterStore(
   if (ttl > absl::ZeroDuration()) {
     store->set_ttl_seconds(absl::ToInt64Seconds(ttl));
   }
+  store->set_kv_pool_group(std::string(kv_pool_group));
+  store->set_evict_tier(evict_tier);
 
   RegisterStoreResponse response;
   grpc::ClientContext context;
@@ -219,6 +222,53 @@ absl::Status GlobalRegistryClient::UnregisterStore(const RaidenId& raiden_id) {
   // Deliberately not an error when nothing was registered: teardown must be
   // idempotent, and a store that never registered still calls this.
   return absl::OkStatus();
+}
+
+absl::Status GlobalRegistryClient::Heartbeat(const RaidenId& raiden_id,
+                                             const StoreStatus& status) {
+  HeartbeatRequest request;
+  ToProto(raiden_id, request.mutable_raiden_id());
+  *request.mutable_status() = status;
+
+  HeartbeatResponse response;
+  grpc::ClientContext context;
+  context.set_deadline(
+      absl::ToChronoTime(absl::Now() + kRegisterStoreRpcTimeout));
+  grpc::Status rpc_status = stub_->Heartbeat(&context, request, &response);
+
+  if (!rpc_status.ok()) {
+    return absl::InternalError(rpc_status.error_message());
+  }
+  if (!response.registered()) {
+    return absl::NotFoundError(
+        "no live store registration to refresh; RegisterStore again");
+  }
+  return absl::OkStatus();
+}
+
+absl::StatusOr<std::vector<StoreInfo>>
+GlobalRegistryClient::GetPlacementTargets(const RaidenId& raiden_id,
+                                          int32_t max_targets) {
+  GetPlacementTargetsRequest request;
+  ToProto(raiden_id, request.mutable_raiden_id());
+  request.set_max_targets(max_targets);
+
+  GetPlacementTargetsResponse response;
+  grpc::ClientContext context;
+  context.set_deadline(
+      absl::ToChronoTime(absl::Now() + kRegisterStoreRpcTimeout));
+  grpc::Status status =
+      stub_->GetPlacementTargets(&context, request, &response);
+
+  if (!status.ok()) {
+    // Preserve the gRPC code (grpc and absl codes match 1:1): NotFound is the
+    // caller's cue to RegisterStore again, not a transport failure.
+    return absl::Status(static_cast<absl::StatusCode>(status.error_code()),
+                        status.error_message());
+  }
+  // An empty list is an answer (bottom tier), not an error.
+  return std::vector<StoreInfo>(response.targets().begin(),
+                                response.targets().end());
 }
 
 absl::Status GlobalRegistryClient::RegisterKVTransferSpec(

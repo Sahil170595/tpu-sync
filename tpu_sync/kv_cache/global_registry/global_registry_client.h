@@ -82,10 +82,31 @@ class GlobalRegistryClient {
   // `raiden_id` replaces the previous coordinates.
   // `ttl` of zero (the default) means the registration never expires; see
   // StoreInfo.ttl_seconds for why stores differ from block entries here.
+  // `kv_pool_group` and `evict_tier` are the store's placement attributes
+  // (see StoreInfo); a store that leaves the group empty never serves as a
+  // placement target.
   absl::Status RegisterStore(const RaidenId& raiden_id,
                              absl::string_view store_server_address,
                              absl::string_view controller_address = "",
-                             absl::Duration ttl = absl::ZeroDuration());
+                             absl::Duration ttl = absl::ZeroDuration(),
+                             absl::string_view kv_pool_group = "",
+                             int32_t evict_tier = 0);
+
+  // Reports this store's mutable status and refreshes its registration TTL.
+  // NotFound when the registry holds no live registration for `raiden_id`
+  // (e.g. it expired, or the registry restarted): the caller must
+  // RegisterStore again -- a heartbeat carries no coordinates and registers
+  // nothing.
+  absl::Status Heartbeat(const RaidenId& raiden_id, const StoreStatus& status);
+
+  // Placement targets for a pressured store: live stores of `raiden_id`'s
+  // registered kv_pool_group on the nearest evict tier greater than its own,
+  // in the order offers should be made. Empty when no greater tier exists
+  // (the caller is the bottom tier). `max_targets` of 0 (the default) means
+  // the server's default cap. NotFound when `raiden_id` has no live store
+  // registration: RegisterStore again, as with Heartbeat.
+  absl::StatusOr<std::vector<StoreInfo>> GetPlacementTargets(
+      const RaidenId& raiden_id, int32_t max_targets = 0);
 
   // Resolves a peer's store coordinates.
   // Returns NotFound when no live registration exists -- that is an ordinary

@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <thread>  // NOLINT(build/c++11)
 #include <vector>
@@ -330,9 +331,11 @@ grpc::Status GlobalRegistryServiceImpl::RegisterStore(
 
   const StoreInfo& store = request->store();
   // Non-positive ttl means "never expires" for stores -- see StoreInfo.
-  const absl::Time expire_time =
-      store.ttl_seconds() > 0 ? absl::Now() + absl::Seconds(store.ttl_seconds())
-                              : absl::InfiniteFuture();
+  const absl::Duration ttl = store.ttl_seconds() > 0
+                                 ? absl::Seconds(store.ttl_seconds())
+                                 : absl::InfiniteDuration();
+  // Adding InfiniteDuration saturates to InfiniteFuture.
+  const absl::Time expire_time = absl::Now() + ttl;
 
   absl::MutexLock lock(mutex_);
   // Assignment, not insertion: re-registering the same RaidenId replaces the
@@ -341,6 +344,9 @@ grpc::Status GlobalRegistryServiceImpl::RegisterStore(
       .store_server_address = store.store_server_address(),
       .controller_address = store.controller_address(),
       .expire_time = expire_time,
+      .ttl = ttl,
+      .kv_pool_group = store.kv_pool_group(),
+      .evict_tier = store.evict_tier(),
   };
 
   response->set_success(true);
@@ -387,6 +393,109 @@ grpc::Status GlobalRegistryServiceImpl::UnregisterStore(
   response->set_success(erased > 0);
   if (erased == 0) {
     response->set_error_message("no store registered for that raiden_id");
+  }
+  return grpc::Status::OK;
+}
+
+grpc::Status GlobalRegistryServiceImpl::Heartbeat(
+    grpc::ServerContext* context, const HeartbeatRequest* request,
+    HeartbeatResponse* response) {
+  if (!request->has_raiden_id() || request->raiden_id().job_name().empty()) {
+    return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                        "raiden_id cannot be empty");
+  }
+
+  absl::MutexLock lock(mutex_);
+  auto it = store_registry_.find(FromProto(request->raiden_id()));
+  // An expired record counts as already deleted, even before the cleanup
+  // thread removes it: the heartbeat must not extend it, the store has to
+  // re-register with its full coordinates.
+  if (it == store_registry_.end() || it->second.expire_time <= absl::Now()) {
+    response->set_registered(false);
+    return grpc::Status::OK;
+  }
+
+  it->second.status = request->status();
+  if (it->second.ttl != absl::InfiniteDuration()) {
+    it->second.expire_time = absl::Now() + it->second.ttl;
+  }
+  response->set_registered(true);
+  return grpc::Status::OK;
+}
+
+grpc::Status GlobalRegistryServiceImpl::GetPlacementTargets(
+    grpc::ServerContext* context, const GetPlacementTargetsRequest* request,
+    GetPlacementTargetsResponse* response) {
+  if (!request->has_raiden_id() || request->raiden_id().job_name().empty()) {
+    return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                        "raiden_id cannot be empty");
+  }
+  const int32_t max_targets = request->max_targets() > 0
+                                  ? request->max_targets()
+                                  : kDefaultMaxPlacementTargets;
+
+  const absl::Time now = absl::Now();
+  absl::MutexLock lock(mutex_);
+
+  // The caller's own registration supplies its group and tier. Same rule as
+  // Heartbeat: an expired record counts as already deleted.
+  auto caller_it = store_registry_.find(FromProto(request->raiden_id()));
+  if (caller_it == store_registry_.end() ||
+      caller_it->second.expire_time <= now) {
+    return grpc::Status(
+        grpc::StatusCode::NOT_FOUND,
+        "no live store registration for the caller; RegisterStore again");
+  }
+  if (caller_it->second.kv_pool_group.empty()) {
+    return grpc::Status(
+        grpc::StatusCode::FAILED_PRECONDITION,
+        "caller registered without a kv_pool_group, so it has no peers to "
+        "place onto");
+  }
+  const std::string& group = caller_it->second.kv_pool_group;
+  const int32_t caller_tier = caller_it->second.evict_tier;
+
+  // One scan collects the group's live greater-tier members and the nearest
+  // such tier; only that tier's members stay. No per-group index: a linear
+  // scan over the whole roster (hundreds of entries, read once per sweep
+  // period per pressured store) is acceptable today. If it stops being so,
+  // maintain a kv_pool_group -> raiden_id map here and scan only the
+  // caller's group.
+  struct Candidate {
+    const RaidenId* raiden_id;
+    const StoreRecord* record;
+  };
+  std::vector<Candidate> candidates;
+  int32_t target_tier = std::numeric_limits<int32_t>::max();
+  for (const auto& [raiden_id, record] : store_registry_) {
+    if (record.kv_pool_group == group && record.evict_tier > caller_tier &&
+        record.expire_time > now) {
+      target_tier = std::min(target_tier, record.evict_tier);
+      candidates.push_back({&raiden_id, &record});
+    }
+  }
+  std::erase_if(candidates, [target_tier](const Candidate& c) {
+    return c.record->evict_tier != target_tier;
+  });
+
+  // Descending reported free capacity; stores reporting none sort last.
+  // Spreading load across destinations currently comes from kv_pool_group
+  // partitioning alone: each group has its own top-K, so no single global top-K
+  // is handed to every caller. If one group's callers still converge too hard
+  // on its fullest-free stores, replace this sort with a draw weighted by free
+  // capacity (e.g. Efraimidis-Spirakis sampling without replacement).
+  std::sort(candidates.begin(), candidates.end(),
+            [](const Candidate& a, const Candidate& b) {
+              return a.record->status.free_blocks() >
+                     b.record->status.free_blocks();
+            });
+
+  for (size_t i = 0;
+       i < candidates.size() && response->targets_size() < max_targets; ++i) {
+    StoreInfo* out = response->add_targets();
+    ToProto(*candidates[i].raiden_id, out->mutable_raiden_id());
+    out->set_store_server_address(candidates[i].record->store_server_address);
+    out->set_controller_address(candidates[i].record->controller_address);
   }
   return grpc::Status::OK;
 }

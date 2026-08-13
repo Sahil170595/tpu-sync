@@ -66,6 +66,20 @@ service GlobalRegistryService {
   rpc UnregisterStore(UnregisterStoreRequest)
       returns (UnregisterStoreResponse) {  }
 
+  // Refreshes a store registration's TTL and updates its mutable status
+  // (free capacity today; further per-store signals are added to StoreStatus,
+  // not as new RPCs). A store that stops calling this past its TTL expires
+  // and drops out of ResolveStore and GetPlacementTargets.
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse) {  }
+
+  // Returns the live stores a pressured store should offer its cold blocks
+  // to: members of the caller's kv_pool_group on the nearest evict tier
+  // strictly greater than the caller's, ordered by reported free capacity.
+  // The caller is identified by its own store registration; NOT_FOUND means
+  // it has no live one and must RegisterStore again.
+  rpc GetPlacementTargets(GetPlacementTargetsRequest)
+      returns (GetPlacementTargetsResponse) {  }
+
   // Atomically registers the deployment's KVTransferSpec when none is
   // stored yet, otherwise validates the request against the stored spec and
   // rejects any difference. Idempotent by design.
@@ -213,6 +227,28 @@ message StoreInfo {
   // choice is that a crashed store leaves a stale entry until it restarts and
   // overwrites it. Set a positive TTL once callers refresh their registration.
   int64 ttl_seconds = 4;
+
+  // KV pool group this store belongs to: the same key its group's
+  // KVTransferSpec is registered under. Placement never crosses groups.
+  // Optional; a store that leaves it empty never serves as a placement
+  // target.
+  string kv_pool_group = 5;
+
+  // Demotion level for evict placement. Cold blocks flow strictly to greater
+  // tiers: serving hosts are tier 0, host store nodes are 1 and up. Assigned
+  // by deployment configuration.
+  int32 evict_tier = 6;
+}
+
+// Mutable per-store state, refreshed by Heartbeat. Every future per-store
+// signal (I/O load etc.) is a field added HERE -- one report channel for
+// all of them.
+message StoreStatus {
+  // Free block slots in the store's KV pool. Every store in a kv_pool_group
+  // shares the group's block geometry (one KVTransferSpec), so free block
+  // counts are directly comparable within a group -- and placement never
+  // compares across groups.
+  int64 free_blocks = 1;
 }
 
 message RegisterStoreRequest {
@@ -293,4 +329,33 @@ message UnregisterStoreResponse {
   // False if there was nothing registered for that RaidenId.
   bool success = 1;
   string error_message = 2;
+}
+
+message HeartbeatRequest {
+  tpu_raiden.rpc.RaidenIdProto raiden_id = 1;
+  StoreStatus status = 2;
+}
+
+message HeartbeatResponse {
+  // False when no live registration exists for the requested RaidenId --
+  // e.g. the registry restarted or the registration expired. The caller
+  // must RegisterStore again. The RPC still returns OK: "not registered"
+  // is an answer, not an error.
+  bool registered = 1;
+}
+
+message GetPlacementTargetsRequest {
+  // The calling store.
+  tpu_raiden.rpc.RaidenIdProto raiden_id = 1;
+
+  // Upper bound on returned targets. 0 or negative means the server default.
+  int32 max_targets = 2;
+}
+
+message GetPlacementTargetsResponse {
+  // Live stores of the selected tier, in the order the caller should offer
+  // to them: most reported free capacity first, stores reporting none last.
+  // Only identity and addresses are populated. May be empty (no greater
+  // tier exists -- the caller is the bottom tier and should drop locally).
+  repeated StoreInfo targets = 1;
 }

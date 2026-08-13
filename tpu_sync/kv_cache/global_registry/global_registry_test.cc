@@ -23,6 +23,7 @@
 #include <gtest/gtest.h>
 #include "absl/status/status.h"
 #include "absl/strings/match.h"
+#include "absl/strings/str_cat.h"
 #include "absl/time/clock.h"
 #include "absl/time/time.h"
 #include "grpcpp/channel.h"
@@ -549,6 +550,169 @@ TEST_F(GlobalRegistryTest, StoreRegistrationExpiresWithExplicitTtl) {
   absl::SleepFor(absl::Milliseconds(1500));
 
   EXPECT_TRUE(absl::IsNotFound(client_->ResolveStore(id).status()));
+}
+
+TEST_F(GlobalRegistryTest, HeartbeatRefreshesStoreTtl) {
+  RaidenId id = {"jobS", "r0", "dataS", 0};
+  ASSERT_TRUE(client_
+                  ->RegisterStore(id, "10.0.0.7:1111",
+                                  /*controller_address=*/"",
+                                  /*ttl=*/absl::Seconds(2))
+                  .ok());
+
+  // Past the halfway point of the original TTL; the heartbeat must push the
+  // expiry out so the registration survives beyond the original deadline.
+  absl::SleepFor(absl::Milliseconds(1500));
+  StoreStatus status;
+  status.set_free_blocks(7);
+  ASSERT_TRUE(client_->Heartbeat(id, status).ok());
+
+  absl::SleepFor(absl::Milliseconds(1500));  // 3.0s > the original 2s TTL.
+  EXPECT_TRUE(client_->ResolveStore(id).ok());
+
+  // Silence past the refreshed deadline: the registration expires.
+  absl::SleepFor(absl::Milliseconds(2500));
+  EXPECT_TRUE(absl::IsNotFound(client_->ResolveStore(id).status()));
+}
+
+// A heartbeat carries no coordinates, so it must not resurrect or create a
+// registration -- the store has to RegisterStore again.
+TEST_F(GlobalRegistryTest, HeartbeatWithoutRegistrationIsNotFound) {
+  RaidenId id = {"jobS", "r0", "dataS", 0};
+  StoreStatus status;
+  status.set_free_blocks(1);
+  EXPECT_TRUE(absl::IsNotFound(client_->Heartbeat(id, status)));
+  EXPECT_TRUE(absl::IsNotFound(client_->ResolveStore(id).status()));
+}
+
+TEST_F(GlobalRegistryTest, PlacementTargetsComeFromNearestGreaterTier) {
+  auto register_store = [&](absl::string_view job, absl::string_view group,
+                            int32_t tier) {
+    RaidenId id = {std::string(job), "r0", "dataS", 0};
+    EXPECT_TRUE(client_
+                    ->RegisterStore(id, absl::StrCat(job, ":1111"),
+                                    /*controller_address=*/"",
+                                    /*ttl=*/absl::ZeroDuration(), group, tier)
+                    .ok());
+    return id;
+  };
+  RaidenId peer_t0 = register_store("peer_t0", "groupA", 0);
+  RaidenId node_t1 = register_store("node_t1", "groupA", 1);
+  RaidenId node_t2 = register_store("node_t2", "groupA", 2);
+  register_store("other_group_t1", "groupB", 1);  // Wrong group: skipped.
+
+  // From tier 0 the nearest greater tier is 1: tier 2 and the wrong group
+  // are skipped, and so is the caller's own tier.
+  auto targets = client_->GetPlacementTargets(peer_t0, /*max_targets=*/8);
+  ASSERT_TRUE(targets.ok()) << targets.status().ToString();
+  ASSERT_EQ(targets->size(), 1);
+  EXPECT_EQ((*targets)[0].raiden_id().job_name(), "node_t1");
+  EXPECT_EQ((*targets)[0].store_server_address(), "node_t1:1111");
+
+  // From tier 1 the nearest greater tier is 2.
+  targets = client_->GetPlacementTargets(node_t1, /*max_targets=*/8);
+  ASSERT_TRUE(targets.ok());
+  ASSERT_EQ(targets->size(), 1);
+  EXPECT_EQ((*targets)[0].raiden_id().job_name(), "node_t2");
+
+  // The bottom tier has no greater tier: empty is the answer, not an error.
+  targets = client_->GetPlacementTargets(node_t2, /*max_targets=*/8);
+  ASSERT_TRUE(targets.ok());
+  EXPECT_TRUE(targets->empty());
+}
+
+TEST_F(GlobalRegistryTest, PlacementTargetsFavorReportedFreeCapacity) {
+  RaidenId caller = {"pressured_t0", "r0", "dataS", 0};
+  ASSERT_TRUE(client_
+                  ->RegisterStore(caller, "pressured_t0:1111",
+                                  /*controller_address=*/"",
+                                  /*ttl=*/absl::ZeroDuration(), "groupA",
+                                  /*evict_tier=*/0)
+                  .ok());
+  auto register_node = [&](absl::string_view job, int64_t free_blocks) {
+    RaidenId id = {std::string(job), "r0", "dataS", 0};
+    ASSERT_TRUE(client_
+                    ->RegisterStore(id, absl::StrCat(job, ":1111"),
+                                    /*controller_address=*/"",
+                                    /*ttl=*/absl::ZeroDuration(), "groupA",
+                                    /*evict_tier=*/1)
+                    .ok());
+    StoreStatus status;
+    status.set_free_blocks(free_blocks);
+    ASSERT_TRUE(client_->Heartbeat(id, status).ok());
+  };
+  register_node("node_full", 0);
+  register_node("node_free", 50);
+
+  // A store with no reported free space is never preferred over one with
+  // some: it can only appear after every store with free space.
+  auto targets = client_->GetPlacementTargets(caller, /*max_targets=*/1);
+  ASSERT_TRUE(targets.ok());
+  ASSERT_EQ(targets->size(), 1);
+  EXPECT_EQ((*targets)[0].raiden_id().job_name(), "node_free");
+
+  // With room for both, the full store still shows up -- as the last resort.
+  targets = client_->GetPlacementTargets(caller, /*max_targets=*/8);
+  ASSERT_TRUE(targets.ok());
+  ASSERT_EQ(targets->size(), 2);
+  EXPECT_EQ((*targets)[0].raiden_id().job_name(), "node_free");
+  EXPECT_EQ((*targets)[1].raiden_id().job_name(), "node_full");
+}
+
+TEST_F(GlobalRegistryTest, PlacementTargetsHonorCapAndSkipExpired) {
+  RaidenId caller = {"pressured_t0", "r0", "dataS", 0};
+  ASSERT_TRUE(client_
+                  ->RegisterStore(caller, "pressured_t0:1111",
+                                  /*controller_address=*/"",
+                                  /*ttl=*/absl::ZeroDuration(), "groupA",
+                                  /*evict_tier=*/0)
+                  .ok());
+  auto register_node = [&](absl::string_view job, absl::Duration ttl) {
+    RaidenId id = {std::string(job), "r0", "dataS", 0};
+    ASSERT_TRUE(client_
+                    ->RegisterStore(id, absl::StrCat(job, ":1111"),
+                                    /*controller_address=*/"",
+                                    ttl, "groupA", /*evict_tier=*/1)
+                    .ok());
+  };
+  register_node("node_a", absl::ZeroDuration());
+  register_node("node_b", absl::ZeroDuration());
+  register_node("node_c", absl::ZeroDuration());
+  register_node("node_d", absl::ZeroDuration());
+  register_node("node_dead", absl::Seconds(1));
+
+  absl::SleepFor(absl::Milliseconds(1500));
+
+  auto targets = client_->GetPlacementTargets(caller, /*max_targets=*/8);
+  ASSERT_TRUE(targets.ok());
+  EXPECT_EQ(targets->size(), 4);  // node_dead expired without heartbeats.
+
+  targets = client_->GetPlacementTargets(caller, /*max_targets=*/1);
+  ASSERT_TRUE(targets.ok());
+  EXPECT_EQ(targets->size(), 1);
+
+  // An unset max_targets falls back to the server default.
+  targets = client_->GetPlacementTargets(caller);
+  ASSERT_TRUE(targets.ok());
+  EXPECT_EQ(targets->size(),
+            GlobalRegistryServiceImpl::kDefaultMaxPlacementTargets);
+}
+
+TEST_F(GlobalRegistryTest, PlacementTargetsRequireALiveRegisteredCaller) {
+  EXPECT_TRUE(absl::IsInvalidArgument(
+      client_->GetPlacementTargets({"", "", "", 0}).status()));
+
+  // Placement is answered from the caller's own registration, so an
+  // unregistered caller gets NotFound -- its cue to RegisterStore again.
+  RaidenId unregistered = {"ghost", "r0", "dataS", 0};
+  EXPECT_TRUE(
+      absl::IsNotFound(client_->GetPlacementTargets(unregistered).status()));
+
+  // A store registered without a kv_pool_group opted out of placement.
+  RaidenId groupless = {"loner", "r0", "dataS", 0};
+  ASSERT_TRUE(client_->RegisterStore(groupless, "loner:1111").ok());
+  EXPECT_TRUE(absl::IsFailedPrecondition(
+      client_->GetPlacementTargets(groupless).status()));
 }
 
 // The two tables are independent: blocks can be registered by a store that

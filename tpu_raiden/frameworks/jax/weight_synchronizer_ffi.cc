@@ -44,7 +44,7 @@
 #include "xla/stream_executor/stream.h"
 #include "xla/stream_executor/stream_executor.h"
 #include "tpu_raiden/frameworks/jax/weight_synchronizer_ffi_internal.h"
-#include "tpu_raiden/weight_sync/weight_synchronizer_base.h"
+#include "tpu_sync/weight_sync/weight_synchronizer_base.h"
 
 namespace tpu_raiden {
 namespace weight_sync {

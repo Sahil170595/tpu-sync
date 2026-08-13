@@ -142,10 +142,10 @@ nanobind_extension(
         ":nb_statusor",
         ":raw_transfer_jax",
         ":weight_synchronizer_jax",
-        "//tpu_raiden/weight_sync:weight_synchronizer_base",
         "//tpu_sync/core:raw_transfer_core",
         "//tpu_sync/kv_cache:kv_cache_store",
         "//tpu_sync/kv_cache:kv_cache_store_wrapper",
+        "//tpu_sync/weight_sync:weight_synchronizer_base",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
@@ -227,7 +227,7 @@ cc_library(
     tags = ["manual"],
     visibility = ["//visibility:public"],
     deps = [
-        "//tpu_raiden/weight_sync:weight_synchronizer_base",
+        "//tpu_sync/weight_sync:weight_synchronizer_base",
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/status",
@@ -286,8 +286,8 @@ cc_library(
     deps = [
         ":jax_utils",
         ":utils",
-        "//tpu_raiden/weight_sync:weight_synchronizer_base",
         "//tpu_sync/core:raw_transfer_core",
+        "//tpu_sync/weight_sync:weight_synchronizer_base",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@nanobind",
@@ -391,7 +391,7 @@ cc_library(
     ],
     features = ["-use_header_modules"],
     deps = [
-        "//tpu_raiden/weight_sync:weight_synchronizer_base",
+        "//tpu_sync/weight_sync:weight_synchronizer_base",
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/status",
@@ -414,7 +414,7 @@ cc_test(
     features = ["-use_header_modules"],
     deps = [
         ":weight_synchronizer_ffi_mock",
-        "//tpu_raiden/weight_sync:weight_synchronizer_base",
+        "//tpu_sync/weight_sync:weight_synchronizer_base",
         "@com_google_absl//absl/container:flat_hash_set",
         "@com_google_absl//absl/log",
         "@xla//xla/ffi/api:c_api",

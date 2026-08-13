@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "tpu_raiden/weight_sync/tiling_utils.h"
+#include "tpu_sync/weight_sync/tiling_utils.h"
 
 #include <cstdint>
 #include <vector>

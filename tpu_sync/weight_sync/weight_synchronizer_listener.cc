@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "tpu_raiden/weight_sync/weight_synchronizer_listener.h"
+#include "tpu_sync/weight_sync/weight_synchronizer_listener.h"
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -29,8 +29,8 @@
 #include <vector>
 
 #include "absl/log/log.h"
-#include "tpu_raiden/weight_sync/weight_synchronizer_base.h"
 #include "tpu_sync/rpc/raiden_service.pb.h"
+#include "tpu_sync/weight_sync/weight_synchronizer_base.h"
 
 namespace tpu_raiden {
 namespace weight_sync {

@@ -57,7 +57,7 @@ cc_library(
     deps = [
         ":torch_tpu_tensor_to_buffer_headers",
         ":torch_utils",
-        "//tpu_raiden/weight_sync:weight_synchronizer_base",
+        "//tpu_sync/weight_sync:weight_synchronizer_base",
         "@torch_tpu//shims/torch:aten_headers",
     ],
 )
@@ -201,13 +201,13 @@ nanobind_extension(
         ":pool_layout_nanobind",
         ":torch_nanobind_utils",
         ":weight_synchronizer_torch",
-        "//tpu_raiden/weight_sync:weight_synchronizer_base",
         "//tpu_sync/core:raw_transfer_core",
         "//tpu_sync/kv_cache:kv_cache_manager_base",
         "//tpu_sync/kv_cache:kv_cache_store",
         "//tpu_sync/kv_cache:kv_cache_store_wrapper",
         "//tpu_sync/kv_cache/reshard:reshard_client",
         "//tpu_sync/rpc:raiden_service_cc_proto",
+        "//tpu_sync/weight_sync:weight_synchronizer_base",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
@@ -410,7 +410,7 @@ cc_library(
     deps = [
         ":torch_tpu_tensor_to_buffer_headers",
         ":torch_utils_mock",
-        "//tpu_raiden/weight_sync:weight_synchronizer_base",
+        "//tpu_sync/weight_sync:weight_synchronizer_base",
         "@torch_tpu//shims/torch:aten_headers",
         "@torch_tpu//shims/torch:torch_headers",
     ],

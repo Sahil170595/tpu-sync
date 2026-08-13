@@ -20,7 +20,7 @@
 
 #include "ATen/core/TensorBody.h"
 #include "tpu_raiden/frameworks/torch/torch_utils.h"
-#include "tpu_raiden/weight_sync/weight_synchronizer_base.h"
+#include "tpu_sync/weight_sync/weight_synchronizer_base.h"
 
 namespace tpu_raiden {
 namespace torch {

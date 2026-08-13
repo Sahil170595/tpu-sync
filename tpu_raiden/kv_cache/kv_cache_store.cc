@@ -448,14 +448,24 @@ KVCacheStore::KVCacheStore(
             /*preprovision_worker_buffers=*/false, expected_worker_count);
   }
 
-  // registry_client_ is assigned a few lines above, and must be: a backend
-  // built without it publishes nothing and, more importantly, cannot RESOLVE a
-  // peer -- peer resolution runs through the BACKEND's registry client, not
-  // this store's. Leaving it null here gave a store that registered itself
-  // perfectly and could reach nobody. Do not move this above that assignment.
-  backends_ = {std::make_shared<HostOffloadBackend>(
-      capacity, std::move(metadata), raiden_id_, raiden_controller_.get(),
-      registry_client_)};
+  // The backend must get its own registry client (built by the factory from
+  // the same address): peer resolution runs through the BACKEND's registry
+  // client, not this store's, and a backend without one registers itself
+  // perfectly but can reach nobody.
+  BackendConfig backend_config;
+  backend_config.type = "HostOffloadBackend";
+  backend_config.capacity = capacity;
+  backend_config.global_registry_address = std::string(global_registry_address);
+  backend_config.raiden_id = raiden_id_;
+  backend_config.metadata = std::move(metadata);
+  auto backend_or = KVCacheStoreBackendFactory::Instance().CreateBackend(
+      backend_config, raiden_controller_.get());
+  if (!backend_or.ok()) {
+    LOG(FATAL) << "KVCacheStore failed to create its tier-0 backend: "
+               << backend_or.status().message()
+               << " Use KVCacheStore::Create() for a recoverable error.";
+  }
+  backends_ = {*std::move(backend_or)};
 
   if (raiden_controller_) {
     if (absl::Status s = SetRaidenController(raiden_controller_.get());
@@ -499,12 +509,22 @@ KVCacheStore::KVCacheStore(
         std::make_shared<global_registry::GlobalRegistryClient>(channel);
   }
 
-  // See the same call in the capacity constructor: the backend needs this
-  // store's registry client to resolve peers, and registry_client_ is assigned
-  // just above. Do not reorder.
-  backends_ = {std::make_shared<HostOffloadBackend>(
-      capacity, std::move(metadata), raiden_id_, raiden_controller_.get(),
-      registry_client_)};
+  // See the capacity constructor: the factory builds the backend its own
+  // registry client from the same address.
+  BackendConfig backend_config;
+  backend_config.type = "HostOffloadBackend";
+  backend_config.capacity = capacity;
+  backend_config.global_registry_address = std::string(global_registry_address);
+  backend_config.raiden_id = raiden_id_;
+  backend_config.metadata = std::move(metadata);
+  auto backend_or = KVCacheStoreBackendFactory::Instance().CreateBackend(
+      backend_config, raiden_controller_.get());
+  if (!backend_or.ok()) {
+    LOG(FATAL) << "KVCacheStore failed to create its tier-0 backend: "
+               << backend_or.status().message()
+               << " Use KVCacheStore::Create() for a recoverable error.";
+  }
+  backends_ = {*std::move(backend_or)};
 
   if (raiden_controller_) {
     if (absl::Status s = SetRaidenController(raiden_controller_.get());

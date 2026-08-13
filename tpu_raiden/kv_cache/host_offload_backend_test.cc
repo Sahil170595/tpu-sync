@@ -50,6 +50,15 @@ namespace kv_cache {
 
 class HostOffloadBackendTest {
  public:
+  // Tests construct backends directly; production code goes through
+  // HostOffloadBackend::Create.
+  class Backend : public HostOffloadBackend {
+   public:
+    template <typename... Args>
+    explicit Backend(Args&&... args)
+        : HostOffloadBackend(std::forward<Args>(args)...) {}
+  };
+
   static absl::StatusOr<KVTransferSpecConfig> ComposeKVTransferSpec(
       absl::Span<const core::controller::WorkerRegistration> workers) {
     return HostOffloadBackend::ComposeKVTransferSpec(workers);
@@ -61,7 +70,7 @@ namespace {
 using ::testing::UnorderedElementsAre;
 
 TEST(HostOffloadBackendTest, BasicInsertAndLookup) {
-  HostOffloadBackend backend(/*capacity=*/2);
+  HostOffloadBackendTest::Backend backend(/*capacity=*/2);
   EXPECT_EQ(backend.name(), "HostOffloadBackend");
   EXPECT_EQ(backend.GetCapacity(), 2);
   EXPECT_EQ(backend.GetSize(), 0);
@@ -98,7 +107,7 @@ TEST(HostOffloadBackendTest, BasicInsertAndLookup) {
 }
 
 TEST(HostOffloadBackendTest, LookupUnboundedByAvailableSpace) {
-  HostOffloadBackend backend(/*capacity=*/2);
+  HostOffloadBackendTest::Backend backend(/*capacity=*/2);
   std::vector<std::string> hashes = {"h1", "h2"};
   RaidenId id{"job", "0", "data", 0};
   std::vector<RaidenBlockID> slices = {
@@ -116,7 +125,7 @@ TEST(HostOffloadBackendTest, LookupUnboundedByAvailableSpace) {
 }
 
 TEST(HostOffloadBackendTest, InsertAndLockRollbackOnCapacityExceeded) {
-  HostOffloadBackend backend(/*capacity=*/2);
+  HostOffloadBackendTest::Backend backend(/*capacity=*/2);
   std::vector<std::string> hashes = {"h1", "h2", "h3"};
   RaidenId id{"job", "0", "data", 0};
   std::vector<RaidenBlockID> slices = {
@@ -821,7 +830,7 @@ rpc::RaidenIdProto ToProto(const RaidenId& id) {
 // Lookup cannot answer this question: it stops at the first miss, so a
 // scattered subset is unrepresentable in its result.
 TEST(HostOffloadBackendWriteRemoteTest, AlreadyPresentReportsAScatteredSubset) {
-  HostOffloadBackend backend(/*capacity=*/8);
+  HostOffloadBackendTest::Backend backend(/*capacity=*/8);
   RaidenId id{"job", "0", "data", 0};
   backend.Insert({"a", "c"},
                  {RaidenBlockID(id, 1, BlockStatus::HOST),
@@ -836,7 +845,7 @@ TEST(HostOffloadBackendWriteRemoteTest, AlreadyPresentReportsAScatteredSubset) {
 // A block that is registered elsewhere but not resident here is not something
 // this node can serve, so it must not count as present.
 TEST(HostOffloadBackendWriteRemoteTest, AlreadyPresentIgnoresNonHostBlocks) {
-  HostOffloadBackend backend(/*capacity=*/8);
+  HostOffloadBackendTest::Backend backend(/*capacity=*/8);
   RaidenId id{"job", "0", "data", 0};
   backend.Insert({"remote"}, {RaidenBlockID(id, 1, BlockStatus::REMOTE)},
                  /*on_host=*/true);
@@ -846,7 +855,7 @@ TEST(HostOffloadBackendWriteRemoteTest, AlreadyPresentIgnoresNonHostBlocks) {
 
 TEST(HostOffloadBackendWriteRemoteTest,
      InsertAllOrNothingInsertsTheWholeBatch) {
-  HostOffloadBackend backend(/*capacity=*/8);
+  HostOffloadBackendTest::Backend backend(/*capacity=*/8);
   RaidenId id{"job", "0", "data", 0};
 
   EXPECT_TRUE(backend.InsertAllOrNothing(
@@ -862,7 +871,7 @@ TEST(HostOffloadBackendWriteRemoteTest,
 // which for a remote write orphans the old host block and lets the source
 // free blocks the destination does not have.
 TEST(HostOffloadBackendWriteRemoteTest, InsertAllOrNothingRefusesADuplicate) {
-  HostOffloadBackend backend(/*capacity=*/8);
+  HostOffloadBackendTest::Backend backend(/*capacity=*/8);
   RaidenId id{"job", "0", "data", 0};
   backend.Insert({"a"}, {RaidenBlockID(id, 1, BlockStatus::HOST)},
                  /*on_host=*/true);
@@ -878,7 +887,7 @@ TEST(HostOffloadBackendWriteRemoteTest, InsertAllOrNothingRefusesADuplicate) {
 // available_space(), not capacity(): pinned entries cannot be evicted to make
 // room, so a cache full of them has no space no matter how large it is.
 TEST(HostOffloadBackendWriteRemoteTest, InsertAllOrNothingRespectsPinnedSpace) {
-  HostOffloadBackend backend(/*capacity=*/2);
+  HostOffloadBackendTest::Backend backend(/*capacity=*/2);
   RaidenId id{"job", "0", "data", 0};
   ASSERT_TRUE(backend.InsertAndLock({"pinned_a", "pinned_b"},
                                     {RaidenBlockID(id, 1, BlockStatus::HOST),
@@ -897,7 +906,8 @@ TEST(HostOffloadBackendWriteRemoteTest, RollbackInsertErasesAndFreesBlocks) {
   controller::RaidenController controller(ToProto(id), /*num_blocks=*/4,
                                           /*num_shards=*/1,
                                           /*shard_size_bytes=*/1024);
-  HostOffloadBackend backend(/*capacity=*/8, std::nullopt, id, &controller);
+  HostOffloadBackendTest::Backend backend(/*capacity=*/8, std::nullopt, id,
+                                          &controller);
 
   auto ids_or = controller.AllocateBlockIds(4);
   ASSERT_TRUE(ids_or.ok()) << ids_or.status().ToString();
@@ -927,7 +937,7 @@ TEST(HostOffloadBackendWriteRemoteTest, RollbackInsertErasesAndFreesBlocks) {
 // that would fail every write on a registry-less node.
 TEST(HostOffloadBackendWriteRemoteTest,
      RegisterBlocksSyncIsOkWithoutARegistry) {
-  HostOffloadBackend backend(/*capacity=*/8);
+  HostOffloadBackendTest::Backend backend(/*capacity=*/8);
   EXPECT_TRUE(backend.RegisterBlocksSync({"a"}, {1}).ok());
 }
 
@@ -936,7 +946,7 @@ TEST(HostOffloadBackendWriteRemoteTest,
   auto reg_server = global_registry::CreateTestGlobalRegistryServer();
 
   RaidenId id{"job_regsync", "0", "data", 0};
-  HostOffloadBackend backend(
+  HostOffloadBackendTest::Backend backend(
       /*capacity=*/8, std::nullopt, id, /*raiden_controller=*/nullptr,
       std::make_shared<global_registry::GlobalRegistryClient>(
           reg_server->channel));
@@ -957,7 +967,7 @@ TEST(HostOffloadBackendWriteRemoteTest, RegisterBlocksSyncReportsFailure) {
   // Port 1 is reserved and never listening.
   auto channel =
       grpc::CreateChannel("127.0.0.1:1", grpc::InsecureChannelCredentials());
-  HostOffloadBackend backend(
+  HostOffloadBackendTest::Backend backend(
       /*capacity=*/8, std::nullopt, id, /*raiden_controller=*/nullptr,
       std::make_shared<global_registry::GlobalRegistryClient>(channel));
 
@@ -966,13 +976,13 @@ TEST(HostOffloadBackendWriteRemoteTest, RegisterBlocksSyncReportsFailure) {
 
 TEST(HostOffloadBackendWriteRemoteTest,
      RegisterBlocksSyncRejectsMismatchedSizes) {
-  HostOffloadBackend backend(/*capacity=*/8);
+  HostOffloadBackendTest::Backend backend(/*capacity=*/8);
   EXPECT_TRUE(
       absl::IsInvalidArgument(backend.RegisterBlocksSync({"a", "b"}, {1})));
 }
 
 TEST(HostOffloadBackendTest, LookupAndPinBasicHits) {
-  HostOffloadBackend backend(/*capacity=*/5);
+  HostOffloadBackendTest::Backend backend(/*capacity=*/5);
   std::vector<std::string> hashes = {"h1", "h2", "h3"};
   RaidenId id{"job", "0", "data", 0};
   std::vector<RaidenBlockID> slices = {
@@ -991,7 +1001,7 @@ TEST(HostOffloadBackendTest, LookupAndPinBasicHits) {
 }
 
 TEST(HostOffloadBackendTest, LookupAndPinPartialMiss) {
-  HostOffloadBackend backend(/*capacity=*/5);
+  HostOffloadBackendTest::Backend backend(/*capacity=*/5);
   std::vector<std::string> hashes = {"h1", "h2"};
   RaidenId id{"job", "0", "data", 0};
   std::vector<RaidenBlockID> slices = {
@@ -1264,7 +1274,7 @@ TEST(HostOffloadBackendTest, LookupInterleavedWithoutGlobalStopsAtLocalMiss) {
 TEST(HostOffloadBackendTest, LookupInterleavedWithoutRegistryClient) {
   // No registry configured at all: holes are unfillable, so the answer is the
   // leading run of local hits, and nothing is left pinned past it.
-  HostOffloadBackend backend(/*capacity=*/5);
+  HostOffloadBackendTest::Backend backend(/*capacity=*/5);
   RaidenId id{"job", "0", "data", 0};
   backend.Insert({"l1", "l2"},
                  {RaidenBlockID(id, 11, BlockStatus::HOST),

@@ -123,9 +123,9 @@ absl::StatusOr<std::shared_ptr<KVCacheStoreBackend>> HostOffloadBackend::Create(
   // KVCacheStore::EnsureStoreServerAndRegister's job -- starting one here
   // would race it and could bind before the owning store has decided whether
   // a registry exists at all.
-  auto backend = std::make_shared<HostOffloadBackend>(
+  auto backend = std::shared_ptr<HostOffloadBackend>(new HostOffloadBackend(
       config.capacity, config.metadata, config.raiden_id, controller,
-      std::move(registry_client), config.kv_pool_group);
+      std::move(registry_client), config.kv_pool_group));
   if (config.kv_transfer_spec.has_value()) {
     RETURN_IF_ERROR(backend->RegisterKVTransferSpec(*config.kv_transfer_spec));
   }

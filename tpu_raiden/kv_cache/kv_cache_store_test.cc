@@ -33,6 +33,7 @@
 #include "absl/base/thread_annotations.h"
 #include "absl/log/check.h"
 #include "absl/status/status.h"
+#include "absl/status/status_matchers.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
@@ -106,6 +107,21 @@ class KVCacheStoreTest {
                            : std::vector<std::string>{};
   }
 };
+
+class HostOffloadBackendTest {
+ public:
+  // Tests construct backends directly; production code goes through
+  // HostOffloadBackend::Create.
+  class Backend : public HostOffloadBackend {
+   public:
+    template <typename... Args>
+    explicit Backend(Args&&... args)
+        : HostOffloadBackend(std::forward<Args>(args)...) {}
+  };
+};
+
+// Direct-construction shorthand for the backend fixtures below.
+using TestHostOffloadBackend = HostOffloadBackendTest::Backend;
 
 namespace {
 
@@ -3461,8 +3477,8 @@ TEST(KVCacheStoreTest, RecoverFromLocalManifestPreconditions) {
 }
 
 TEST(KVCacheStoreTest, MultiBackendPriorityLookupChain) {
-  auto b1 = std::make_shared<HostOffloadBackend>(/*capacity=*/4);
-  auto b2 = std::make_shared<HostOffloadBackend>(/*capacity=*/2);
+  auto b1 = std::make_shared<TestHostOffloadBackend>(/*capacity=*/4);
+  auto b2 = std::make_shared<TestHostOffloadBackend>(/*capacity=*/2);
 
   RaidenId id{"job", "0", "cache", 0};
   std::vector<std::string> b1_hashes = {"h1", "h2"};
@@ -3496,8 +3512,8 @@ TEST(KVCacheStoreTest, MultiBackendPriorityLookupChain) {
 }
 
 TEST(KVCacheStoreTest, MultiBackendLocalLookupWhenGlobalDisabled) {
-  auto b1 = std::make_shared<HostOffloadBackend>(/*capacity=*/2);
-  auto b2 = std::make_shared<HostOffloadBackend>(/*capacity=*/2);
+  auto b1 = std::make_shared<TestHostOffloadBackend>(/*capacity=*/2);
+  auto b2 = std::make_shared<TestHostOffloadBackend>(/*capacity=*/2);
 
   RaidenId id{"job", "0", "cache", 0};
   b1->Insert({"h1"}, {RaidenBlockID(id, 1, BlockStatus::HOST)},
@@ -3525,8 +3541,8 @@ TEST(KVCacheStoreTest, MultiBackendLocalLookupWhenGlobalDisabled) {
 }
 
 TEST(KVCacheStoreTest, MultiBackendInsertAndLockRollback) {
-  auto b1 = std::make_shared<HostOffloadBackend>(/*capacity=*/2);
-  auto b2 = std::make_shared<HostOffloadBackend>(/*capacity=*/1);
+  auto b1 = std::make_shared<TestHostOffloadBackend>(/*capacity=*/2);
+  auto b2 = std::make_shared<TestHostOffloadBackend>(/*capacity=*/1);
 
   KVCacheStore store(std::vector<std::shared_ptr<KVCacheStoreBackend>>{b1, b2},
                      RaidenId{}, /*num_shards=*/1, /*shard_size_bytes=*/512,
@@ -3550,8 +3566,8 @@ TEST(KVCacheStoreTest, MultiBackendInsertAndLockRollback) {
 }
 
 TEST(KVCacheStoreTest, MultiBackendPinAndRelease) {
-  auto b1 = std::make_shared<HostOffloadBackend>(/*capacity=*/2);
-  auto b2 = std::make_shared<HostOffloadBackend>(/*capacity=*/2);
+  auto b1 = std::make_shared<TestHostOffloadBackend>(/*capacity=*/2);
+  auto b2 = std::make_shared<TestHostOffloadBackend>(/*capacity=*/2);
 
   RaidenId id{"job", "0", "cache", 0};
   b1->Insert({"h1"}, {RaidenBlockID(id, 1, BlockStatus::HOST)},
@@ -3740,7 +3756,7 @@ TEST_F(StoreDiscoveryTest, AdoptsTheBackendsServerRatherThanOwningASecond) {
   // The bootstrap controller only needs to be non-null for StartServer to
   // succeed; the store below wires its own controller in afterward.
   auto bootstrap_controller = MakeRecoveryController(rid, /*num_blocks=*/16);
-  auto backend = std::make_shared<HostOffloadBackend>(
+  auto backend = std::make_shared<TestHostOffloadBackend>(
       /*capacity=*/16, std::nullopt, rid, bootstrap_controller.get());
   ASSERT_TRUE(backend->StartServer("127.0.0.1").ok());
   ASSERT_NE(backend->store_server(), nullptr);
@@ -3772,9 +3788,9 @@ TEST_F(StoreDiscoveryTest, ControllerAddressComposedFromIpAndPort) {
 
 // A tier-0 backend whose Lookup parks, so a peer's Fetch can be held inside the
 // store's own service while the store is being destroyed.
-class ParkingBackend : public HostOffloadBackend {
+class ParkingBackend : public TestHostOffloadBackend {
  public:
-  using HostOffloadBackend::HostOffloadBackend;
+  using TestHostOffloadBackend::TestHostOffloadBackend;
 
   absl::StatusOr<BlockSliceList> Lookup(
       absl::Span<const std::string> block_hashes,
@@ -3947,7 +3963,7 @@ TEST_F(StoreDiscoveryTest, DestructorShutsDownABackendStartedServer) {
 TEST_F(StoreDiscoveryTest, DestructorSweepSkipsTheAdoptedServer) {
   RaidenId rid{"disco_job_h1_adopt", "0", "kv_cache", 0};
   auto bootstrap_controller = MakeRecoveryController(rid, /*num_blocks=*/16);
-  auto backend = std::make_shared<HostOffloadBackend>(
+  auto backend = std::make_shared<TestHostOffloadBackend>(
       /*capacity=*/16, std::nullopt, rid, bootstrap_controller.get());
   ASSERT_TRUE(backend->StartServer("127.0.0.1").ok());
   ASSERT_GT(backend->store_server()->GetGrpcPort(), 0);
@@ -4554,7 +4570,7 @@ class ErrorLookupBackend : public KVCacheStoreBackend {
 };
 
 TEST(KVCacheStoreTest, LookupAndPinWorkflow) {
-  auto b = std::make_shared<HostOffloadBackend>(/*capacity=*/2);
+  auto b = std::make_shared<TestHostOffloadBackend>(/*capacity=*/2);
   KVCacheStore store(std::vector<std::shared_ptr<KVCacheStoreBackend>>{b},
                      RaidenId{}, /*num_shards=*/1, /*shard_size_bytes=*/512,
                      /*store_server_ip=*/"127.0.0.1");
@@ -4591,7 +4607,7 @@ TEST(KVCacheStoreTest, LookupAndPinWorkflow) {
 }
 
 TEST(KVCacheStoreTest, LookupAndPinErrorRollback) {
-  auto b1 = std::make_shared<HostOffloadBackend>(/*capacity=*/2);
+  auto b1 = std::make_shared<TestHostOffloadBackend>(/*capacity=*/2);
   RaidenId id{"job", "0", "cache", 0};
   b1->Insert({"h1"}, {RaidenBlockID(id, 1, BlockStatus::HOST)},
              /*on_host=*/true);
@@ -4608,8 +4624,8 @@ TEST(KVCacheStoreTest, LookupAndPinErrorRollback) {
 }
 
 TEST(KVCacheStoreTest, LookupAndPinCapacityTruncation) {
-  auto b1 = std::make_shared<HostOffloadBackend>(/*capacity=*/2);
-  auto b2 = std::make_shared<HostOffloadBackend>(/*capacity=*/2);
+  auto b1 = std::make_shared<TestHostOffloadBackend>(/*capacity=*/2);
+  auto b2 = std::make_shared<TestHostOffloadBackend>(/*capacity=*/2);
 
   RaidenId id{"job", "0", "cache", 0};
   b1->Insert({"h1", "h2"},

@@ -57,14 +57,6 @@ class HostOffloadBackend : public KVCacheStoreBackend {
       const BackendConfig& config,
       controller::RaidenController* absl_nonnull controller);
 
-  explicit HostOffloadBackend(
-      size_t capacity, std::optional<KVCacheMetadata> metadata = std::nullopt,
-      RaidenId raiden_id = {},
-      controller::RaidenController* raiden_controller = nullptr,
-      std::shared_ptr<global_registry::GlobalRegistryClient> registry_client =
-          nullptr,
-      std::string kv_pool_group = "");
-
   ~HostOffloadBackend() override;
 
   std::string name() const override { return "HostOffloadBackend"; }
@@ -216,6 +208,14 @@ class HostOffloadBackend : public KVCacheStoreBackend {
 
  private:
   friend class HostOffloadBackendTest;
+
+  explicit HostOffloadBackend(
+      size_t capacity, std::optional<KVCacheMetadata> metadata = std::nullopt,
+      RaidenId raiden_id = {},
+      controller::RaidenController* raiden_controller = nullptr,
+      std::shared_ptr<global_registry::GlobalRegistryClient> registry_client =
+          nullptr,
+      std::string kv_pool_group = "");
 
   // Derives the deployment's KVTransferSpec from the given worker
   // registrations: every worker must have reported the same KV block geometry

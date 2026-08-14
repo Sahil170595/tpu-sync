@@ -151,6 +151,8 @@ class WeightSynchronizerBase : public tpu_raiden::RaidenManagerBase {
   absl::StatusOr<raiden::PjRtCopyFuture> H2dLayer(size_t layer_idx,
                                                   uint64_t uuid = 0);
   absl::StatusOr<raiden::PjRtCopyFuture> D2h(uint64_t uuid = 0);
+  absl::StatusOr<raiden::PjRtCopyFuture> D2hLayer(size_t layer_idx,
+                                                  uint64_t uuid = 0);
 
   // Binds new device buffers to the weight synchronizer in-place.
   //
@@ -242,6 +244,7 @@ class WeightSynchronizerBase : public tpu_raiden::RaidenManagerBase {
   };
 
   std::unique_ptr<tpu_raiden::NumaThreadPool> h2d_pool_;
+  std::unique_ptr<tpu_raiden::NumaThreadPool> push_pool_;
 
   mutable absl::Mutex skip_tiling_mu_;
   absl::flat_hash_map<uint64_t, std::vector<bool>> uuid_to_skip_tiling_

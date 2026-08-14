@@ -50,6 +50,7 @@ cc_library(
     deps = [
         ":block_transport_delegate",
         ":buffer_push_task",
+        ":peregrine_control_service",
         "//tpu_sync/core:status_macros",
         "//tpu_sync/core:tsl_platform_headers",
         "//tpu_sync/telemetry:metrics_api",
@@ -68,6 +69,24 @@ cc_library(
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/synchronization",
         "@com_google_absl//absl/types:span",
+    ],
+)
+
+cc_library(
+    name = "peregrine_control_service",
+    hdrs = ["peregrine_control_service.h"],
+    visibility = [
+        "//tpu_sync/transport:__subpackages__",
+    ],
+    deps = [
+        "//tpu_sync/transport/lib:raw_buffer_transport",
+        "//tpu_sync/transport/proto:peregrine_control_service_cc_grpc",
+        "//tpu_sync/transport/proto:peregrine_control_service_cc_proto",
+        "@com_github_grpc_grpc//:grpc++",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/strings:string_view",
     ],
 )
 
@@ -94,6 +113,31 @@ cc_test(
         "@com_google_absl//absl/synchronization",
         "@com_google_absl//absl/time",
         "@com_google_absl//absl/types:span",
+        "@com_google_googletest//:gtest",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "peregrine_control_service_test",
+    srcs = ["peregrine_control_service_test.cc"],
+    copts = [
+        "-fno-strict-aliasing",
+        "-fexceptions",
+    ],
+    features = ["-use_header_modules"],
+    deps = [
+        ":block_transport",
+        ":block_transport_delegate",
+        ":peregrine_control_service",
+        "//tpu_sync/transport/lib:raw_buffer_transport",
+        "//tpu_sync/transport/lib:raw_buffer_transport_delegate",
+        "//tpu_sync/transport/proto:peregrine_control_service_cc_grpc",
+        "//tpu_sync/transport/proto:peregrine_control_service_cc_proto",
+        "@com_github_grpc_grpc//:grpc++",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings:string_view",
         "@com_google_googletest//:gtest",
         "@com_google_googletest//:gtest_main",
     ],

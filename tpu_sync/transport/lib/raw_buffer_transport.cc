@@ -419,6 +419,13 @@ void RawBufferTransport::ConnectionWorker(int client_fd) {
   close(client_fd);
 }
 
+absl::StatusOr<RawBufferTransport::PspPeerKey>
+RawBufferTransport::RegisterPspPeer(uint32_t client_spi,
+                                    absl::string_view client_key) {
+  return absl::UnimplementedError(
+      "PSP key registration is not implemented yet.");
+}
+
 void RawBufferTransport::ListenerLoop() {
   while (!stopping_) {
     DCHECK(IsValidSocket(server_fd_));

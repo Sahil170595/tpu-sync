@@ -153,5 +153,5 @@ memory.
 
 ## TODO
 
-- [ ] **Support Multi-Host Transfers (e.g., GLP:8)**: Fix the shard mismatch error on multi-host setups. Experiments attempted on GLP (8 cores) failed with `RuntimeError: Number of shards in source and destination must match` because the TPU array has 4 addressable shards on the local host, while the host array was created with 8 addressable shards, causing a mismatch in the library's validation check. We need to handle cases where the host array is sharded across all devices but the TPU array only has local shards addressable by the current process.
+- [ ] **Support Multi-Host Transfers**: Fix the shard mismatch error on multi-host setups. Experiments attempted on multi-host setups (8 cores) failed with `RuntimeError: Number of shards in source and destination must match` because the TPU array has 4 addressable shards on the local host, while the host array was created with 8 addressable shards, causing a mismatch in the library's validation check. We need to handle cases where the host array is sharded across all devices but the TPU array only has local shards addressable by the current process.
 

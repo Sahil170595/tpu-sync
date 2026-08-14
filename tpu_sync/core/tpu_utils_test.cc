@@ -52,12 +52,12 @@ TEST(TpuUtilsTest, GetPjRtDeviceNumaNodeTest) {
 
   LOG(INFO) << "Available PJRT devices: " << all_devices.size();
 
-  // On ghostfish:4, we expect to see exactly 8 PJRT devices (4 chips * 2
+  // On v7x-8, we expect to see exactly 8 PJRT devices (4 chips * 2
   // devices/chip)
   if (all_devices.size() == 8) {
-    LOG(INFO) << "Confirmed ghostfish:4 topology with 8 devices!";
+    LOG(INFO) << "Confirmed v7x-8 topology with 8 devices!";
   } else {
-    LOG(WARNING) << "Expected 8 devices for ghostfish:4, but saw "
+    LOG(WARNING) << "Expected 8 devices for v7x-8 but saw "
                  << all_devices.size() << " devices.";
   }
 
@@ -68,7 +68,7 @@ TEST(TpuUtilsTest, GetPjRtDeviceNumaNodeTest) {
               << " (local_hardware_id: " << device->local_hardware_id().value()
               << ") is mapped to NUMA Node: " << numa_node;
 
-    // NUMA node should be valid (0 or 1 on Ghostfish)
+    // NUMA node should be valid (0 or 1 on TPU v7x)
     EXPECT_GE(numa_node, 0);
     EXPECT_LE(numa_node, 1);
     resolved_nodes++;
@@ -89,8 +89,8 @@ TEST(TpuUtilsTest, PinCurrentThreadToNumaNodeTest) {
 
   if (numa_node >= 0) {
     int rc = PinCurrentThreadToNumaNode(numa_node);
-    // Thread pinning and memory binding can fail in sandboxed environments
-    // (like Forge). We tolerate EPERM (-1 from set_mempolicy) and EINVAL (-22
+    // Thread pinning and memory binding can fail in sandboxed test
+    // environments. We tolerate EPERM (-1 from set_mempolicy) and EINVAL (-22
     // from pthread_setaffinity_np).
     EXPECT_TRUE(rc == 0 || rc == -1 || rc == -22)
         << "Unexpected failure pinning to NUMA node " << numa_node

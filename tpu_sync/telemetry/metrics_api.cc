@@ -78,7 +78,7 @@ std::string RaidenMetricStore::GetTextSnapshot() const {
   absl::ReaderMutexLock lock(mutex_);
   std::string result;
   for (const std::unique_ptr<MetricsBackend>& backend : backends_) {
-    // TODO(b/542363997): Consider adding a separator between backends.
+    // TODO: Consider adding a separator between backends.
     absl::StrAppend(&result, backend->GetTextSnapshot());
   }
   return result;

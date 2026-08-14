@@ -19,8 +19,8 @@
 // By default, the test suite runs a lightweight configuration (4 data types,
 // 64 layers, 16 blocks) to keep presubmit runs fast (~1 minute).
 //
-// To manually run deeper scenarios (e.g. on 8 TPUs of a Ghostfish host):
-//   blaze test --nocheck_visibility -c opt \
+// To manually run deeper scenarios (e.g. on a host with 8 TPU v7x chips):
+//   bazel test --config=oss -c opt \
 //     --test_arg=--num_tpus=8 \
 //     --test_arg=--num_layers=1024 \
 //     --test_arg=--num_blocks=8 \

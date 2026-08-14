@@ -1487,7 +1487,7 @@ void KVCacheManagerWithTransfer::StartRead(
   if (remote_descriptors.empty()) {
     return;
   }
-  // TODO(b/agy): Deal with the case where the shards on both sides don't
+  // TODO: Deal with the case where the shards on both sides don't
   // perfectly match. KVCacheManagerWithTransfer is bound to a single NUMA node
   // / single endpoint. Multi-endpoint routing across sockets is orchestrated by
   // the JAX facade.

@@ -197,7 +197,7 @@ std::vector<std::string> RaidenManagerBase::local_ips() const {
 // ID across multiple worker nodes. Modulo indexing (`shard_idx %
 // shards.size()`) ensures clean resolution to the local worker's assigned shard
 // buffers.
-// TODO(raiden-dev): It might be clearer if the base manager doesn't have to
+// TODO: It might be clearer if the base manager doesn't have to
 // deal with global shard idx.
 uint8_t* RaidenManagerBase::GetHostPointer(size_t layer_idx, size_t shard_idx) {
   if (layer_idx >= layers_.size() || layers_[layer_idx].shards.empty()) {

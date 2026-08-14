@@ -81,13 +81,9 @@ class RaidenController {
   // (Allocate/AllocateBuffers below). `preprovision_worker_buffers` = false
   // skips that pre-creation.
   //
-  // `expected_worker_count` > 0 blocks Create() until that many workers
-  // have registered with this controller (via dynamic registration or the
-  // `worker_addresses` argument), and returns kDeadlineExceeded if they have
-  // not all arrived within RAIDEN_EXPECTED_WORKERS_TIMEOUT_S seconds (default
   // 120). Leave it 0 when workers register only after Create() returns.
   //
-  // TODO(b/542288634): Remove preprovision_worker_buffers and legacy
+  // TODO: Remove preprovision_worker_buffers and legacy
   // Physical/BufferProto mode.
   static absl::StatusOr<std::unique_ptr<RaidenController>> Create(
       const rpc::RaidenIdProto& unit, int num_blocks, int num_shards,

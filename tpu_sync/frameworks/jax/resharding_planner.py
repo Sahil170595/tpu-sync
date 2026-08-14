@@ -65,7 +65,7 @@ def make_resharding_plan(
       key=lambda d: (dst_map[d][0].start or 0, dst_map[d][1].start or 0),
   )
 
-  # TODO(b/12345678): Support arbitrary TPU hardware memory tiling alignments
+  # TODO: Support arbitrary TPU hardware memory tiling alignments
   # (e.g. padding sub-blocks to multiples of 8/32/128 bytes) to avoid padding
   # degradation during transfer. Currently we assume K and N are sufficiently
   # large and divisible.

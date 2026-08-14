@@ -19,7 +19,6 @@ set -e
 WORKSPACE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" &> /dev/null && pwd)"
 
 # Point to the directory containing the compiled extension libraries and source files
-# We also include the workspace parent dir to map absolute 'google3.third_party...' python imports!
 export PYTHONPATH="${WORKSPACE_DIR}:${WORKSPACE_DIR}/bazel-bin:${PYTHONPATH}"
 
 RUN_JAX=true

@@ -43,9 +43,8 @@ namespace controller {
 namespace {
 
 // The unqualified EXPECT_OK/ASSERT_OK spellings are gated behind
-// ABSL_DEFINE_UNQUALIFIED_STATUS_TESTING_MACROS, which is on by default only
-// inside google3 -- so this file did not build in OSS at all. Use the always-
-// defined qualified macros.
+// ABSL_DEFINE_UNQUALIFIED_STATUS_TESTING_MACROS. Use the explicitly
+// qualified macros.
 using ::testing::ElementsAre;
 
 class RaidenControllerTest : public ::testing::Test {

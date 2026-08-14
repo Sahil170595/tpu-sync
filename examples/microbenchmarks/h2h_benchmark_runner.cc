@@ -124,8 +124,7 @@ std::string get_ip_of_interface(const std::string& interface_name) {
   return ip;
 }
 
-// Dynamically discover all active data interfaces (excluding lo and eth0 unless
-// on Borg)
+// Dynamically discover all active data interfaces (excluding lo and eth0)
 std::vector<tpu_raiden::HostNicAddress> discover_data_interfaces() {
   std::vector<tpu_raiden::HostNicAddress> interfaces;
   struct ifaddrs* ifaddr;

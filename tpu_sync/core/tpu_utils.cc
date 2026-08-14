@@ -186,27 +186,27 @@ const std::vector<TpuPciDevice>& GetTpuPciDevices() {
       return devices;
     }
 
-    // Known Google TPU Device IDs (from util/platforminfo/pci_ids.h)
+    // Known Google TPU Device IDs
     const std::vector<std::string> kTpuDeviceIds = {
-        // TPU v4 (Pufferfish)
-        "0x0056",  // PUFFYLITE_CHIP
-        "0x005e",  // PUFFERFISH_CHIP
+        // TPU v4
+        "0x0056",
+        "0x005e",
 
-        // TPU v5e (Viperfish/Viperlite)
-        "0x0062",  // VIPERFISH_CHIP
-        "0x0063",  // VIPERLITE_CHIP
+        // TPU v5e
+        "0x0062",
+        "0x0063",
 
-        // TPU v6e (Ghostlite)
-        "0x006e",  // GHOSTLITE_CHIP_PF (Application)
-        "0x006f",  // GHOSTLITE_CHIP_VF (Application)
-        "0x0070",  // GHOSTLITE_CHIP_MANAGEMENT_PF
-        "0x0071",  // GHOSTLITE_CHIP_MANAGEMENT_VF
+        // TPU v6e
+        "0x006e",
+        "0x006f",
+        "0x0070",
+        "0x0071",
 
-        // TPU v7/v7x (Ghostfish)
-        "0x0075",  // GHOSTFISH_CHIP_APPLICATION_PF
-        "0x0076",  // GHOSTFISH_CHIP_APPLICATION_VF
-        "0x0077",  // GHOSTFISH_CHIP_MANAGEMENT_PF
-        "0x0078",  // GHOSTFISH_CHIP_MANAGEMENT_VF
+        // TPU v7/v7x
+        "0x0075",
+        "0x0076",
+        "0x0077",
+        "0x0078",
     };
 
     struct dirent* entry;

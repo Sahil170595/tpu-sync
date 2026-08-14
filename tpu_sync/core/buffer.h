@@ -91,12 +91,12 @@ class Buffer {
   // node_id. ReadRemote attaches every destination worker's endpoints here so
   // the source controller can match each of its workers to the destination peer
   // worker with the same node_id. Once matched, the peer's endpoints are moved
-  // into remote_descriptors() and this is cleared before the buffer is sent to a
-  // worker.
+  // into remote_descriptors() and this is cleared before the buffer is sent to
+  // a worker.
   //
-  // TODO(raiden): this is duplicated on every dst buffer; consider moving it to
-  // a single repeated field on the transfer request instead of carrying it on each
-  // Buffer.
+  // TODO: This is duplicated on every dst buffer; consider moving it to
+  // a single repeated field on the transfer request instead of carrying it on
+  // each Buffer.
   const std::vector<RaidenWorkerEndpoints>& remote_worker_endpoints() const {
     return remote_worker_endpoints_;
   }

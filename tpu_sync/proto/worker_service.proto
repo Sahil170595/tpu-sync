@@ -47,12 +47,10 @@ service WorkerService {
       returns (TransferProgramResponse);
 
   // Polls the execution status of a previously submitted TransferProgram.
-  rpc PollTransfer(PollTransferRequest)
-      returns (PollTransferResponse);
+  rpc PollTransfer(PollTransferRequest) returns (PollTransferResponse);
 
   // Aborts an in-flight TransferProgram on this worker.
-  rpc AbortTransfer(AbortTransferRequest)
-      returns (AbortTransferResponse);
+  rpc AbortTransfer(AbortTransferRequest) returns (AbortTransferResponse);
 }
 
 // Transfer endpoint descriptor for worker sub-managers.
@@ -93,7 +91,7 @@ message BufferProto {
   // down to the matched peer, that worker's endpoints are moved into
   // remote_descriptors before dispatch (so remote_worker_endpoints is empty on
   // the wire to a worker).
-  // TODO(raiden): this grouping is duplicated on every dst buffer; it could
+  // TODO: This grouping is duplicated on every dst buffer; it could
   // instead be a single repeated field on the transfer request.
   repeated RaidenWorkerEndpointsProto remote_worker_endpoints = 10;
 }

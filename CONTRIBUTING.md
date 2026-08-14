@@ -28,7 +28,7 @@ This project follows
 
 ### Reporting Bugs & Feature Requests
 
-If you encounter a bug or have a feature request, please search [existing issues](https://github.com/google/tpu-raiden/issues) first to see if it has already been reported. If not, please [file a new issue](https://github.com/google/tpu-raiden/issues/new/choose), providing as much relevant information as possible.
+If you encounter a bug or have a feature request, please search [existing issues](https://github.com/google/tpu-sync/issues) first to see if it has already been reported. If not, please [file a new issue](https://github.com/google/tpu-sync/issues/new/choose), providing as much relevant information as possible.
 
 ### Code reviews
 

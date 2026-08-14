@@ -25,6 +25,7 @@
 
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
+#include "xla/tsl/platform/statusor.h"
 #include "xla/tsl/platform/test.h"
 // clang-format off
 #include "tpu_sync/core/kv_cache_manager_with_transfer.h"
@@ -532,10 +533,11 @@ TEST(KVCacheManagerWrapperTest, RaidenControllerTransferBuffersIntegration) {
 
   std::string server_address = absl::StrCat("localhost:", port);
 
-  controller::RaidenController controller(
-      unit, std::vector<std::string>{server_address},
-      /*num_blocks=*/5, /*num_shards=*/1,
-      /*shard_size_bytes=*/512);
+  TF_ASSERT_OK_AND_ASSIGN(
+      auto controller,
+      controller::RaidenController::Create(
+          unit, std::vector<std::string>{server_address}, /*num_blocks=*/5,
+          /*num_shards=*/1, /*shard_size_bytes=*/512));
 
   std::vector<int64_t> src_offsets = {10, 30};
   std::vector<int64_t> dst_offsets = {20, 40};
@@ -548,9 +550,9 @@ TEST(KVCacheManagerWrapperTest, RaidenControllerTransferBuffersIntegration) {
 
   auto status_d2h =
       controller
-          .TransferBuffers("worker_0", {src_d2h_1, src_d2h_2},
-                           {dst_d2h_1, dst_d2h_2}, /*staging_host_buffers=*/{},
-                           copy_sizes)
+          ->TransferBuffers("worker_0", {src_d2h_1, src_d2h_2},
+                            {dst_d2h_1, dst_d2h_2}, /*staging_host_buffers=*/{},
+                            copy_sizes)
           .Await();
   ASSERT_TRUE(status_d2h.ok());
   EXPECT_EQ(ptr0->d2h_calls, 1);
@@ -566,9 +568,9 @@ TEST(KVCacheManagerWrapperTest, RaidenControllerTransferBuffersIntegration) {
 
   auto status_h2d =
       controller
-          .TransferBuffers("worker_0", {src_h2d_1, src_h2d_2},
-                           {dst_h2d_1, dst_h2d_2}, /*staging_host_buffers=*/{},
-                           copy_sizes)
+          ->TransferBuffers("worker_0", {src_h2d_1, src_h2d_2},
+                            {dst_h2d_1, dst_h2d_2}, /*staging_host_buffers=*/{},
+                            copy_sizes)
           .Await();
   ASSERT_TRUE(status_h2d.ok());
   EXPECT_EQ(ptr0->d2h_calls, 1);

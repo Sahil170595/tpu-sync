@@ -87,14 +87,21 @@ KVCacheStoreWrapper::KVCacheStoreWrapper(
   config.type = "HostOffloadBackend";
   config.capacity = lru_capacity;
   config.kv_pool_group = std::move(kv_pool_group);
-  auto store_or = KVCacheStore::Create(
+  auto created_store = KVCacheStore::Create(
       config, /*capacity=*/lru_capacity, global_registry_address, raiden_id,
       num_shards, shard_size_bytes, store_server_ip, raiden_controller_port,
       metadata, expected_worker_count);
-  if (!store_or.ok()) {
-    throw std::invalid_argument(std::string(store_or.status().message()));
+  if (!created_store.ok()) {
+    // invalid_argument maps to Python ValueError, runtime_error to
+    // RuntimeError: a bad configuration is the caller's mistake, everything
+    // else (e.g. the expected-worker barrier timing out) is a runtime failure.
+    if (created_store.status().code() == absl::StatusCode::kInvalidArgument) {
+      throw std::invalid_argument(
+          std::string(created_store.status().message()));
+    }
+    throw std::runtime_error(std::string(created_store.status().message()));
   }
-  controller_ = *std::move(store_or);
+  controller_ = std::move(*created_store);
 
   if (metadata_region_ != nullptr && metadata_region_->warm()) {
     auto recovered_or = controller_->RecoverFromLocalManifest();

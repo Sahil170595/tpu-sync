@@ -738,6 +738,7 @@ cc_test(
         "//tpu_sync/rpc:raiden_service_cc_proto",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
+        "@xla//xla/tsl/platform:statusor",
         "@xla//xla/tsl/platform:test",
         "@xla//xla/tsl/platform:test_main",
     ],

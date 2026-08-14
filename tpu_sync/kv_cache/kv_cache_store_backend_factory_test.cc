@@ -20,11 +20,14 @@
 #include <utility>
 #include <vector>
 
+#include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include "absl/status/status.h"
+#include "absl/status/status_matchers.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "xla/tsl/concurrency/future.h"
+#include "xla/tsl/platform/statusor.h"
 #include "tpu_sync/core/controller/raiden_controller.h"
 #include "tpu_sync/kv_cache/host_offload_backend.h"
 #include "tpu_sync/kv_cache/kv_cache_store.h"
@@ -34,6 +37,8 @@
 namespace tpu_raiden {
 namespace kv_cache {
 namespace {
+
+using ::absl_testing::StatusIs;
 
 class CustomTestBackend : public KVCacheStoreBackend {
  public:
@@ -102,39 +107,41 @@ TEST(BackendConfigTest, PropertyGettersAndSetters) {
 
 TEST(KVCacheStoreBackendFactoryTest, BuiltInHostOffload) {
   rpc::RaidenIdProto unit_proto;
-  controller::RaidenController controller(unit_proto, /*num_blocks=*/100,
-                                          /*num_shards=*/1,
-                                          /*shard_size_bytes=*/1024);
+  TF_ASSERT_OK_AND_ASSIGN(auto ctrl, controller::RaidenController::Create(
+                                         unit_proto, /*num_blocks=*/100,
+                                         /*num_shards=*/1,
+                                         /*shard_size_bytes=*/1024));
 
   BackendConfig config;
   config.type = "HostOffloadBackend";
   config.capacity = 50;
 
-  auto backend_or = KVCacheStoreBackendFactory::Create(config, &controller);
-  ASSERT_TRUE(backend_or.ok()) << backend_or.status();
-  EXPECT_EQ((*backend_or)->name(), "HostOffloadBackend");
-  EXPECT_EQ((*backend_or)->GetCapacity(), 50);
+  TF_ASSERT_OK_AND_ASSIGN(
+      auto backend, KVCacheStoreBackendFactory::Create(config, ctrl.get()));
+  EXPECT_EQ(backend->name(), "HostOffloadBackend");
+  EXPECT_EQ(backend->GetCapacity(), 50);
 
   // Capacity 0 error test
   config.capacity = 0;
-  auto err_or = KVCacheStoreBackendFactory::Create(config, &controller);
-  EXPECT_EQ(err_or.status().code(), absl::StatusCode::kInvalidArgument);
+  EXPECT_THAT(KVCacheStoreBackendFactory::Create(config, ctrl.get()),
+              StatusIs(absl::StatusCode::kInvalidArgument));
 }
 
 TEST(KVCacheStoreBackendFactoryTest, HostOffloadWithGlobalRegistry) {
   rpc::RaidenIdProto unit_proto;
-  controller::RaidenController controller(unit_proto, /*num_blocks=*/100,
-                                          /*num_shards=*/1,
-                                          /*shard_size_bytes=*/1024);
+  TF_ASSERT_OK_AND_ASSIGN(auto ctrl, controller::RaidenController::Create(
+                                         unit_proto, /*num_blocks=*/100,
+                                         /*num_shards=*/1,
+                                         /*shard_size_bytes=*/1024));
 
   BackendConfig config;
   config.type = "HostOffloadBackend";
   config.capacity = 50;
   config.global_registry_address = "localhost:50051";
 
-  auto backend_or = KVCacheStoreBackendFactory::Create(config, &controller);
-  ASSERT_TRUE(backend_or.ok()) << backend_or.status();
-  EXPECT_EQ((*backend_or)->name(), "HostOffloadBackend");
+  TF_ASSERT_OK_AND_ASSIGN(
+      auto backend, KVCacheStoreBackendFactory::Create(config, ctrl.get()));
+  EXPECT_EQ(backend->name(), "HostOffloadBackend");
 }
 
 TEST(KVCacheStoreBackendFactoryTest, AutoRegistrationMacro) {
@@ -144,9 +151,9 @@ TEST(KVCacheStoreBackendFactoryTest, AutoRegistrationMacro) {
   BackendConfig config;
   config.type = "custom_test_backend";
 
-  auto backend_or = KVCacheStoreBackendFactory::Create(config);
-  ASSERT_TRUE(backend_or.ok()) << backend_or.status();
-  EXPECT_EQ((*backend_or)->name(), "CustomTestBackend");
+  TF_ASSERT_OK_AND_ASSIGN(auto backend,
+                          KVCacheStoreBackendFactory::Create(config));
+  EXPECT_EQ(backend->name(), "CustomTestBackend");
 }
 
 TEST(KVCacheStoreBackendFactoryTest, DuplicateRegistrationFails) {
@@ -163,8 +170,8 @@ TEST(KVCacheStoreBackendFactoryTest, UnknownBackendTypeFails) {
   BackendConfig config;
   config.type = "non_existent_backend";
 
-  auto err_or = KVCacheStoreBackendFactory::Create(config);
-  EXPECT_EQ(err_or.status().code(), absl::StatusCode::kNotFound);
+  EXPECT_THAT(KVCacheStoreBackendFactory::Create(config),
+              StatusIs(absl::StatusCode::kNotFound));
 }
 
 TEST(KVCacheStoreBackendFactoryTest, KVCacheStoreCreateIntegration) {
@@ -172,14 +179,15 @@ TEST(KVCacheStoreBackendFactoryTest, KVCacheStoreCreateIntegration) {
   config.type = "HostOffloadBackend";
   config.capacity = 200;
 
-  auto store_or = KVCacheStore::Create(
-      config, /*capacity=*/0, /*global_registry_address=*/"", RaidenId{},
-      /*num_shards=*/1, /*shard_size_bytes=*/512,
-      /*store_server_ip=*/"127.0.0.1");
-  ASSERT_TRUE(store_or.ok()) << store_or.status();
-  ASSERT_NE(*store_or, nullptr);
-  EXPECT_EQ((*store_or)->capacity(), 200);
-  EXPECT_EQ((*store_or)->backend()->name(), "HostOffloadBackend");
+  TF_ASSERT_OK_AND_ASSIGN(
+      auto store,
+      KVCacheStore::Create(config, /*capacity=*/0,
+                           /*global_registry_address=*/"", RaidenId{},
+                           /*num_shards=*/1, /*shard_size_bytes=*/512,
+                           /*store_server_ip=*/"127.0.0.1"));
+  ASSERT_NE(store, nullptr);
+  EXPECT_EQ(store->capacity(), 200);
+  EXPECT_EQ(store->backend()->name(), "HostOffloadBackend");
 }
 
 }  // namespace

@@ -358,11 +358,13 @@ cc_test(
         "//tpu_sync/core/controller:raiden_controller",
         "//tpu_sync/rpc:raiden_service_cc_proto",
         "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/types:span",
         "@com_google_googletest//:gtest",
         "@com_google_googletest//:gtest_main",
         "@xla//xla/tsl/concurrency:future",
+        "@xla//xla/tsl/platform:statusor",
     ],
 )
 
@@ -520,6 +522,7 @@ cc_test(
         "@com_google_absl//absl/types:span",
         "@com_google_googletest//:gtest",
         "@com_google_googletest//:gtest_main",
+        "@xla//xla/tsl/platform:statusor",
     ],
 )
 

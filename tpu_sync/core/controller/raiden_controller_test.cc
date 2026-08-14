@@ -37,6 +37,7 @@
 #include "absl/time/time.h"
 #include "absl/types/span.h"
 #include "xla/tsl/concurrency/future.h"
+#include "xla/tsl/platform/statusor.h"
 #include "tpu_sync/core/buffer.h"
 #include "tpu_sync/core/controller/controller_client.h"
 #include "tpu_sync/core/controller/controller_server.h"
@@ -50,8 +51,11 @@ namespace tpu_raiden {
 namespace controller {
 namespace {
 
+using ::absl_testing::IsOk;
+using ::absl_testing::StatusIs;
 using ::testing::ElementsAre;
 using ::testing::HasSubstr;
+using ::testing::Not;
 
 class RaidenControllerTest : public ::testing::Test {
  protected:
@@ -81,46 +85,49 @@ class RaidenControllerTest : public ::testing::Test {
 TEST_F(RaidenControllerTest, AllocateAndDeallocateSuccess) {
   EXPECT_EQ(test_server_->service->GetBufferCount(), 0);
   {
-    RaidenController controller(
-        unit_, std::vector<std::string>{test_server_->server_address},
-        /*num_blocks=*/10, /*num_shards=*/2,
-        /*shard_size_bytes=*/1024, "");
+    TF_ASSERT_OK_AND_ASSIGN(
+        auto controller,
+        RaidenController::Create(
+            unit_, std::vector<std::string>{test_server_->server_address},
+            /*num_blocks=*/10, /*num_shards=*/2,
+            /*shard_size_bytes=*/1024, ""));
 
     EXPECT_EQ(test_server_->service->GetBufferCount(), 20);
-    EXPECT_EQ(controller.block_manager()->num_locked_blocks(), 0);
+    EXPECT_EQ(controller->block_manager()->num_locked_blocks(), 0);
 
-    auto alloc_or = controller.Allocate(/*num_blocks=*/3);
-    ASSERT_TRUE(alloc_or.ok());
-    const auto& allocated_buffers = *alloc_or;
+    TF_ASSERT_OK_AND_ASSIGN(const auto& allocated_buffers,
+                            controller->Allocate(/*num_blocks=*/3));
     ASSERT_EQ(allocated_buffers.size(), 3);
 
     EXPECT_EQ(test_server_->service->GetBufferCount(), 20);
-    EXPECT_EQ(controller.block_manager()->num_locked_blocks(), 3);
+    EXPECT_EQ(controller->block_manager()->num_locked_blocks(), 3);
 
     EXPECT_EQ(allocated_buffers[0].buffer_handles_size(), 2);
     EXPECT_NE(allocated_buffers[0].buffer_handles(0).handle(),
               allocated_buffers[0].buffer_handles(1).handle());
 
-    ASSERT_TRUE(controller.Deallocate(allocated_buffers).ok());
+    ASSERT_TRUE(controller->Deallocate(allocated_buffers).ok());
     EXPECT_EQ(test_server_->service->GetBufferCount(), 20);
-    EXPECT_EQ(controller.block_manager()->num_locked_blocks(), 0);
+    EXPECT_EQ(controller->block_manager()->num_locked_blocks(), 0);
   }
   EXPECT_EQ(test_server_->service->GetBufferCount(), 0);
 }
 
 TEST_F(RaidenControllerTest, RegisterWorkerSuccessfully) {
-  RaidenController controller(unit_, /*num_blocks=*/5, /*num_shards=*/2,
-                              /*shard_size_bytes=*/512, "");
+  TF_ASSERT_OK_AND_ASSIGN(
+      auto controller,
+      RaidenController::Create(unit_, /*num_blocks=*/5, /*num_shards=*/2,
+                               /*shard_size_bytes=*/512, ""));
 
   // Initial state shouldn't have the worker in registry
-  EXPECT_FALSE(controller.worker_registry()->GetWorker("worker_0").ok());
+  EXPECT_FALSE(controller->worker_registry()->GetWorker("worker_0").ok());
 
-  RegisterAndInitWorker(controller, "worker_0", test_server_->server_address);
+  RegisterAndInitWorker(*controller, "worker_0", test_server_->server_address);
 
   // Worker should be registered
-  auto worker_or = controller.worker_registry()->GetWorker("worker_0");
-  ASSERT_OK(worker_or);
-  EXPECT_NE(worker_or->worker_service_client, nullptr);
+  TF_ASSERT_OK_AND_ASSIGN(auto worker,
+                          controller->worker_registry()->GetWorker("worker_0"));
+  EXPECT_NE(worker.worker_service_client, nullptr);
 
   // Registration should have synchronously created the buffers
   EXPECT_EQ(test_server_->service->GetBufferCount(), 10);
@@ -129,146 +136,149 @@ TEST_F(RaidenControllerTest, RegisterWorkerSuccessfully) {
 TEST_F(RaidenControllerTest, ConstructWithServerAddressWorks) {
   EXPECT_EQ(test_server_->service->GetBufferCount(), 0);
   {
-    RaidenController controller(
-        unit_, std::vector<std::string>{test_server_->server_address},
-        /*num_blocks=*/5, /*num_shards=*/2,
-        /*shard_size_bytes=*/512, "");
+    TF_ASSERT_OK_AND_ASSIGN(
+        auto controller,
+        RaidenController::Create(
+            unit_, std::vector<std::string>{test_server_->server_address},
+            /*num_blocks=*/5, /*num_shards=*/2,
+            /*shard_size_bytes=*/512, ""));
     EXPECT_EQ(test_server_->service->GetBufferCount(), 10);
   }
   EXPECT_EQ(test_server_->service->GetBufferCount(), 0);
 }
 
 TEST_F(RaidenControllerTest, InitWithIPv6BracketedAddress) {
-  RaidenController controller(unit_, /*num_blocks=*/5, /*num_shards=*/1,
-                              /*shard_size_bytes=*/512, "[::1]:12345");
+  TF_ASSERT_OK_AND_ASSIGN(
+      auto controller,
+      RaidenController::Create(unit_, /*num_blocks=*/5, /*num_shards=*/1,
+                               /*shard_size_bytes=*/512, "[::1]:12345"));
 
-  EXPECT_TRUE(absl::StartsWith(controller.controller_address(), "[::1]:"));
+  EXPECT_TRUE(absl::StartsWith(controller->controller_address(), "[::1]:"));
 }
 
 TEST_F(RaidenControllerTest, AllocateExceedingCapacityFails) {
-  RaidenController controller(
-      unit_, std::vector<std::string>{test_server_->server_address},
-      /*num_blocks=*/5, /*num_shards=*/1, /*shard_size_bytes=*/512, "");
+  TF_ASSERT_OK_AND_ASSIGN(
+      auto controller,
+      RaidenController::Create(
+          unit_, std::vector<std::string>{test_server_->server_address},
+          /*num_blocks=*/5, /*num_shards=*/1, /*shard_size_bytes=*/512, ""));
 
-  auto alloc_or = controller.Allocate(/*num_blocks=*/10);
-  EXPECT_FALSE(alloc_or.ok());
-  EXPECT_EQ(controller.block_manager()->num_locked_blocks(), 0);
+  EXPECT_THAT(controller->Allocate(/*num_blocks=*/10), Not(IsOk()));
+  EXPECT_EQ(controller->block_manager()->num_locked_blocks(), 0);
 }
 
 TEST_F(RaidenControllerTest, DeallocateInvalidIndexFails) {
-  RaidenController controller(
-      unit_, std::vector<std::string>{test_server_->server_address},
-      /*num_blocks=*/5, /*num_shards=*/1, /*shard_size_bytes=*/512, "");
+  TF_ASSERT_OK_AND_ASSIGN(
+      auto controller,
+      RaidenController::Create(
+          unit_, std::vector<std::string>{test_server_->server_address},
+          /*num_blocks=*/5, /*num_shards=*/1, /*shard_size_bytes=*/512, ""));
 
   // 1. Missing index
   proto::BufferProto missing_index_buf;
   EXPECT_TRUE(
-      absl::IsInvalidArgument(controller.Deallocate({missing_index_buf})));
+      absl::IsInvalidArgument(controller->Deallocate({missing_index_buf})));
 
   // 2. Negative index
   proto::BufferProto negative_index_buf;
   negative_index_buf.set_index(-1);
   EXPECT_TRUE(
-      absl::IsInvalidArgument(controller.Deallocate({negative_index_buf})));
+      absl::IsInvalidArgument(controller->Deallocate({negative_index_buf})));
 
   // 3. Out-of-bounds index (e.g. index 10 when num_blocks is 5)
   proto::BufferProto oob_buf;
   oob_buf.set_index(10);
-  EXPECT_TRUE(absl::IsInvalidArgument(controller.Deallocate({oob_buf})));
+  EXPECT_TRUE(absl::IsInvalidArgument(controller->Deallocate({oob_buf})));
 }
 
 TEST_F(RaidenControllerTest, AllocateAndDeallocateBlockIdsSuccess) {
   EXPECT_EQ(test_server_->service->GetBufferCount(), 0);
   {
-    RaidenController controller(
-        unit_, std::vector<std::string>{test_server_->server_address},
-        /*num_blocks=*/10, /*num_shards=*/2,
-        /*shard_size_bytes=*/1024, "");
+    TF_ASSERT_OK_AND_ASSIGN(
+        auto controller,
+        RaidenController::Create(
+            unit_, std::vector<std::string>{test_server_->server_address},
+            /*num_blocks=*/10, /*num_shards=*/2,
+            /*shard_size_bytes=*/1024, ""));
 
     EXPECT_EQ(test_server_->service->GetBufferCount(), 20);
-    EXPECT_EQ(controller.block_manager()->num_locked_blocks(), 0);
+    EXPECT_EQ(controller->block_manager()->num_locked_blocks(), 0);
 
-    auto alloc_or = controller.AllocateBlockIds(/*num_blocks=*/3);
-    ASSERT_TRUE(alloc_or.ok());
-    const auto& block_ids = *alloc_or;
+    TF_ASSERT_OK_AND_ASSIGN(const auto& block_ids,
+                            controller->AllocateBlockIds(/*num_blocks=*/3));
     ASSERT_EQ(block_ids.size(), 3);
 
     EXPECT_EQ(test_server_->service->GetBufferCount(), 20);
-    EXPECT_EQ(controller.block_manager()->num_locked_blocks(), 3);
+    EXPECT_EQ(controller->block_manager()->num_locked_blocks(), 3);
 
     for (int block_id : block_ids) {
       EXPECT_GE(block_id, 0);
       EXPECT_LT(block_id, 10);
     }
 
-    ASSERT_TRUE(controller.DeallocateBlockIds(block_ids).ok());
+    ASSERT_TRUE(controller->DeallocateBlockIds(block_ids).ok());
     EXPECT_EQ(test_server_->service->GetBufferCount(), 20);
-    EXPECT_EQ(controller.block_manager()->num_locked_blocks(), 0);
+    EXPECT_EQ(controller->block_manager()->num_locked_blocks(), 0);
   }
   EXPECT_EQ(test_server_->service->GetBufferCount(), 0);
 }
 
 TEST_F(RaidenControllerTest, DeallocateNonExistentBlockIdFails) {
-  RaidenController controller(
-      unit_, std::vector<std::string>{test_server_->server_address},
-      /*num_blocks=*/5, /*num_shards=*/1, /*shard_size_bytes=*/512, "");
+  TF_ASSERT_OK_AND_ASSIGN(
+      auto controller,
+      RaidenController::Create(
+          unit_, std::vector<std::string>{test_server_->server_address},
+          /*num_blocks=*/5, /*num_shards=*/1, /*shard_size_bytes=*/512, ""));
 
   std::vector<int> to_delete = {9999};
-  EXPECT_FALSE(controller.DeallocateBlockIds(to_delete).ok());
+  EXPECT_FALSE(controller->DeallocateBlockIds(to_delete).ok());
 }
 
-TEST_F(RaidenControllerTest, ConstructorThrowsOnBufferCreationFailure) {
-  EXPECT_THROW(
-      {
-        RaidenController controller(
-            unit_, std::vector<std::string>{"localhost:1"}, /*num_blocks=*/5,
-            /*num_shards=*/1, /*shard_size_bytes=*/512, "");
-      },
-      std::runtime_error);
+TEST_F(RaidenControllerTest, CreateFailsOnBufferCreationFailure) {
+  EXPECT_THAT(
+      RaidenController::Create(unit_, std::vector<std::string>{"localhost:1"},
+                               /*num_blocks=*/5,
+                               /*num_shards=*/1, /*shard_size_bytes=*/512, ""),
+      Not(IsOk()));
 }
 
 TEST_F(RaidenControllerTest, ExpectedWorkerCountSatisfiedByStaticWorkers) {
   // Statically supplied workers register during Init, so the barrier is
   // already met when the wait runs and construction returns promptly.
-  RaidenController controller(
-      unit_, std::vector<std::string>{test_server_->server_address},
-      /*num_blocks=*/5, /*num_shards=*/2,
-      /*shard_size_bytes=*/512, "",
-      /*preprovision_worker_buffers=*/true, /*expected_worker_count=*/1);
-  EXPECT_EQ(controller.worker_registry()->GetRegisteredWorkers().size(), 1);
+  TF_ASSERT_OK_AND_ASSIGN(
+      auto controller,
+      RaidenController::Create(
+          unit_, std::vector<std::string>{test_server_->server_address},
+          /*num_blocks=*/5, /*num_shards=*/2,
+          /*shard_size_bytes=*/512, "",
+          /*preprovision_worker_buffers=*/true, /*expected_worker_count=*/1));
+  EXPECT_EQ(controller->worker_registry()->GetRegisteredWorkers().size(), 1);
 }
 
-// TODO(b/537858523): Migrate exception-based timeout assertions to StatusOr
-// error checks once RaidenController adopts the Create() factory method.
 TEST_F(RaidenControllerTest, ExpectedWorkerCountTimesOut) {
   setenv("RAIDEN_EXPECTED_WORKERS_TIMEOUT_S", "1", /*overwrite=*/1);
-  try {
-    RaidenController controller(
-        unit_, std::vector<std::string>{test_server_->server_address},
-        /*num_blocks=*/5, /*num_shards=*/2,
-        /*shard_size_bytes=*/512, "",
-        /*preprovision_worker_buffers=*/true, /*expected_worker_count=*/2);
-    unsetenv("RAIDEN_EXPECTED_WORKERS_TIMEOUT_S");
-    FAIL() << "construction should have thrown on the worker barrier";
-  } catch (const std::runtime_error& e) {
-    unsetenv("RAIDEN_EXPECTED_WORKERS_TIMEOUT_S");
-    EXPECT_THAT(e.what(), testing::HasSubstr("expected 2 worker(s)"));
-    EXPECT_THAT(e.what(), testing::HasSubstr("got 1"));
-  }
+  EXPECT_THAT(
+      RaidenController::Create(
+          unit_, std::vector<std::string>{test_server_->server_address},
+          /*num_blocks=*/5, /*num_shards=*/2,
+          /*shard_size_bytes=*/512, "",
+          /*preprovision_worker_buffers=*/true, /*expected_worker_count=*/2),
+      StatusIs(absl::StatusCode::kDeadlineExceeded,
+               testing::AllOf(HasSubstr("expected 2 worker(s)"),
+                              HasSubstr("got 1"))));
+  unsetenv("RAIDEN_EXPECTED_WORKERS_TIMEOUT_S");
 }
 
 TEST_F(RaidenControllerTest,
        ExpectedWorkerCountTimeoutCleansUpRegistryAndCallbacks) {
   setenv("RAIDEN_EXPECTED_WORKERS_TIMEOUT_S", "1", /*overwrite=*/1);
-  EXPECT_THROW(
-      {
-        RaidenController controller(
-            unit_, std::vector<std::string>{test_server_->server_address},
-            /*num_blocks=*/5, /*num_shards=*/2,
-            /*shard_size_bytes=*/512, "",
-            /*preprovision_worker_buffers=*/true, /*expected_worker_count=*/2);
-      },
-      std::runtime_error);
+  EXPECT_THAT(
+      RaidenController::Create(
+          unit_, std::vector<std::string>{test_server_->server_address},
+          /*num_blocks=*/5, /*num_shards=*/2,
+          /*shard_size_bytes=*/512, "",
+          /*preprovision_worker_buffers=*/true, /*expected_worker_count=*/2),
+      Not(IsOk()));
   unsetenv("RAIDEN_EXPECTED_WORKERS_TIMEOUT_S");
 
   // After the constructor threw due to timeout, the callback capturing the
@@ -285,11 +295,13 @@ TEST_F(RaidenControllerTest,
 }
 
 TEST_F(RaidenControllerTest, RegisterWorkerFailsOnBufferCreationFailure) {
-  RaidenController controller(unit_, /*num_blocks=*/5,
-                              /*num_shards=*/1, /*shard_size_bytes=*/512, "");
+  TF_ASSERT_OK_AND_ASSIGN(
+      auto controller,
+      RaidenController::Create(unit_, /*num_blocks=*/5,
+                               /*num_shards=*/1, /*shard_size_bytes=*/512, ""));
 
   core::controller::RaidenControllerClient client(
-      controller.controller_address());
+      controller->controller_address());
   auto status = client.RegisterWorker(
       "worker_bad", "localhost:1",
       {::tpu_raiden::RaidenTransferEndpoint{"localhost:1", {}}});
@@ -300,31 +312,35 @@ TEST_F(RaidenControllerTest, RegisterWorkerFailsOnBufferCreationFailure) {
 }
 
 TEST_F(RaidenControllerTest, TransferBuffersDelegatesToWorkerService) {
-  RaidenController controller(
-      unit_, std::vector<std::string>{test_server_->server_address},
-      /*num_blocks=*/5, /*num_shards=*/1, /*shard_size_bytes=*/512, "");
+  TF_ASSERT_OK_AND_ASSIGN(
+      auto controller,
+      RaidenController::Create(
+          unit_, std::vector<std::string>{test_server_->server_address},
+          /*num_blocks=*/5, /*num_shards=*/1, /*shard_size_bytes=*/512, ""));
 
   Buffer src_buf(10, {}, std::nullopt, rpc::MEMORY_TYPE_HBM);
   Buffer dst_buf(20, {}, std::nullopt, rpc::MEMORY_TYPE_DRAM);
 
   auto status =
-      controller.TransferBuffers("worker_0", {src_buf}, {dst_buf}).Await();
+      controller->TransferBuffers("worker_0", {src_buf}, {dst_buf}).Await();
   EXPECT_FALSE(status.ok());
   EXPECT_THAT(status.message(),
               HasSubstr("Transfer manager is not configured on WorkerService"));
 }
 
 TEST_F(RaidenControllerTest, TransferBuffersValidationMismatchedOffsets) {
-  RaidenController controller(
-      unit_, std::vector<std::string>{test_server_->server_address},
-      /*num_blocks=*/5, /*num_shards=*/1, /*shard_size_bytes=*/512, "");
+  TF_ASSERT_OK_AND_ASSIGN(
+      auto controller,
+      RaidenController::Create(
+          unit_, std::vector<std::string>{test_server_->server_address},
+          /*num_blocks=*/5, /*num_shards=*/1, /*shard_size_bytes=*/512, ""));
 
   Buffer src_buf1(10, {}, std::nullopt, rpc::MEMORY_TYPE_HBM);
   Buffer src_buf2(30, {}, std::nullopt, rpc::MEMORY_TYPE_HBM);
   Buffer dst_buf1(20, {}, std::nullopt, rpc::MEMORY_TYPE_DRAM);
 
   auto status =
-      controller.TransferBuffers("worker_0", {src_buf1, src_buf2}, {dst_buf1})
+      controller->TransferBuffers("worker_0", {src_buf1, src_buf2}, {dst_buf1})
           .Await();
   EXPECT_FALSE(status.ok());
   EXPECT_EQ(status.code(), absl::StatusCode::kInvalidArgument);
@@ -335,9 +351,11 @@ TEST_F(RaidenControllerTest, TransferBuffersValidationMismatchedOffsets) {
 }
 
 TEST_F(RaidenControllerTest, TransferBuffersValidationMismatchedCopySizes) {
-  RaidenController controller(
-      unit_, std::vector<std::string>{test_server_->server_address},
-      /*num_blocks=*/5, /*num_shards=*/1, /*shard_size_bytes=*/512, "");
+  TF_ASSERT_OK_AND_ASSIGN(
+      auto controller,
+      RaidenController::Create(
+          unit_, std::vector<std::string>{test_server_->server_address},
+          /*num_blocks=*/5, /*num_shards=*/1, /*shard_size_bytes=*/512, ""));
 
   Buffer src_buf1(10, {}, std::nullopt, rpc::MEMORY_TYPE_HBM);
   Buffer src_buf2(20, {}, std::nullopt, rpc::MEMORY_TYPE_HBM);
@@ -345,10 +363,11 @@ TEST_F(RaidenControllerTest, TransferBuffersValidationMismatchedCopySizes) {
   Buffer dst_buf2(30, {}, std::nullopt, rpc::MEMORY_TYPE_DRAM);
   std::vector<int64_t> copy_sizes = {1};
 
-  auto status = controller
-                    .TransferBuffers({src_buf1, src_buf2}, {dst_buf1, dst_buf2},
-                                     /*staging_host_buffers=*/{}, copy_sizes)
-                    .Await();
+  auto status =
+      controller
+          ->TransferBuffers({src_buf1, src_buf2}, {dst_buf1, dst_buf2},
+                            /*staging_host_buffers=*/{}, copy_sizes)
+          .Await();
   EXPECT_FALSE(status.ok());
   EXPECT_EQ(status.code(), absl::StatusCode::kInvalidArgument);
   EXPECT_THAT(
@@ -358,11 +377,13 @@ TEST_F(RaidenControllerTest, TransferBuffersValidationMismatchedCopySizes) {
 }
 
 TEST_F(RaidenControllerTest, TransferBuffersValidationEmptyOffsets) {
-  RaidenController controller(
-      unit_, std::vector<std::string>{test_server_->server_address},
-      /*num_blocks=*/5, /*num_shards=*/1, /*shard_size_bytes=*/512, "");
+  TF_ASSERT_OK_AND_ASSIGN(
+      auto controller,
+      RaidenController::Create(
+          unit_, std::vector<std::string>{test_server_->server_address},
+          /*num_blocks=*/5, /*num_shards=*/1, /*shard_size_bytes=*/512, ""));
 
-  auto status = controller.TransferBuffers({}, {}).Await();
+  auto status = controller->TransferBuffers({}, {}).Await();
   EXPECT_FALSE(status.ok());
   EXPECT_EQ(status.code(), absl::StatusCode::kInvalidArgument);
   EXPECT_THAT(
@@ -372,16 +393,19 @@ TEST_F(RaidenControllerTest, TransferBuffersValidationEmptyOffsets) {
 }
 
 TEST_F(RaidenControllerTest, TransferBuffersValidationInvalidIndex) {
-  RaidenController controller(
-      unit_, std::vector<std::string>{test_server_->server_address},
-      /*num_blocks=*/5, /*num_shards=*/1, /*shard_size_bytes=*/512, "");
+  TF_ASSERT_OK_AND_ASSIGN(
+      auto controller,
+      RaidenController::Create(
+          unit_, std::vector<std::string>{test_server_->server_address},
+          /*num_blocks=*/5, /*num_shards=*/1, /*shard_size_bytes=*/512, ""));
 
   // 1. Source buffer has invalid negative index
   Buffer src_buf_invalid(-1, {}, std::nullopt, rpc::MEMORY_TYPE_HBM);
   Buffer dst_buf_valid(2, {}, std::nullopt, rpc::MEMORY_TYPE_DRAM);
 
   auto status1 =
-      controller.TransferBuffers("worker_0", {src_buf_invalid}, {dst_buf_valid})
+      controller
+          ->TransferBuffers("worker_0", {src_buf_invalid}, {dst_buf_valid})
           .Await();
   EXPECT_FALSE(status1.ok());
   EXPECT_EQ(status1.code(), absl::StatusCode::kInvalidArgument);
@@ -393,7 +417,8 @@ TEST_F(RaidenControllerTest, TransferBuffersValidationInvalidIndex) {
   Buffer dst_buf_invalid(-2, {}, std::nullopt, rpc::MEMORY_TYPE_DRAM);
 
   auto status2 =
-      controller.TransferBuffers("worker_0", {src_buf_valid}, {dst_buf_invalid})
+      controller
+          ->TransferBuffers("worker_0", {src_buf_valid}, {dst_buf_invalid})
           .Await();
   EXPECT_FALSE(status2.ok());
   EXPECT_EQ(status2.code(), absl::StatusCode::kInvalidArgument);
@@ -410,8 +435,10 @@ TEST_F(RaidenControllerTest, MultiWorkerBroadcastSupport) {
                                         test_server2->server_address};
 
   {
-    RaidenController controller(unit_, addresses, /*num_blocks=*/5,
-                                /*num_shards=*/2, /*shard_size_bytes=*/512, "");
+    TF_ASSERT_OK_AND_ASSIGN(
+        auto controller, RaidenController::Create(
+                             unit_, addresses, /*num_blocks=*/5,
+                             /*num_shards=*/2, /*shard_size_bytes=*/512, ""));
 
     // Buffers created on both worker servers.
     EXPECT_EQ(test_server_->service->GetBufferCount(), 10);
@@ -420,7 +447,7 @@ TEST_F(RaidenControllerTest, MultiWorkerBroadcastSupport) {
     // Broadcast TransferBuffers.
     Buffer src_buf(10, {}, std::nullopt, rpc::MEMORY_TYPE_HBM);
     Buffer dst_buf(20, {}, std::nullopt, rpc::MEMORY_TYPE_DRAM);
-    auto status = controller.TransferBuffers({src_buf}, {dst_buf}).Await();
+    auto status = controller->TransferBuffers({src_buf}, {dst_buf}).Await();
     EXPECT_FALSE(status.ok());
     EXPECT_THAT(
         status.message(),
@@ -436,9 +463,11 @@ TEST_F(RaidenControllerTest, TransferBuffersD2HSuccess) {
   MockTransferManager mock_mgr;
   test_server_->service->SetTransferManager(KVManagerHolder(&mock_mgr));
 
-  RaidenController controller(unit_, /*num_blocks=*/5, /*num_shards=*/1,
-                              /*shard_size_bytes=*/512, "");
-  RegisterAndInitWorker(controller, "worker_0", test_server_->server_address);
+  TF_ASSERT_OK_AND_ASSIGN(
+      auto controller,
+      RaidenController::Create(unit_, /*num_blocks=*/5, /*num_shards=*/1,
+                               /*shard_size_bytes=*/512, ""));
+  RegisterAndInitWorker(*controller, "worker_0", test_server_->server_address);
 
   Buffer src_buf1(10, {}, std::nullopt, rpc::MEMORY_TYPE_HBM);
   Buffer src_buf2(30, {}, std::nullopt, rpc::MEMORY_TYPE_HBM);
@@ -447,9 +476,9 @@ TEST_F(RaidenControllerTest, TransferBuffersD2HSuccess) {
   std::vector<int64_t> copy_sizes = {1, 2};
 
   auto status = controller
-                    .TransferBuffers("worker_0", {src_buf1, src_buf2},
-                                     {dst_buf1, dst_buf2},
-                                     /*staging_host_buffers=*/{}, copy_sizes)
+                    ->TransferBuffers("worker_0", {src_buf1, src_buf2},
+                                      {dst_buf1, dst_buf2},
+                                      /*staging_host_buffers=*/{}, copy_sizes)
                     .Await();
   ASSERT_TRUE(status.ok());
   EXPECT_EQ(mock_mgr.d2h_calls, 1);
@@ -463,15 +492,17 @@ TEST_F(RaidenControllerTest, TransferBuffersH2DSuccess) {
   MockTransferManager mock_mgr;
   test_server_->service->SetTransferManager(KVManagerHolder(&mock_mgr));
 
-  RaidenController controller(unit_, /*num_blocks=*/5, /*num_shards=*/1,
-                              /*shard_size_bytes=*/512, "");
-  RegisterAndInitWorker(controller, "worker_0", test_server_->server_address);
+  TF_ASSERT_OK_AND_ASSIGN(
+      auto controller,
+      RaidenController::Create(unit_, /*num_blocks=*/5, /*num_shards=*/1,
+                               /*shard_size_bytes=*/512, ""));
+  RegisterAndInitWorker(*controller, "worker_0", test_server_->server_address);
 
   Buffer src_buf(100, {}, std::nullopt, rpc::MEMORY_TYPE_DRAM);
   Buffer dst_buf(200, {}, std::nullopt, rpc::MEMORY_TYPE_HBM);
 
   auto status =
-      controller.TransferBuffers("worker_0", {src_buf}, {dst_buf}).Await();
+      controller->TransferBuffers("worker_0", {src_buf}, {dst_buf}).Await();
   ASSERT_TRUE(status.ok());
   EXPECT_EQ(mock_mgr.d2h_calls, 0);
   EXPECT_EQ(mock_mgr.h2d_calls, 1);
@@ -484,15 +515,17 @@ TEST_F(RaidenControllerTest, TransferBuffersH2HSuccess) {
   MockTransferManager mock_mgr;
   test_server_->service->SetTransferManager(KVManagerHolder(&mock_mgr));
 
-  RaidenController controller(unit_, /*num_blocks=*/5, /*num_shards=*/1,
-                              /*shard_size_bytes=*/512, "");
-  RegisterAndInitWorker(controller, "worker_0", test_server_->server_address);
+  TF_ASSERT_OK_AND_ASSIGN(
+      auto controller,
+      RaidenController::Create(unit_, /*num_blocks=*/5, /*num_shards=*/1,
+                               /*shard_size_bytes=*/512, ""));
+  RegisterAndInitWorker(*controller, "worker_0", test_server_->server_address);
 
   Buffer src_buf(10, {}, std::nullopt, rpc::MEMORY_TYPE_DRAM);
   Buffer dst_buf(20, {}, "localhost:8080", rpc::MEMORY_TYPE_DRAM);
 
   auto status =
-      controller.TransferBuffers("worker_0", {src_buf}, {dst_buf}).Await();
+      controller->TransferBuffers("worker_0", {src_buf}, {dst_buf}).Await();
   ASSERT_TRUE(status.ok());
   EXPECT_EQ(mock_mgr.d2h_calls, 0);
   EXPECT_EQ(mock_mgr.h2d_calls, 0);
@@ -593,14 +626,16 @@ class ReadRemotePullTest : public RaidenControllerTest {
 TEST_F(ReadRemotePullTest, FullSuccessPathUsesAuthoritativeIdsAndSrcEndpoints) {
   ShardAwareMockTransferManager mock;
   test_server_->service->SetTransferManager(KVManagerHolder(&mock));
-  RaidenController dest(unit_, /*num_blocks=*/5, /*num_shards=*/2,
-                        /*shard_size_bytes=*/512, "");
-  RegisterAndInitWorker(dest, "worker_0", test_server_->server_address);
+  TF_ASSERT_OK_AND_ASSIGN(
+      auto dest,
+      RaidenController::Create(unit_, /*num_blocks=*/5, /*num_shards=*/2,
+                               /*shard_size_bytes=*/512, ""));
+  RegisterAndInitWorker(*dest, "worker_0", test_server_->server_address);
 
   absl::Status st =
-      dest.ReadRemote(src_server_->server_address,
-                      /*src_host_block_ids=*/{10, 11},
-                      /*dst_host_block_ids=*/{20, 21}, {"h0", "h1"})
+      dest->ReadRemote(src_server_->server_address,
+                       /*src_host_block_ids=*/{10, 11},
+                       /*dst_host_block_ids=*/{20, 21}, {"h0", "h1"})
           .Await();
   ABSL_EXPECT_OK(st);
 
@@ -620,13 +655,15 @@ TEST_F(ReadRemotePullTest, FullSuccessPathUsesAuthoritativeIdsAndSrcEndpoints) {
 TEST_F(ReadRemotePullTest, HbmModeBuildsStagingPlusDeviceDst) {
   ShardAwareMockTransferManager mock;
   test_server_->service->SetTransferManager(KVManagerHolder(&mock));
-  RaidenController dest(unit_, /*num_blocks=*/5, /*num_shards=*/2,
-                        /*shard_size_bytes=*/512, "");
-  RegisterAndInitWorker(dest, "worker_0", test_server_->server_address);
+  TF_ASSERT_OK_AND_ASSIGN(
+      auto dest,
+      RaidenController::Create(unit_, /*num_blocks=*/5, /*num_shards=*/2,
+                               /*shard_size_bytes=*/512, ""));
+  RegisterAndInitWorker(*dest, "worker_0", test_server_->server_address);
 
-  absl::Status st = dest.ReadRemote(src_server_->server_address, {10, 11},
-                                    {20, 21}, {"h0", "h1"},
-                                    /*dst_device_block_ids=*/{7, 8})
+  absl::Status st = dest->ReadRemote(src_server_->server_address, {10, 11},
+                                     {20, 21}, {"h0", "h1"},
+                                     /*dst_device_block_ids=*/{7, 8})
                         .Await();
   ABSL_EXPECT_OK(st);
 
@@ -643,12 +680,15 @@ TEST_F(ReadRemotePullTest, HbmModeBuildsStagingPlusDeviceDst) {
 TEST_F(ReadRemotePullTest, HostModeBuildsDramDstWithNoStaging) {
   ShardAwareMockTransferManager mock;
   test_server_->service->SetTransferManager(KVManagerHolder(&mock));
-  RaidenController dest(unit_, /*num_blocks=*/5, /*num_shards=*/2,
-                        /*shard_size_bytes=*/512, "");
-  RegisterAndInitWorker(dest, "worker_0", test_server_->server_address);
+  TF_ASSERT_OK_AND_ASSIGN(
+      auto dest,
+      RaidenController::Create(unit_, /*num_blocks=*/5, /*num_shards=*/2,
+                               /*shard_size_bytes=*/512, ""));
+  RegisterAndInitWorker(*dest, "worker_0", test_server_->server_address);
 
   ABSL_EXPECT_OK(
-      dest.ReadRemote(src_server_->server_address, {10}, {20}, {"h0"}).Await());
+      dest->ReadRemote(src_server_->server_address, {10}, {20}, {"h0"})
+          .Await());
   EXPECT_EQ(mock.vector_h2h_read_calls, 1);
   EXPECT_EQ(mock.vector_h2d_read_calls, 0);
   EXPECT_TRUE(mock.last_staging_offsets.empty());
@@ -657,13 +697,15 @@ TEST_F(ReadRemotePullTest, HostModeBuildsDramDstWithNoStaging) {
 TEST_F(ReadRemotePullTest, DeviceIdSizeMismatchRejectedBeforeAcquire) {
   ShardAwareMockTransferManager mock;
   test_server_->service->SetTransferManager(KVManagerHolder(&mock));
-  RaidenController dest(unit_, /*num_blocks=*/5, /*num_shards=*/2,
-                        /*shard_size_bytes=*/512, "");
-  RegisterAndInitWorker(dest, "worker_0", test_server_->server_address);
+  TF_ASSERT_OK_AND_ASSIGN(
+      auto dest,
+      RaidenController::Create(unit_, /*num_blocks=*/5, /*num_shards=*/2,
+                               /*shard_size_bytes=*/512, ""));
+  RegisterAndInitWorker(*dest, "worker_0", test_server_->server_address);
 
   absl::Status st =
-      dest.ReadRemote(src_server_->server_address, {10, 11}, {20, 21},
-                      {"h0", "h1"}, /*dst_device_block_ids=*/{7})
+      dest->ReadRemote(src_server_->server_address, {10, 11}, {20, 21},
+                       {"h0", "h1"}, /*dst_device_block_ids=*/{7})
           .Await();
   EXPECT_EQ(st.code(), absl::StatusCode::kInvalidArgument);
   // Nothing was pinned at the source: a caller error must not cost the peer
@@ -681,28 +723,32 @@ TEST_F(ReadRemotePullTest, DeviceIdSizeMismatchRejectedBeforeAcquire) {
 TEST_F(ReadRemotePullTest, PeerChurnDoesNotGrowTheStubCacheWithoutBound) {
   ShardAwareMockTransferManager mock;
   test_server_->service->SetTransferManager(KVManagerHolder(&mock));
-  RaidenController dest(unit_, /*num_blocks=*/5, /*num_shards=*/2,
-                        /*shard_size_bytes=*/512, "");
-  RegisterAndInitWorker(dest, "worker_0", test_server_->server_address);
+  TF_ASSERT_OK_AND_ASSIGN(
+      auto dest,
+      RaidenController::Create(unit_, /*num_blocks=*/5, /*num_shards=*/2,
+                               /*shard_size_bytes=*/512, ""));
+  RegisterAndInitWorker(*dest, "worker_0", test_server_->server_address);
 
   // Dial far more distinct addresses than the bound. They need not answer: the
   // stub (and its cache entry) is created before the acquire is attempted.
   const size_t churn = RaidenController::MaxCachedStubsForTest() + 50;
   for (size_t i = 0; i < churn; ++i) {
     (void)dest
-        .ReadRemote(absl::StrCat("127.0.0.1:", 40000 + i), {10}, {20}, {"h0"})
+        ->ReadRemote(absl::StrCat("127.0.0.1:", 40000 + i), {10}, {20}, {"h0"})
         .Await();
   }
-  EXPECT_LE(dest.CachedStubCountForTest(),
+  EXPECT_LE(dest->CachedStubCountForTest(),
             RaidenController::MaxCachedStubsForTest());
 
   // The bound must not cost the live peer its channel: the real source is the
   // most recent address, so it is still cached and still works.
   ABSL_EXPECT_OK(
-      dest.ReadRemote(src_server_->server_address, {10}, {20}, {"h0"}).Await());
+      dest->ReadRemote(src_server_->server_address, {10}, {20}, {"h0"})
+          .Await());
   ABSL_EXPECT_OK(
-      dest.ReadRemote(src_server_->server_address, {10}, {20}, {"h0"}).Await());
-  EXPECT_LE(dest.CachedStubCountForTest(),
+      dest->ReadRemote(src_server_->server_address, {10}, {20}, {"h0"})
+          .Await());
+  EXPECT_LE(dest->CachedStubCountForTest(),
             RaidenController::MaxCachedStubsForTest());
 }
 
@@ -712,12 +758,14 @@ TEST_F(ReadRemotePullTest, PeerChurnDoesNotGrowTheStubCacheWithoutBound) {
 TEST_F(ReadRemotePullTest, EmptyControllerAddressRejectedBeforeAcquire) {
   ShardAwareMockTransferManager mock;
   test_server_->service->SetTransferManager(KVManagerHolder(&mock));
-  RaidenController dest(unit_, /*num_blocks=*/5, /*num_shards=*/2,
-                        /*shard_size_bytes=*/512, "");
-  RegisterAndInitWorker(dest, "worker_0", test_server_->server_address);
+  TF_ASSERT_OK_AND_ASSIGN(
+      auto dest,
+      RaidenController::Create(unit_, /*num_blocks=*/5, /*num_shards=*/2,
+                               /*shard_size_bytes=*/512, ""));
+  RegisterAndInitWorker(*dest, "worker_0", test_server_->server_address);
 
   absl::Status st =
-      dest.ReadRemote(/*src_controller_address=*/"", {10}, {20}, {"h0"})
+      dest->ReadRemote(/*src_controller_address=*/"", {10}, {20}, {"h0"})
           .Await();
   EXPECT_EQ(st.code(), absl::StatusCode::kInvalidArgument);
   EXPECT_THAT(std::string(st.message()), HasSubstr("controller address"));
@@ -727,11 +775,13 @@ TEST_F(ReadRemotePullTest, EmptyControllerAddressRejectedBeforeAcquire) {
 }
 
 TEST_F(ReadRemotePullTest, EmptyHashesRejected) {
-  RaidenController dest(unit_, /*num_blocks=*/5, /*num_shards=*/2,
-                        /*shard_size_bytes=*/512, "");
-  RegisterAndInitWorker(dest, "worker_0", test_server_->server_address);
-  absl::Status st = dest.ReadRemote(src_server_->server_address, {10}, {20},
-                                    /*block_hashes=*/{})
+  TF_ASSERT_OK_AND_ASSIGN(
+      auto dest,
+      RaidenController::Create(unit_, /*num_blocks=*/5, /*num_shards=*/2,
+                               /*shard_size_bytes=*/512, ""));
+  RegisterAndInitWorker(*dest, "worker_0", test_server_->server_address);
+  absl::Status st = dest->ReadRemote(src_server_->server_address, {10}, {20},
+                                     /*block_hashes=*/{})
                         .Await();
   EXPECT_EQ(st.code(), absl::StatusCode::kInvalidArgument);
 }
@@ -739,12 +789,14 @@ TEST_F(ReadRemotePullTest, EmptyHashesRejected) {
 TEST_F(ReadRemotePullTest, AcquireNotFoundFailsFastWithoutTransfer) {
   ShardAwareMockTransferManager mock;
   test_server_->service->SetTransferManager(KVManagerHolder(&mock));
-  RaidenController dest(unit_, /*num_blocks=*/5, /*num_shards=*/2,
-                        /*shard_size_bytes=*/512, "");
-  RegisterAndInitWorker(dest, "worker_0", test_server_->server_address);
+  TF_ASSERT_OK_AND_ASSIGN(
+      auto dest,
+      RaidenController::Create(unit_, /*num_blocks=*/5, /*num_shards=*/2,
+                               /*shard_size_bytes=*/512, ""));
+  RegisterAndInitWorker(*dest, "worker_0", test_server_->server_address);
 
   absl::Status st =
-      dest.ReadRemote(src_server_->server_address, {10}, {20}, {"h_missing"})
+      dest->ReadRemote(src_server_->server_address, {10}, {20}, {"h_missing"})
           .Await();
   // The source's verify-hook distinction survives the RPC boundary, and there
   // is no retry: NOT_FOUND is terminal against this peer.
@@ -758,12 +810,14 @@ TEST_F(ReadRemotePullTest, TransferFailureStillReleasesTheLease) {
   ShardAwareMockTransferManager mock;
   mock.fail_transfers = true;
   test_server_->service->SetTransferManager(KVManagerHolder(&mock));
-  RaidenController dest(unit_, /*num_blocks=*/5, /*num_shards=*/2,
-                        /*shard_size_bytes=*/512, "");
-  RegisterAndInitWorker(dest, "worker_0", test_server_->server_address);
+  TF_ASSERT_OK_AND_ASSIGN(
+      auto dest,
+      RaidenController::Create(unit_, /*num_blocks=*/5, /*num_shards=*/2,
+                               /*shard_size_bytes=*/512, ""));
+  RegisterAndInitWorker(*dest, "worker_0", test_server_->server_address);
 
   absl::Status st =
-      dest.ReadRemote(src_server_->server_address, {10}, {20}, {"h0"}).Await();
+      dest->ReadRemote(src_server_->server_address, {10}, {20}, {"h0"}).Await();
   EXPECT_FALSE(st.ok());
   // Release runs on EVERY path: a failed read must not leave the source
   // holding pins until the TTL expires.
@@ -780,12 +834,14 @@ TEST_F(ReadRemotePullTest, RevokedVerdictFailsTheRead) {
     src_server_->service->ForceExpireForTest(lease_id);
   });
 
-  RaidenController dest(unit_, /*num_blocks=*/5, /*num_shards=*/2,
-                        /*shard_size_bytes=*/512, "");
-  RegisterAndInitWorker(dest, "worker_0", test_server_->server_address);
+  TF_ASSERT_OK_AND_ASSIGN(
+      auto dest,
+      RaidenController::Create(unit_, /*num_blocks=*/5, /*num_shards=*/2,
+                               /*shard_size_bytes=*/512, ""));
+  RegisterAndInitWorker(*dest, "worker_0", test_server_->server_address);
 
   absl::Status st =
-      dest.ReadRemote(src_server_->server_address, {10}, {20}, {"h0"}).Await();
+      dest->ReadRemote(src_server_->server_address, {10}, {20}, {"h0"}).Await();
   EXPECT_EQ(st.code(), absl::StatusCode::kFailedPrecondition);
   EXPECT_THAT(std::string(st.message()), HasSubstr("revoked"));
 }
@@ -795,10 +851,12 @@ TEST_F(ReadRemotePullTest, ControllerTeardownMidReadIsSafe) {
   test_server_->service->SetTransferManager(KVManagerHolder(&mock));
   tsl::Future<> read;
   {
-    RaidenController dest(unit_, /*num_blocks=*/5, /*num_shards=*/2,
-                          /*shard_size_bytes=*/512, "");
-    RegisterAndInitWorker(dest, "worker_0", test_server_->server_address);
-    read = dest.ReadRemote(src_server_->server_address, {10}, {20}, {"h0"});
+    TF_ASSERT_OK_AND_ASSIGN(
+        auto dest,
+        RaidenController::Create(unit_, /*num_blocks=*/5, /*num_shards=*/2,
+                                 /*shard_size_bytes=*/512, ""));
+    RegisterAndInitWorker(*dest, "worker_0", test_server_->server_address);
+    read = dest->ReadRemote(src_server_->server_address, {10}, {20}, {"h0"});
     // dest is destroyed here, possibly with the read still in flight. The
     // continuations hold only shared state plus a lifetime handle, so this
     // must not be a use-after-free.
@@ -826,9 +884,11 @@ TEST_F(RaidenControllerTest,
   ShardAwareMockTransferManager shard_mock;
   test_server_->service->SetTransferManager(KVManagerHolder(&shard_mock));
 
-  RaidenController controller(unit_, /*num_blocks=*/5, /*num_shards=*/2,
-                              /*shard_size_bytes=*/512, "");
-  RegisterAndInitWorker(controller, "worker_0", test_server_->server_address);
+  TF_ASSERT_OK_AND_ASSIGN(
+      auto controller,
+      RaidenController::Create(unit_, /*num_blocks=*/5, /*num_shards=*/2,
+                               /*shard_size_bytes=*/512, ""));
+  RegisterAndInitWorker(*controller, "worker_0", test_server_->server_address);
 
   // Source block -> destination host block. The destination peer worker exposes
   // two shard-tagged sub-manager endpoints; both must reach the worker's vector
@@ -850,7 +910,7 @@ TEST_F(RaidenControllerTest,
   std::vector<Buffer> dst_buffers;
   dst_buffers.push_back(std::move(dst_buf));
 
-  auto status = controller.TransferBuffers(src_buffers, dst_buffers).Await();
+  auto status = controller->TransferBuffers(src_buffers, dst_buffers).Await();
   ASSERT_TRUE(status.ok()) << status.message();
 
   // Shard-matching (vector) path was taken, NOT the single-endpoint string
@@ -878,13 +938,15 @@ TEST_F(RaidenControllerTest,
   test_server_->service->SetTransferManager(KVManagerHolder(&mock_lo));
   test_server2->service->SetTransferManager(KVManagerHolder(&mock_hi));
 
-  RaidenController controller(unit_, /*num_blocks=*/5, /*num_shards=*/2,
-                              /*shard_size_bytes=*/512, "");
+  TF_ASSERT_OK_AND_ASSIGN(
+      auto controller,
+      RaidenController::Create(unit_, /*num_blocks=*/5, /*num_shards=*/2,
+                               /*shard_size_bytes=*/512, ""));
   // worker_id "z_lo" (node 10) sorts AFTER "a_hi" (node 20): sorted order is
   // [a_hi(node20), z_lo(node10)] -- reverse of node order.
-  RegisterAndInitWorker(controller, "z_lo", test_server_->server_address,
+  RegisterAndInitWorker(*controller, "z_lo", test_server_->server_address,
                         /*node_id=*/10);
-  RegisterAndInitWorker(controller, "a_hi", test_server2->server_address,
+  RegisterAndInitWorker(*controller, "a_hi", test_server2->server_address,
                         /*node_id=*/20);
 
   std::vector<Buffer> src_buffers;
@@ -900,7 +962,7 @@ TEST_F(RaidenControllerTest,
   std::vector<Buffer> dst_buffers;
   dst_buffers.push_back(std::move(dst_buf));
 
-  auto status = controller.TransferBuffers(src_buffers, dst_buffers).Await();
+  auto status = controller->TransferBuffers(src_buffers, dst_buffers).Await();
   ASSERT_TRUE(status.ok()) << status.message();
 
   // node-10 worker got node-10's endpoints; node-20 worker got node-20's --
@@ -914,9 +976,11 @@ TEST_F(RaidenControllerTest,
 TEST_F(RaidenControllerTest, TransferBuffersStrictErrorsOnUnmatchedNodeId) {
   MockTransferManager mock;
   test_server_->service->SetTransferManager(KVManagerHolder(&mock));
-  RaidenController controller(unit_, /*num_blocks=*/5, /*num_shards=*/2,
-                              /*shard_size_bytes=*/512, "");
-  RegisterAndInitWorker(controller, "worker_0", test_server_->server_address,
+  TF_ASSERT_OK_AND_ASSIGN(
+      auto controller,
+      RaidenController::Create(unit_, /*num_blocks=*/5, /*num_shards=*/2,
+                               /*shard_size_bytes=*/512, ""));
+  RegisterAndInitWorker(*controller, "worker_0", test_server_->server_address,
                         /*node_id=*/99);
 
   std::vector<Buffer> src_buffers;
@@ -929,7 +993,7 @@ TEST_F(RaidenControllerTest, TransferBuffersStrictErrorsOnUnmatchedNodeId) {
   std::vector<Buffer> dst_buffers;
   dst_buffers.push_back(std::move(dst_buf));
 
-  auto status = controller.TransferBuffers(src_buffers, dst_buffers).Await();
+  auto status = controller->TransferBuffers(src_buffers, dst_buffers).Await();
   EXPECT_FALSE(status.ok());
   EXPECT_THAT(std::string(status.message()), HasSubstr("node_id"));
 }
@@ -944,12 +1008,14 @@ TEST_F(RaidenControllerTest, TransferBuffersMatchesSrcEndpointGroupsByNodeId) {
   test_server_->service->SetTransferManager(KVManagerHolder(&mock_lo));
   test_server2->service->SetTransferManager(KVManagerHolder(&mock_hi));
 
-  RaidenController controller(unit_, /*num_blocks=*/5, /*num_shards=*/2,
-                              /*shard_size_bytes=*/512, "");
+  TF_ASSERT_OK_AND_ASSIGN(
+      auto controller,
+      RaidenController::Create(unit_, /*num_blocks=*/5, /*num_shards=*/2,
+                               /*shard_size_bytes=*/512, ""));
   // Same reverse sort-order trap as the dst-side test above.
-  RegisterAndInitWorker(controller, "z_lo", test_server_->server_address,
+  RegisterAndInitWorker(*controller, "z_lo", test_server_->server_address,
                         /*node_id=*/10);
-  RegisterAndInitWorker(controller, "a_hi", test_server2->server_address,
+  RegisterAndInitWorker(*controller, "a_hi", test_server2->server_address,
                         /*node_id=*/20);
 
   Buffer src_buf(/*index=*/1, std::vector<BufferShard>{}, std::nullopt,
@@ -965,7 +1031,7 @@ TEST_F(RaidenControllerTest, TransferBuffersMatchesSrcEndpointGroupsByNodeId) {
   dst_buffers.emplace_back(/*index=*/2, std::vector<BufferShard>{},
                            std::nullopt, rpc::MemoryType::MEMORY_TYPE_DRAM);
 
-  auto status = controller.TransferBuffers(src_buffers, dst_buffers).Await();
+  auto status = controller->TransferBuffers(src_buffers, dst_buffers).Await();
   ASSERT_TRUE(status.ok()) << status.message();
 
   // Each worker pulled from its own node_id's group, with the shard tags
@@ -990,9 +1056,11 @@ TEST_F(RaidenControllerTest, TransferBuffersMatchesSrcEndpointGroupsByNodeId) {
 TEST_F(RaidenControllerTest, TransferBuffersUnmatchedSrcNodeIdFails) {
   ShardAwareMockTransferManager mock;
   test_server_->service->SetTransferManager(KVManagerHolder(&mock));
-  RaidenController controller(unit_, /*num_blocks=*/5, /*num_shards=*/2,
-                              /*shard_size_bytes=*/512, "");
-  RegisterAndInitWorker(controller, "worker_0", test_server_->server_address,
+  TF_ASSERT_OK_AND_ASSIGN(
+      auto controller,
+      RaidenController::Create(unit_, /*num_blocks=*/5, /*num_shards=*/2,
+                               /*shard_size_bytes=*/512, ""));
+  RegisterAndInitWorker(*controller, "worker_0", test_server_->server_address,
                         /*node_id=*/99);
 
   Buffer src_buf(/*index=*/1, std::vector<BufferShard>{}, std::nullopt,
@@ -1005,7 +1073,7 @@ TEST_F(RaidenControllerTest, TransferBuffersUnmatchedSrcNodeIdFails) {
   dst_buffers.emplace_back(/*index=*/2, std::vector<BufferShard>{},
                            std::nullopt, rpc::MemoryType::MEMORY_TYPE_DRAM);
 
-  auto status = controller.TransferBuffers(src_buffers, dst_buffers).Await();
+  auto status = controller->TransferBuffers(src_buffers, dst_buffers).Await();
   EXPECT_FALSE(status.ok());
   EXPECT_EQ(status.code(), absl::StatusCode::kFailedPrecondition);
   EXPECT_THAT(std::string(status.message()), HasSubstr("node_id"));
@@ -1017,10 +1085,12 @@ TEST_F(RaidenControllerTest, TransferBuffersUnmatchedSrcNodeIdFails) {
 // The controller rejects a second worker that registers a duplicate non-zero
 // node_id; re-registration under the same worker_id is an allowed update.
 TEST_F(RaidenControllerTest, RegisterWorkerRejectsDuplicateNodeId) {
-  RaidenController controller(unit_, /*num_blocks=*/5, /*num_shards=*/2,
-                              /*shard_size_bytes=*/512, "");
+  TF_ASSERT_OK_AND_ASSIGN(
+      auto controller,
+      RaidenController::Create(unit_, /*num_blocks=*/5, /*num_shards=*/2,
+                               /*shard_size_bytes=*/512, ""));
   core::controller::RaidenControllerClient client(
-      controller.controller_address());
+      controller->controller_address());
 
   const std::string& addr = test_server_->server_address;
   ASSERT_TRUE(
@@ -1038,35 +1108,36 @@ TEST_F(RaidenControllerTest, RegisterWorkerRejectsDuplicateNodeId) {
 }
 
 TEST_F(RaidenControllerTest, PreprovisionDisabledSkipsPhysicalBuffers) {
-  RaidenController controller(unit_, /*num_blocks=*/4, /*num_shards=*/2,
-                              /*shard_size_bytes=*/256, "",
-                              /*preprovision_worker_buffers=*/false);
+  TF_ASSERT_OK_AND_ASSIGN(
+      auto controller,
+      RaidenController::Create(unit_, /*num_blocks=*/4, /*num_shards=*/2,
+                               /*shard_size_bytes=*/256, "",
+                               /*preprovision_worker_buffers=*/false));
   // Registration still succeeds (and still probes the worker's WorkerService
   // with an empty CreateBuffers)...
-  RegisterAndInitWorker(controller, "worker_0", test_server_->server_address);
+  RegisterAndInitWorker(*controller, "worker_0", test_server_->server_address);
 
   // ...the logical-block ledger is fully usable...
-  auto ids_or = controller.AllocateBlockIds(4);
-  ASSERT_TRUE(ids_or.ok()) << ids_or.status();
-  EXPECT_EQ(ids_or->size(), 4);
-  ASSERT_TRUE(controller.DeallocateBlockIds(*ids_or).ok());
+  TF_ASSERT_OK_AND_ASSIGN(auto ids, controller->AllocateBlockIds(4));
+  EXPECT_EQ(ids.size(), 4);
+  ASSERT_TRUE(controller->DeallocateBlockIds(ids).ok());
 
   // ...but no physical buffers exist, so the Legacy Physical/BufferProto
   // mode reports the precondition instead of indexing an empty pool.
-  auto legacy_or = controller.AllocateBuffers(1);
-  EXPECT_TRUE(absl::IsFailedPrecondition(legacy_or.status()))
-      << legacy_or.status();
+  EXPECT_THAT(controller->AllocateBuffers(1),
+              StatusIs(absl::StatusCode::kFailedPrecondition));
 }
 
 TEST_F(RaidenControllerTest, AllocateBuffersAndDeallocateBuffersSuccess) {
-  RaidenController controller(
-      unit_, std::vector<std::string>{test_server_->server_address},
-      /*num_blocks=*/10, /*num_shards=*/2,
-      /*shard_size_bytes=*/1024, "");
+  TF_ASSERT_OK_AND_ASSIGN(
+      auto controller,
+      RaidenController::Create(
+          unit_, std::vector<std::string>{test_server_->server_address},
+          /*num_blocks=*/10, /*num_shards=*/2,
+          /*shard_size_bytes=*/1024, ""));
 
-  auto alloc_or = controller.AllocateBuffers(/*num_blocks=*/3);
-  ASSERT_TRUE(alloc_or.ok());
-  const auto& buffers = *alloc_or;
+  TF_ASSERT_OK_AND_ASSIGN(const auto& buffers,
+                          controller->AllocateBuffers(/*num_blocks=*/3));
   ASSERT_EQ(buffers.size(), 3);
   EXPECT_FALSE(buffers[0].empty());
   EXPECT_EQ(buffers[0].index(), 0);
@@ -1074,26 +1145,26 @@ TEST_F(RaidenControllerTest, AllocateBuffersAndDeallocateBuffersSuccess) {
   EXPECT_EQ(buffers[2].index(), 2);
   EXPECT_EQ(buffers[0].shards().size(), 2);
 
-  EXPECT_EQ(controller.block_manager()->num_locked_blocks(), 3);
-  ASSERT_TRUE(controller.DeallocateBuffers(buffers).ok());
-  EXPECT_EQ(controller.block_manager()->num_locked_blocks(), 0);
+  EXPECT_EQ(controller->block_manager()->num_locked_blocks(), 3);
+  ASSERT_TRUE(controller->DeallocateBuffers(buffers).ok());
+  EXPECT_EQ(controller->block_manager()->num_locked_blocks(), 0);
 }
 
 TEST_F(RaidenControllerTest, TransferBuffersSingleBufferSuccess) {
   MockTransferManager mock_mgr;
   test_server_->service->SetTransferManager(KVManagerHolder(&mock_mgr));
 
-  RaidenController controller(unit_, /*num_blocks=*/5, /*num_shards=*/1,
-                              /*shard_size_bytes=*/512, "");
-  RegisterAndInitWorker(controller, "worker_0", test_server_->server_address);
+  TF_ASSERT_OK_AND_ASSIGN(
+      auto controller,
+      RaidenController::Create(unit_, /*num_blocks=*/5, /*num_shards=*/1,
+                               /*shard_size_bytes=*/512, ""));
+  RegisterAndInitWorker(*controller, "worker_0", test_server_->server_address);
 
-  auto alloc_or = controller.AllocateBuffers(2);
-  ASSERT_TRUE(alloc_or.ok());
-  auto buffers = *alloc_or;
+  TF_ASSERT_OK_AND_ASSIGN(auto buffers, controller->AllocateBuffers(2));
   buffers[0].set_memory_type(rpc::MEMORY_TYPE_HBM);
 
   auto status =
-      controller.TransferBuffers("worker_0", {buffers[0]}, {buffers[1]})
+      controller->TransferBuffers("worker_0", {buffers[0]}, {buffers[1]})
           .Await();
   ASSERT_TRUE(status.ok());
   EXPECT_EQ(mock_mgr.d2h_calls, 1);
@@ -1106,22 +1177,20 @@ TEST_F(RaidenControllerTest, TransferBuffersSpanBufferSuccess) {
   MockTransferManager mock_mgr;
   test_server_->service->SetTransferManager(KVManagerHolder(&mock_mgr));
 
-  RaidenController controller(unit_, /*num_blocks=*/5, /*num_shards=*/1,
-                              /*shard_size_bytes=*/512, "");
-  RegisterAndInitWorker(controller, "worker_0", test_server_->server_address);
+  TF_ASSERT_OK_AND_ASSIGN(
+      auto controller,
+      RaidenController::Create(unit_, /*num_blocks=*/5, /*num_shards=*/1,
+                               /*shard_size_bytes=*/512, ""));
+  RegisterAndInitWorker(*controller, "worker_0", test_server_->server_address);
 
-  auto alloc_src = controller.AllocateBuffers(2);
-  ASSERT_TRUE(alloc_src.ok());
-  auto src_buffers = *alloc_src;
+  TF_ASSERT_OK_AND_ASSIGN(auto src_buffers, controller->AllocateBuffers(2));
   src_buffers[0].set_memory_type(rpc::MEMORY_TYPE_HBM);
   src_buffers[1].set_memory_type(rpc::MEMORY_TYPE_HBM);
 
-  auto alloc_dst = controller.AllocateBuffers(2);
-  ASSERT_TRUE(alloc_dst.ok());
-  auto dst_buffers = *alloc_dst;
+  TF_ASSERT_OK_AND_ASSIGN(auto dst_buffers, controller->AllocateBuffers(2));
 
   auto status =
-      controller.TransferBuffers("worker_0", src_buffers, dst_buffers).Await();
+      controller->TransferBuffers("worker_0", src_buffers, dst_buffers).Await();
   ASSERT_TRUE(status.ok());
   EXPECT_EQ(mock_mgr.d2h_calls, 1);
   EXPECT_THAT(mock_mgr.last_src_offsets, ElementsAre(0, 1));
@@ -1132,20 +1201,18 @@ TEST_F(RaidenControllerTest, TransferBuffersSimplifiedH2HSuccess) {
   MockTransferManager mock_mgr;
   test_server_->service->SetTransferManager(KVManagerHolder(&mock_mgr));
 
-  RaidenController controller(unit_, /*num_blocks=*/5, /*num_shards=*/1,
-                              /*shard_size_bytes=*/512, "");
-  RegisterAndInitWorker(controller, "worker_0", test_server_->server_address);
+  TF_ASSERT_OK_AND_ASSIGN(
+      auto controller,
+      RaidenController::Create(unit_, /*num_blocks=*/5, /*num_shards=*/1,
+                               /*shard_size_bytes=*/512, ""));
+  RegisterAndInitWorker(*controller, "worker_0", test_server_->server_address);
 
-  auto alloc_src = controller.AllocateBuffers(1);
-  ASSERT_TRUE(alloc_src.ok());
-  auto src_buffers = *alloc_src;
+  TF_ASSERT_OK_AND_ASSIGN(auto src_buffers, controller->AllocateBuffers(1));
 
-  auto alloc_dst = controller.AllocateBuffers(1);
-  ASSERT_TRUE(alloc_dst.ok());
-  auto dst_buffers = *alloc_dst;
+  TF_ASSERT_OK_AND_ASSIGN(auto dst_buffers, controller->AllocateBuffers(1));
   dst_buffers[0].set_remote_address("localhost:8080");
 
-  auto status = controller.TransferBuffers(src_buffers, dst_buffers).Await();
+  auto status = controller->TransferBuffers(src_buffers, dst_buffers).Await();
   ASSERT_TRUE(status.ok());
   EXPECT_EQ(mock_mgr.h2h_calls, 1);
   EXPECT_EQ(mock_mgr.last_peer, "localhost:8080");
@@ -1157,13 +1224,13 @@ TEST_F(RaidenControllerTest, TransferBuffersBufferProtoSuccess) {
   MockTransferManager mock_mgr;
   test_server_->service->SetTransferManager(KVManagerHolder(&mock_mgr));
 
-  RaidenController controller(unit_, /*num_blocks=*/5, /*num_shards=*/1,
-                              /*shard_size_bytes=*/512, "");
-  RegisterAndInitWorker(controller, "worker_0", test_server_->server_address);
+  TF_ASSERT_OK_AND_ASSIGN(
+      auto controller,
+      RaidenController::Create(unit_, /*num_blocks=*/5, /*num_shards=*/1,
+                               /*shard_size_bytes=*/512, ""));
+  RegisterAndInitWorker(*controller, "worker_0", test_server_->server_address);
 
-  auto alloc_or = controller.Allocate(2);
-  ASSERT_TRUE(alloc_or.ok());
-  const auto& protos = *alloc_or;
+  TF_ASSERT_OK_AND_ASSIGN(const auto& protos, controller->Allocate(2));
   std::vector<Buffer> src_buffers;
   for (const auto& proto : protos) {
     src_buffers.push_back(Buffer::FromProto(proto, std::nullopt));
@@ -1176,7 +1243,7 @@ TEST_F(RaidenControllerTest, TransferBuffersBufferProtoSuccess) {
   }
 
   auto status =
-      controller.TransferBuffers("worker_0", src_buffers, dst_buffers).Await();
+      controller->TransferBuffers("worker_0", src_buffers, dst_buffers).Await();
   ASSERT_TRUE(status.ok());
   EXPECT_EQ(mock_mgr.h2d_calls, 1);
   EXPECT_THAT(mock_mgr.last_src_offsets, ElementsAre(0, 1));
@@ -1187,14 +1254,16 @@ TEST_F(RaidenControllerTest, TransferBuffersBroadcastSuccess) {
   MockTransferManager mock_mgr;
   test_server_->service->SetTransferManager(KVManagerHolder(&mock_mgr));
 
-  RaidenController controller(unit_, /*num_blocks=*/5, /*num_shards=*/1,
-                              /*shard_size_bytes=*/512, "");
-  RegisterAndInitWorker(controller, "worker_0", test_server_->server_address);
+  TF_ASSERT_OK_AND_ASSIGN(
+      auto controller,
+      RaidenController::Create(unit_, /*num_blocks=*/5, /*num_shards=*/1,
+                               /*shard_size_bytes=*/512, ""));
+  RegisterAndInitWorker(*controller, "worker_0", test_server_->server_address);
 
   Buffer src_buf(100, {}, std::nullopt, rpc::MEMORY_TYPE_DRAM);
   Buffer dst_buf(200, {}, std::nullopt, rpc::MEMORY_TYPE_HBM);
 
-  auto status = controller.TransferBuffers({src_buf}, {dst_buf}).Await();
+  auto status = controller->TransferBuffers({src_buf}, {dst_buf}).Await();
   ASSERT_TRUE(status.ok());
   EXPECT_EQ(mock_mgr.d2h_calls, 0);
   EXPECT_EQ(mock_mgr.h2d_calls, 1);
@@ -1206,14 +1275,16 @@ TEST_F(RaidenControllerTest, TransferBuffersBroadcastH2HSuccess) {
   MockTransferManager mock_mgr;
   test_server_->service->SetTransferManager(KVManagerHolder(&mock_mgr));
 
-  RaidenController controller(unit_, /*num_blocks=*/5, /*num_shards=*/1,
-                              /*shard_size_bytes=*/512, "");
-  RegisterAndInitWorker(controller, "worker_0", test_server_->server_address);
+  TF_ASSERT_OK_AND_ASSIGN(
+      auto controller,
+      RaidenController::Create(unit_, /*num_blocks=*/5, /*num_shards=*/1,
+                               /*shard_size_bytes=*/512, ""));
+  RegisterAndInitWorker(*controller, "worker_0", test_server_->server_address);
 
   Buffer src_buf(5, {}, std::nullopt, rpc::MEMORY_TYPE_DRAM);
   Buffer dst_buf(6, {}, "localhost:8080", rpc::MEMORY_TYPE_DRAM);
 
-  auto status = controller.TransferBuffers({src_buf}, {dst_buf}).Await();
+  auto status = controller->TransferBuffers({src_buf}, {dst_buf}).Await();
   ASSERT_TRUE(status.ok());
   EXPECT_EQ(mock_mgr.h2h_write_calls, 1);
   EXPECT_EQ(mock_mgr.last_peer, "localhost:8080");
@@ -1225,28 +1296,24 @@ TEST_F(RaidenControllerTest, TransferBuffersLocalDramToRemoteHbmSuccess) {
   MockTransferManager mock_mgr;
   test_server_->service->SetTransferManager(KVManagerHolder(&mock_mgr));
 
-  RaidenController controller(unit_, /*num_blocks=*/5, /*num_shards=*/1,
-                              /*shard_size_bytes=*/512, "");
-  RegisterAndInitWorker(controller, "worker_0", test_server_->server_address);
+  TF_ASSERT_OK_AND_ASSIGN(
+      auto controller,
+      RaidenController::Create(unit_, /*num_blocks=*/5, /*num_shards=*/1,
+                               /*shard_size_bytes=*/512, ""));
+  RegisterAndInitWorker(*controller, "worker_0", test_server_->server_address);
 
-  auto alloc_src = controller.AllocateBuffers(1);
-  ASSERT_TRUE(alloc_src.ok());
-  auto src_buffers = *alloc_src;
+  TF_ASSERT_OK_AND_ASSIGN(auto src_buffers, controller->AllocateBuffers(1));
   src_buffers[0].set_memory_type(rpc::MEMORY_TYPE_DRAM);
 
-  auto alloc_dst = controller.AllocateBuffers(1);
-  ASSERT_TRUE(alloc_dst.ok());
-  auto dst_buffers = *alloc_dst;
+  TF_ASSERT_OK_AND_ASSIGN(auto dst_buffers, controller->AllocateBuffers(1));
   dst_buffers[0].set_memory_type(rpc::MEMORY_TYPE_HBM);
   dst_buffers[0].set_remote_address("remote_host:9090");
 
-  auto alloc_staging = controller.AllocateBuffers(1);
-  ASSERT_TRUE(alloc_staging.ok());
-  auto staging_buffers = *alloc_staging;
+  TF_ASSERT_OK_AND_ASSIGN(auto staging_buffers, controller->AllocateBuffers(1));
   staging_buffers[0].set_memory_type(rpc::MEMORY_TYPE_DRAM);
 
   auto status =
-      controller.TransferBuffers(src_buffers, dst_buffers, staging_buffers)
+      controller->TransferBuffers(src_buffers, dst_buffers, staging_buffers)
           .Await();
   ASSERT_TRUE(status.ok());
   EXPECT_EQ(mock_mgr.h2d_write_calls, 1);
@@ -1260,22 +1327,20 @@ TEST_F(RaidenControllerTest, TransferBuffersLocalHbmToRemoteDramSuccess) {
   MockTransferManager mock_mgr;
   test_server_->service->SetTransferManager(KVManagerHolder(&mock_mgr));
 
-  RaidenController controller(unit_, /*num_blocks=*/5, /*num_shards=*/1,
-                              /*shard_size_bytes=*/512, "");
-  RegisterAndInitWorker(controller, "worker_0", test_server_->server_address);
+  TF_ASSERT_OK_AND_ASSIGN(
+      auto controller,
+      RaidenController::Create(unit_, /*num_blocks=*/5, /*num_shards=*/1,
+                               /*shard_size_bytes=*/512, ""));
+  RegisterAndInitWorker(*controller, "worker_0", test_server_->server_address);
 
-  auto alloc_src = controller.AllocateBuffers(1);
-  ASSERT_TRUE(alloc_src.ok());
-  auto src_buffers = *alloc_src;
+  TF_ASSERT_OK_AND_ASSIGN(auto src_buffers, controller->AllocateBuffers(1));
   src_buffers[0].set_memory_type(rpc::MEMORY_TYPE_HBM);
 
-  auto alloc_dst = controller.AllocateBuffers(1);
-  ASSERT_TRUE(alloc_dst.ok());
-  auto dst_buffers = *alloc_dst;
+  TF_ASSERT_OK_AND_ASSIGN(auto dst_buffers, controller->AllocateBuffers(1));
   dst_buffers[0].set_memory_type(rpc::MEMORY_TYPE_DRAM);
   dst_buffers[0].set_remote_address("remote_host:9090");
 
-  auto status = controller.TransferBuffers(src_buffers, dst_buffers).Await();
+  auto status = controller->TransferBuffers(src_buffers, dst_buffers).Await();
   ASSERT_TRUE(status.ok());
   EXPECT_EQ(mock_mgr.h2h_calls, 0);
   EXPECT_EQ(mock_mgr.h2d_calls, 0);
@@ -1290,28 +1355,24 @@ TEST_F(RaidenControllerTest, TransferBuffersRemoteHbmToLocalDramSuccess) {
   MockTransferManager mock_mgr;
   test_server_->service->SetTransferManager(KVManagerHolder(&mock_mgr));
 
-  RaidenController controller(unit_, /*num_blocks=*/5, /*num_shards=*/1,
-                              /*shard_size_bytes=*/512, "");
-  RegisterAndInitWorker(controller, "worker_0", test_server_->server_address);
+  TF_ASSERT_OK_AND_ASSIGN(
+      auto controller,
+      RaidenController::Create(unit_, /*num_blocks=*/5, /*num_shards=*/1,
+                               /*shard_size_bytes=*/512, ""));
+  RegisterAndInitWorker(*controller, "worker_0", test_server_->server_address);
 
-  auto alloc_src = controller.AllocateBuffers(1);
-  ASSERT_TRUE(alloc_src.ok());
-  auto src_buffers = *alloc_src;
+  TF_ASSERT_OK_AND_ASSIGN(auto src_buffers, controller->AllocateBuffers(1));
   src_buffers[0].set_memory_type(rpc::MEMORY_TYPE_HBM);
   src_buffers[0].set_remote_address("remote_host:9090");
 
-  auto alloc_dst = controller.AllocateBuffers(1);
-  ASSERT_TRUE(alloc_dst.ok());
-  auto dst_buffers = *alloc_dst;
+  TF_ASSERT_OK_AND_ASSIGN(auto dst_buffers, controller->AllocateBuffers(1));
   dst_buffers[0].set_memory_type(rpc::MEMORY_TYPE_DRAM);
 
-  auto alloc_staging = controller.AllocateBuffers(1);
-  ASSERT_TRUE(alloc_staging.ok());
-  auto staging_buffers = *alloc_staging;
+  TF_ASSERT_OK_AND_ASSIGN(auto staging_buffers, controller->AllocateBuffers(1));
   staging_buffers[0].set_memory_type(rpc::MEMORY_TYPE_DRAM);
 
   auto status =
-      controller.TransferBuffers(src_buffers, dst_buffers, staging_buffers)
+      controller->TransferBuffers(src_buffers, dst_buffers, staging_buffers)
           .Await();
   ASSERT_TRUE(status.ok());
   EXPECT_EQ(mock_mgr.d2h_read_calls, 1);
@@ -1326,22 +1387,20 @@ TEST_F(RaidenControllerTest, TransferBuffersRemoteDramToLocalHbmSuccess) {
   MockTransferManager mock_mgr;
   test_server_->service->SetTransferManager(KVManagerHolder(&mock_mgr));
 
-  RaidenController controller(unit_, /*num_blocks=*/5, /*num_shards=*/1,
-                              /*shard_size_bytes=*/512, "");
-  RegisterAndInitWorker(controller, "worker_0", test_server_->server_address);
+  TF_ASSERT_OK_AND_ASSIGN(
+      auto controller,
+      RaidenController::Create(unit_, /*num_blocks=*/5, /*num_shards=*/1,
+                               /*shard_size_bytes=*/512, ""));
+  RegisterAndInitWorker(*controller, "worker_0", test_server_->server_address);
 
-  auto alloc_src = controller.AllocateBuffers(1);
-  ASSERT_TRUE(alloc_src.ok());
-  auto src_buffers = *alloc_src;
+  TF_ASSERT_OK_AND_ASSIGN(auto src_buffers, controller->AllocateBuffers(1));
   src_buffers[0].set_memory_type(rpc::MEMORY_TYPE_DRAM);
   src_buffers[0].set_remote_address("remote_host:9090");
 
-  auto alloc_dst = controller.AllocateBuffers(1);
-  ASSERT_TRUE(alloc_dst.ok());
-  auto dst_buffers = *alloc_dst;
+  TF_ASSERT_OK_AND_ASSIGN(auto dst_buffers, controller->AllocateBuffers(1));
   dst_buffers[0].set_memory_type(rpc::MEMORY_TYPE_HBM);
 
-  auto status = controller.TransferBuffers(src_buffers, dst_buffers).Await();
+  auto status = controller->TransferBuffers(src_buffers, dst_buffers).Await();
   ASSERT_TRUE(status.ok());
   EXPECT_EQ(mock_mgr.h2d_read_calls, 1);
   EXPECT_EQ(mock_mgr.h2d_calls, 0);

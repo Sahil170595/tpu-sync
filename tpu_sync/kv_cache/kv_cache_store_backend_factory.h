@@ -77,7 +77,17 @@ struct BackendConfig {
   // the monitor enabled this also sets the registration TTL, a fixed multiple
   // of the period.
   absl::Duration store_monitor_heartbeat_period = absl::ZeroDuration();
-
+  // Demotes cold blocks to a peer store on a higher evict_tier whenever free
+  // blocks fall below evict_low_watermark. Requires enable_store_monitor:
+  // the sweep runs on the store monitor's schedule.
+  bool enable_evict_sweep = false;
+  // Fallback period between sweep pressure checks; allocation pressure wakes
+  // the sweep immediately.
+  absl::Duration evict_sweep_period = absl::ZeroDuration();
+  // Free-block ratio (free / total) below which the sweep starts demoting.
+  double evict_low_watermark = 0.0;
+  // Free-block ratio at which an active sweep stops; must be >= the low.
+  double evict_high_watermark = 0.0;
   std::string GetProperty(absl::string_view key,
                           absl::string_view default_val = "") const;
   bool GetBoolProperty(absl::string_view key, bool default_val = false) const;

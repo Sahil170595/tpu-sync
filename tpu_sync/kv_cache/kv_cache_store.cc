@@ -15,6 +15,7 @@
 #include "tpu_sync/kv_cache/kv_cache_store.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -67,6 +68,19 @@ namespace {
 // from anyway -- the next heartbeat's NotFound answer makes the monitor
 // re-register.
 constexpr int kRegistrationTtlInHeartbeats = 3;
+
+// Evict-sweep defaults. The watermarks can sit this low because detection is
+// not periodic: the allocation path nudges the sweep the moment free blocks
+// dip below the low watermark, so the cushion only has to cover the demotion
+// ramp-up, not a polling interval.
+constexpr double kDefaultEvictLowWatermark = 0.03;
+constexpr double kDefaultEvictHighWatermark = 0.05;
+// Cap on one demotion batch. The batch is sized by what the high watermark
+// still needs; this cap only keeps a single sweep step short, since Stop()
+// and an interleaved heartbeat wait for at most one step.
+constexpr int kMaxEvictBatchBlocks = 128;
+// Placement targets requested per pressure episode.
+constexpr int32_t kMaxPlacementTargets = 4;
 
 // Bind-and-advertise address for this store's RaidenController.
 //
@@ -248,6 +262,27 @@ absl::StatusOr<std::unique_ptr<KVCacheStore>> KVCacheStore::Create(
       effective_config0.store_monitor_heartbeat_period > absl::ZeroDuration()
           ? effective_config0.store_monitor_heartbeat_period
           : StoreMonitor::kDefaultHeartbeatPeriod;
+  store->enable_evict_sweep_ = effective_config0.enable_evict_sweep;
+  store->evict_low_watermark_ = effective_config0.evict_low_watermark > 0.0
+                                    ? effective_config0.evict_low_watermark
+                                    : kDefaultEvictLowWatermark;
+  store->evict_high_watermark_ = effective_config0.evict_high_watermark > 0.0
+                                     ? effective_config0.evict_high_watermark
+                                     : kDefaultEvictHighWatermark;
+  if (store->enable_evict_sweep_) {
+    if (!store->enable_store_monitor_) {
+      return absl::FailedPreconditionError(
+          "enable_evict_sweep requires enable_store_monitor: the sweep runs "
+          "on the store monitor's schedule.");
+    }
+    if (store->evict_high_watermark_ < store->evict_low_watermark_ ||
+        store->evict_high_watermark_ > 1.0) {
+      return absl::FailedPreconditionError(absl::StrCat(
+          "evict watermarks must satisfy low <= high <= 1, got low=",
+          store->evict_low_watermark_,
+          " high=", store->evict_high_watermark_));
+    }
+  }
 
   if (store->raiden_controller_ != nullptr) {
     RETURN_IF_ERROR(
@@ -286,10 +321,17 @@ absl::StatusOr<std::unique_ptr<KVCacheStore>> KVCacheStore::Create(
           "enable_store_monitor requires a global_registry_address: the "
           "monitor's heartbeats refresh this store's registration there.");
     }
+    StoreMonitor::Options monitor_options;
+    monitor_options.heartbeat_period = store->store_monitor_heartbeat_period_;
+    if (effective_config0.evict_sweep_period > absl::ZeroDuration()) {
+      monitor_options.sweep_period = effective_config0.evict_sweep_period;
+    }
+    StoreMonitor::SweepFn sweep_fn;
+    if (store->enable_evict_sweep_) {
+      sweep_fn = [s = store.get()] { return s->SweepOnce(); };
+    }
     store->store_monitor_ = std::make_unique<StoreMonitor>(
-        StoreMonitor::Options{
-            .heartbeat_period = store->store_monitor_heartbeat_period_},
-        store->registry_client_, store->raiden_id_,
+        monitor_options, store->registry_client_, store->raiden_id_,
         /*status_fn=*/
         [s = store.get()] {
           global_registry::StoreStatus status;
@@ -310,7 +352,8 @@ absl::StatusOr<std::unique_ptr<KVCacheStore>> KVCacheStore::Create(
               !s->kv_pool_group_.empty() ? s->kv_pool_group_
                                          : s->raiden_id_.job_name,
               s->evict_tier_);
-        });
+        },
+        std::move(sweep_fn));
     store->store_monitor_->Start();
   }
 
@@ -1525,11 +1568,166 @@ size_t KVCacheStore::Evict(const std::vector<std::string>& block_hashes) {
   return host_ids_to_deallocate.size();
 }
 
+bool KVCacheStore::SweepOnce() {
+  int free_blocks = 0;
+  int total_blocks = 0;
+  {
+    absl::MutexLock lock(mutex_);
+    free_blocks = raiden_controller_->block_manager()->num_free_blocks();
+    total_blocks = raiden_controller_->block_manager()->total_blocks();
+  }
+  if (total_blocks <= 0) {
+    return false;
+  }
+  const double free_ratio = static_cast<double>(free_blocks) / total_blocks;
+  // Ends the current pressure episode; the next one re-fetches targets.
+  auto end_episode = [this] {
+    sweep_active_ = false;
+    placement_targets_.clear();
+    return false;
+  };
+
+  if (!sweep_active_) {
+    // Idle and enough free blocks: nothing to do.
+    if (free_ratio >= evict_low_watermark_) {
+      return false;
+    }
+    // Free blocks fell below the low watermark: a pressure episode begins
+    // (it ends when they recover to the high watermark). The targets are
+    // fetched once here and reused for the whole episode, so even a long
+    // drain costs one registry read. If fleets of stores hitting pressure
+    // together ever make these per-episode reads a load problem for the
+    // registry, the fetch could be decoupled from the sweep into its own
+    // periodic task maintaining a local target list -- at the cost of
+    // staler placement data.
+    sweep_active_ = true;
+    placement_targets_.clear();
+    auto targets_or =
+        registry_client_->GetPlacementTargets(raiden_id_, kMaxPlacementTargets);
+    if (targets_or.ok()) {
+      for (const auto& info : *targets_or) {
+        placement_targets_.push_back(RaidenId{
+            info.raiden_id().job_name(), info.raiden_id().job_replica_id(),
+            info.raiden_id().data_name(),
+            static_cast<int>(info.raiden_id().data_replica_idx())});
+      }
+    } else {
+      LOG(WARNING) << "Evict sweep could not fetch placement targets: "
+                   << targets_or.status()
+                   << ". Dropping cold blocks locally instead.";
+    }
+  } else if (free_ratio >= evict_high_watermark_) {
+    // Recovered to the high watermark: the episode is over.
+    return end_episode();
+  }
+
+  // One batch per step, sized to what the high watermark still needs and
+  // capped so a single step stays short.
+  const int deficit = static_cast<int>(std::ceil(
+                          evict_high_watermark_ * total_blocks)) -
+                      free_blocks;
+  std::vector<std::string> batch;
+  {
+    absl::MutexLock lock(mutex_);
+    batch = backend()->GetEvictableKeys(
+        std::min(deficit, kMaxEvictBatchBlocks));
+  }
+  if (batch.empty()) {
+    // Everything left is pinned; nothing more this episode can free.
+    return end_episode();
+  }
+
+  // Offer the batch to the episode's targets in order. Every iteration
+  // either sends the batch or drops one target, so this ends.
+  while (!placement_targets_.empty()) {
+    const RaidenId dst = placement_targets_.front();
+    absl::Status offered = WriteRemote(batch, dst);
+    if (!offered.ok()) {
+      // Refused (peer out of free blocks) or unreachable: this target is
+      // out for the rest of the episode; try the batch on the next one.
+      LOG(INFO) << "Evict sweep target " << dst
+                << " declined a demotion batch: " << offered;
+      placement_targets_.erase(placement_targets_.begin());
+      continue;
+    }
+    const BatchWriteResult result = WaitForBatchWriteResult(batch);
+    const size_t evicted = Evict(result.freeable);
+    if (result.transfer_failed) {
+      // The peer accepted but a transfer failed; the failed blocks stay
+      // local. Drop the target so the next step retries them elsewhere.
+      placement_targets_.erase(placement_targets_.begin());
+    } else if (evicted == 0) {
+      // The peer holds the whole batch, yet nothing could be freed locally:
+      // readers pinned every block between the offer and here. Re-offering
+      // the same keys could spin without raising the free count, so end the
+      // episode; the next wake re-evaluates.
+      return end_episode();
+    }
+    return true;
+  }
+
+  // No target will take the batch (none exist, all dropped, or the registry
+  // was unreachable): drop it locally -- the same discard AllocateBlockIds
+  // would be forced into later, done early enough to keep absorbing writes.
+  if (Evict(batch) == 0) {
+    // The whole batch got pinned since it was picked: end the episode
+    // rather than spin on the same keys.
+    return end_episode();
+  }
+  return true;
+}
+
+KVCacheStore::BatchWriteResult KVCacheStore::WaitForBatchWriteResult(
+    const std::vector<std::string>& batch) {
+  // The sweep is the only WriteRemote caller, so every drained result
+  // belongs to this batch. WriteRemote's HOLD deadline guarantees each
+  // block eventually leaves `pending`.
+  absl::flat_hash_set<std::string> pending(batch.begin(), batch.end());
+  BatchWriteResult result;
+  while (!pending.empty()) {
+    auto [done, failed, still_pending, existing, unregistered] =
+        PollRemoteWriteStatus();
+    // Completed transfers: the peer holds these blocks now.
+    for (const std::string& hash : done) {
+      if (pending.erase(hash) > 0) {
+        result.freeable.push_back(hash);
+      }
+    }
+    for (const std::string& hash : failed) {
+      pending.erase(hash);
+    }
+    // `existing` annotates refusals whose bytes the peer already holds --
+    // as freeable as a completed transfer. Everything else in `failed`
+    // (including `unregistered`: landed but unfindable there) keeps its
+    // local copy.
+    for (const std::string& hash : existing) {
+      result.freeable.push_back(hash);
+    }
+    if (failed.size() > existing.size()) {
+      result.transfer_failed = true;
+    }
+    if (!pending.empty()) {
+      absl::SleepFor(absl::Milliseconds(10));
+    }
+  }
+  return result;
+}
+
 absl::StatusOr<std::vector<int>> KVCacheStore::AllocateBlockIds(int needed) {
   std::vector<std::string> hashes_to_deallocate;
+  bool nudge_sweep = false;
   {
     absl::MutexLock lock(mutex_);
     int free_count = raiden_controller_->block_manager()->num_free_blocks();
+    // Wake the evict sweep the moment this allocation dips below its low
+    // watermark, instead of leaving detection to the sweep's fallback
+    // period. The drop-evict below stays the last-ditch fallback for
+    // allocations the sweep has not made room for.
+    if (enable_evict_sweep_ && store_monitor_ != nullptr) {
+      const int total = raiden_controller_->block_manager()->total_blocks();
+      nudge_sweep =
+          total > 0 && free_count - needed < evict_low_watermark_ * total;
+    }
     int to_free = needed - free_count;
     if (to_free > 0) {
       hashes_to_deallocate = backend()->GetEvictableKeys(to_free);
@@ -1541,6 +1739,10 @@ absl::StatusOr<std::vector<int>> KVCacheStore::AllocateBlockIds(int needed) {
                          ", Evictable: ", hashes_to_deallocate.size()));
       }
     }
+  }
+
+  if (nudge_sweep) {
+    store_monitor_->NudgeSweep();
   }
 
   if (!hashes_to_deallocate.empty()) {

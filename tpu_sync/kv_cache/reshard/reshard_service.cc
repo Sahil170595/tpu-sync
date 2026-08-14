@@ -26,7 +26,6 @@
 #include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
 #include "absl/synchronization/mutex.h"
-#include "absl/time/time.h"
 #include "tpu_sync/core/controller/raiden_controller.h"
 #include "tpu_sync/core/transfer_program_reshard.h"
 #include "tpu_sync/kv_cache/reshard/declaration_types.h"

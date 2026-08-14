@@ -268,6 +268,7 @@ cc_test(
         ":controller_service",
         ":test_util",
         "//tpu_sync/core:raiden_transfer_endpoint",
+        "//tpu_sync/proto:controller_service_cc_proto",
         "@com_github_grpc_grpc//:grpc++",
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/container:flat_hash_set",

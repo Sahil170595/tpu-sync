@@ -28,8 +28,8 @@ import torch
 import torch_tpu
 
 resources = None
-from tpu_raiden.api.torch import kv_cache_manager
-from tpu_raiden.api.torch import kv_cache_store
+from tpu_sync.api.torch import kv_cache_manager
+from tpu_sync.api.torch import kv_cache_store
 
 
 def _pick_unused_port():

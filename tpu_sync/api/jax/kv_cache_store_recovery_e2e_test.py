@@ -93,8 +93,8 @@ def _make_cache(host_data):
 
 def _build_stack(tpu_cache):
   """Builds a store (with controller) and a manager wired to it."""
-  from tpu_raiden.api.jax import kv_cache_manager
-  from tpu_raiden.api.jax import kv_cache_store
+  from tpu_sync.api.jax import kv_cache_manager
+  from tpu_sync.api.jax import kv_cache_store
 
   controller_port = _find_free_port()
   block_elements = _SHAPE[1] * _SHAPE[2] * _SHAPE[3] * _SHAPE[4]
@@ -134,7 +134,7 @@ def _poll(poll_fn, want: int, what: str):
 def _phase_a():
   """Saves distinct bytes to the shared-memory host pool, then crashes."""
   import numpy as np
-  from tpu_raiden.api.jax import kv_cache_store
+  from tpu_sync.api.jax import kv_cache_store
 
   host_data = np.arange(np.prod(_SHAPE), dtype=np.float32).reshape(_SHAPE)
   tpu_cache = _make_cache(host_data)
@@ -174,7 +174,7 @@ def _phase_a():
 def _phase_b(expect_recovery: bool):
   """Restarts the stack and serves the recovered blocks from host memory."""
   import numpy as np
-  from tpu_raiden.api.jax import kv_cache_store
+  from tpu_sync.api.jax import kv_cache_store
 
   host_data = np.arange(np.prod(_SHAPE), dtype=np.float32).reshape(_SHAPE)
   zeros = np.zeros(_SHAPE, dtype=np.float32)

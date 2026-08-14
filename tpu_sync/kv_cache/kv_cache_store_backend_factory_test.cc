@@ -28,7 +28,6 @@
 #include "tpu_sync/core/controller/raiden_controller.h"
 #include "tpu_sync/kv_cache/host_offload_backend.h"
 #include "tpu_sync/kv_cache/kv_cache_store.h"
-#include "tpu_sync/kv_cache/kv_cache_store_backend.h"
 #include "tpu_sync/kv_cache/raiden_id.h"
 #include "tpu_sync/rpc/raiden_service.pb.h"
 

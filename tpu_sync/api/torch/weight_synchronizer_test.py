@@ -23,7 +23,7 @@ import numpy as np
 import torch
 import torch_tpu
 
-from tpu_raiden.api.torch.weight_synchronizer import WeightSynchronizer
+from tpu_sync.api.torch.weight_synchronizer import WeightSynchronizer
 
 
 class WeightSynchronizerTorchTest(parameterized.TestCase):

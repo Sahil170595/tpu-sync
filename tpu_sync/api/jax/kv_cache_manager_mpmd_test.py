@@ -58,7 +58,7 @@ def _mcjax_worker_fn(rank: int, world_size: int, coordinator_port: int) -> None:
 
   import jax
   import jax.numpy as jnp
-  from tpu_raiden.api.jax import kv_cache_manager
+  from tpu_sync.api.jax import kv_cache_manager
 
   coord_address = f"127.0.0.1:{coordinator_port}"
 

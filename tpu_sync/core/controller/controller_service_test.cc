@@ -35,6 +35,7 @@
 #include "tpu_sync/core/controller/controller_client.h"
 #include "tpu_sync/core/controller/test_util.h"
 #include "tpu_sync/core/raiden_transfer_endpoint.h"
+#include "tpu_sync/proto/controller_service.pb.h"
 
 namespace tpu_raiden {
 namespace core {

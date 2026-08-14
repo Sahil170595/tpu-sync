@@ -16,8 +16,8 @@
 
 import unittest
 
-from tpu_raiden.api.torch import kv_cache_manager
-from tpu_raiden.api.torch import pool_layout
+from tpu_sync.api.torch import kv_cache_manager
+from tpu_sync.api.torch import pool_layout
 
 
 class KVCacheManagerHostTest(unittest.TestCase):

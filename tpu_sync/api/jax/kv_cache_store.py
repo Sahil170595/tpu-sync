@@ -12,30 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Raiden KV Cache Store API for PyTorch."""
+"""Python wrapper for the compiled C++ KVCacheStore."""
 
-import enum
 from typing import Any
+from tpu_sync.api import common
+from tpu_sync.frameworks.jax import _tpu_raiden_jax as _impl
 
-from tpu_raiden.api.torch import torch_tpu_common_loader
-
-torch_tpu_common_loader.load_torch_tpu_common()
-
-# pylint: disable=g-import-not-at-top
-from tpu_raiden.api.torch import torch_abi
-
-_impl = torch_abi.load_extension(
-    "tpu_sync.frameworks.torch", "_tpu_raiden_torch"
-)
-# pylint: enable=g-import-not-at-top
-
-
-class BlockStatus(enum.Enum):
-  INIT = 0
-  REMOTE = 1
-  HOST = 2
-  HBM = 3
-  HOST_AND_HBM = 4
+BlockStatus = common.BlockStatus
 
 
 class RaidenId:
@@ -345,6 +328,99 @@ class KVCacheStore:
     """Releases previously pinned block hashes, making them eligible for LRU eviction when capacity is exceeded."""
     self._impl.release(block_hashes)
 
+  def save(self, block_hashes: list[bytes]) -> bool:
+    """Saves blocks from device (HBM) to host (DRAM) asynchronously.
+
+    NOTE: The block_hashes must be pinned in the LRU cache (e.g. via
+    insert_and_lock) before calling save. Once the operation is complete (as
+    reported by poll_save_status), the caller must manually release/unpin them
+    via release so they can be evicted if needed.
+
+    Recommended usage flow:
+      0. [optional for save] lookup block hashes
+      1. insert_and_lock(block_hashes)
+      2. save(block_hashes)
+      3. poll_save_status() -> wait for completion
+      4. release(completed_block_hashes)
+
+    Args:
+      block_hashes: List of block hashes to save.
+
+    Returns:
+      True if successfully launched, False if validation failed.
+    """
+    return self._impl.save(block_hashes)
+
+  def load(
+      self,
+      block_hashes: list[bytes],
+      device_block_ids: list[int],
+      slices: list[RaidenBlockID] | None = None,
+  ) -> bool:
+    """Asynchronously loads KV cache blocks to device (HBM), either from local
+    host DRAM or from a peer (if `slices` is provided).
+
+    If `slices` is None, this is only for loading from local host DRAM.
+    If `slices` is provided, it handles loading from local host DRAM or from a peer.
+
+    ONE CALL IS ONE SOURCE. Every block in a batch must carry the same status,
+    and remote blocks must all refer to the same peer.
+
+    `device_block_ids` is the destination and must name one device block per hash.
+    
+    NOTE: The block_hashes must be pinned in the LRU cache before calling load
+    when loading from local host. Once the operation is complete (as reported by
+    poll_load_status), the caller must manually release/unpin them.
+    Blocks provided in `slices` must be already pinned externally, and remote
+    loads will re-resolve hashes at the peer, ignoring `slices`.
+
+    Args:
+      block_hashes: List of block hashes to load.
+      device_block_ids: Destination device block IDs, one per hash.
+      slices: Optional pre-resolved RaidenBlockIDs.
+
+    Returns:
+      True if successfully launched, False if validation failed. Launching is
+      not completion: poll_load_status() reports whether the transfer landed.
+    """
+    if slices is None:
+      return self._impl.load(block_hashes, device_block_ids)
+    raw_slices = []
+    for s in slices:
+      if isinstance(s, RaidenId):
+        s = RaidenBlockID(raiden_id=s)
+      raw_slices.append(s._impl)  # pylint: disable=protected-access
+    return self._impl.load(block_hashes, raw_slices, device_block_ids)
+
+  def poll_save_status(self) -> tuple[list[bytes], list[bytes], list[bytes]]:
+    """Polls the status of all active asynchronous Save operations.
+
+    For completed transfers, it advances the LRU block states to HOST_AND_HBM
+    and updates their host block locations. For failed transfers, it releases
+    the allocated host blocks.
+
+    Returns:
+      A tuple of (done, failed, pending), where:
+        done: List of block hashes whose Save transfer successfully completed.
+        failed: List of block hashes whose Save transfer failed.
+        pending: List of block hashes whose Save transfer is still in progress.
+    """
+    return self._impl.poll_save_status()
+
+  def poll_load_status(self) -> tuple[list[bytes], list[bytes], list[bytes]]:
+    """Polls the status of all active asynchronous Load operations.
+
+    For completed transfers, it advances the LRU block states to HOST_AND_HBM
+    and updates their device block locations.
+
+    Returns:
+      A tuple of (done, failed, pending), where:
+        done: List of block hashes whose Load transfer successfully completed.
+        failed: List of block hashes whose Load transfer failed.
+        pending: List of block hashes whose Load transfer is still in progress.
+    """
+    return self._impl.poll_load_status()
+
   def read_remote(
       self,
       block_hashes: list[bytes],
@@ -390,59 +466,6 @@ class KVCacheStore:
         pending: List of block hashes whose remote read is still in progress.
     """
     return self._impl.poll_remote_read_status()
-
-  def save(self, block_hashes: list[bytes]) -> bool:
-    """Saves blocks from device (HBM) to host (DRAM) asynchronously."""
-    return self._impl.save(block_hashes)
-
-  def load(
-      self,
-      block_hashes: list[bytes],
-      device_block_ids: list[int],
-      slices: list[RaidenBlockID] | None = None,
-  ) -> bool:
-    """Asynchronously loads KV cache blocks to device (HBM), either from local
-    host DRAM or from a peer (if `slices` is provided).
-
-    If `slices` is None, this is only for loading from local host DRAM.
-    If `slices` is provided, it handles loading from local host DRAM or from a peer.
-
-    ONE CALL IS ONE SOURCE. Every block in a batch must carry the same status,
-    and remote blocks must all refer to the same peer.
-
-    `device_block_ids` is the destination and must name one device block per hash.
-    
-    NOTE: The block_hashes must be pinned in the LRU cache before calling load
-    when loading from local host. Once the operation is complete (as reported by
-    poll_load_status), the caller must manually release/unpin them.
-    Blocks provided in `slices` must be already pinned externally, and remote
-    loads will re-resolve hashes at the peer, ignoring `slices`.
-
-    Args:
-      block_hashes: List of block hashes to load.
-      device_block_ids: Destination device block IDs, one per hash.
-      slices: Optional pre-resolved RaidenBlockIDs.
-
-    Returns:
-      True if successfully launched, False if validation failed. Launching is
-      not completion: poll_load_status() reports whether the transfer landed.
-    """
-    if slices is None:
-      return self._impl.load(block_hashes, device_block_ids)
-    raw_slices = []
-    for s in slices:
-      if isinstance(s, RaidenId):
-        s = RaidenBlockID(raiden_id=s)
-      raw_slices.append(s._impl)  # pylint: disable=protected-access
-    return self._impl.load(block_hashes, raw_slices, device_block_ids)
-
-  def poll_save_status(self) -> tuple[list[bytes], list[bytes], list[bytes]]:
-    """Polls the status of all active asynchronous Save operations."""
-    return self._impl.poll_save_status()
-
-  def poll_load_status(self) -> tuple[list[bytes], list[bytes], list[bytes]]:
-    """Polls the status of all active asynchronous Load operations."""
-    return self._impl.poll_load_status()
 
   def write_remote(
       self,

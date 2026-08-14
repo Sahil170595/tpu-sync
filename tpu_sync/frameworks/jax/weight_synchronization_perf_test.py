@@ -28,7 +28,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from tpu_raiden.api.jax import weight_synchronizer
+from tpu_sync.api.jax import weight_synchronizer
 from tpu_sync.frameworks.jax import resharding_planner
 from tpu_sync.rpc import raiden_controller
 from tpu_sync.rpc import raiden_service_pb2

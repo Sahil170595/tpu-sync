@@ -134,8 +134,8 @@ TEST_F(KVCacheManagerFfiTest, TriggerRaidenH2dAndD2hDMAOrchestration) {
     h_base_layer0[j] = static_cast<uint8_t>(j % 256);
   }
 
-  // Setup H2D PCIe DMA chunk mappings: Copy block 0 (local_s_idx = 0) to
-  // device block 2 (local_d_idx = 2)
+  // Setup H2D PCIe DMA chunk mappings: Copy block 0 (local_s_idx = 0) to device
+  // block 2 (local_d_idx = 2)
   std::vector<int32_t> src_offsets = {0};
   std::vector<int32_t> dst_offsets = {2};
   std::vector<int32_t> copy_sizes = {1};  // 1 block copy
@@ -164,8 +164,8 @@ TEST_F(KVCacheManagerFfiTest, TriggerRaidenH2dAndD2hDMAOrchestration) {
         << "Mismatch at index " << j << " on device block 2";
   }
 
-  // 4. Setup D2H PCIe DMA chunk mappings: Copy device block 2 (local_s_idx =
-  // 2) back to host block 5 (local_d_idx = 5)
+  // 4. Setup D2H PCIe DMA chunk mappings: Copy device block 2 (local_s_idx = 2)
+  // back to host block 5 (local_d_idx = 5)
   std::vector<int32_t> d2h_src_offsets = {2};
   std::vector<int32_t> d2h_dst_offsets = {5};
   std::vector<int32_t> d2h_copy_sizes = {1};

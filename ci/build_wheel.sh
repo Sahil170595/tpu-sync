@@ -167,7 +167,7 @@ mkdir -p /workspace/dist
 cp /cache/output_base/execroot/_main/bazel-out/k8-opt/bin/ci/wheel/${WHEEL_GLOB} /workspace/dist/
 
 # The bazel-built _tpu_raiden_torch.so does not link libpywrap; the torch
-# extension loader (tpu_raiden/api/torch/torch_abi.py) requires a NEEDED on
+# extension loader (tpu_sync/api/torch/torch_abi.py) requires a NEEDED on
 # torch_tpu's per-torch-version glue so the torch_tpu symbols resolve in
 # RTLD_LOCAL scope at import. The wheel ships one version-suffixed extension
 # per torch ABI (_tpu_raiden_torch_<v>.so); torch_abi.load_extension picks

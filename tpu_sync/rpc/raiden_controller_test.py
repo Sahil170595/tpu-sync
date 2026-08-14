@@ -1178,8 +1178,8 @@ class RaidenControllerTest(absltest.TestCase):
         variables=variables_dst,
     )
 
-    # Mixed skip tiling: skip for layer 0 (1 push), don't skip for layer 1 (8 pushes).
-    # Total expected = 1 + 8 = 9.
+    # Mixed skip tiling: 8 strided tasks for layer 0, 8 strided tasks for layer 1.
+    # Total expected = 8 + 8 = 16.
     future = controller.start_transfer(
         src_units=[src],
         dst_units=[target],

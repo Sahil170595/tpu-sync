@@ -22,7 +22,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from tpu_raiden.api.jax import weight_synchronizer
+from tpu_sync.api.jax import weight_synchronizer
 from tpu_sync.frameworks.jax import utils
 from tpu_sync.rpc import raiden_service_pb2
 

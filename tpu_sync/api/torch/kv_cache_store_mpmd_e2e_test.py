@@ -35,12 +35,12 @@ import torch_tpu
 import torch.distributed as dist
 
 try:
-    from google3.pyglib import resources
+  from google3.pyglib import resources
 except ImportError:
-    resources = None
+  resources = None
 
-from tpu_raiden.api.torch import kv_cache_manager
-from tpu_raiden.api.torch import kv_cache_store
+from tpu_sync.api.torch import kv_cache_manager
+from tpu_sync.api.torch import kv_cache_store
 
 FLAGS = flags.FLAGS
 flags.DEFINE_boolean("run_worker", False, "")
@@ -131,7 +131,16 @@ def start_servers():
     extra_flags = ["--alsologtostderr"]
   else:
     this_dir = os.path.dirname(os.path.abspath(__file__))
-    registry_binary = os.path.abspath(os.path.join(this_dir, "..", "..", "kv_cache", "global_registry", "global_registry_server"))
+    registry_binary = os.path.abspath(
+        os.path.join(
+            this_dir,
+            "..",
+            "..",
+            "kv_cache",
+            "global_registry",
+            "global_registry_server",
+        )
+    )
     extra_flags = []
 
   print(f"Starting Registry on port {_registry_port}")

@@ -30,8 +30,8 @@ import jax.numpy as jnp
 import numpy as np
 
 resources = None
-from tpu_raiden.api.jax import kv_cache_store
-from tpu_raiden.api.jax.kv_cache_manager import KVCacheManager
+from tpu_sync.api.jax import kv_cache_store
+from tpu_sync.api.jax.kv_cache_manager import KVCacheManager
 
 # pylint: enable=g-import-not-at-top
 

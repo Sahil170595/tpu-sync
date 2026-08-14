@@ -21,7 +21,7 @@ import unittest
 from absl.testing import absltest
 
 resources = None
-from tpu_raiden.api.torch import kv_cache_store
+from tpu_sync.api.torch import kv_cache_store
 
 
 def _pick_unused_port():

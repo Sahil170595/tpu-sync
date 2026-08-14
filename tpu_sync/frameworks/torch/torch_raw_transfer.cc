@@ -167,8 +167,8 @@ void AwaitReady(xla::PjRtBuffer* buffer, absl::string_view role) {
 // i * GetMajorSliceByteSize(shape). That mapping is only correct when logical
 // dimension 0 is the most-major physical dimension and the buffer's physical
 // size is an exact multiple of the slice size (the blocks tile it with no
-// remainder). Assert both so a buffer with an unexpected on-device layout
-// fails loudly here instead of silently transferring the wrong bytes.
+// remainder). Assert both so a buffer with an unexpected on-device layout fails
+// loudly here instead of silently transferring the wrong bytes.
 void ValidateMajorDimLayout(const RaidenBufferHandle& buffer,
                             absl::string_view role) {
   const xla::Shape& shape = buffer.shape;
@@ -192,8 +192,8 @@ void ValidateMajorDimLayout(const RaidenBufferHandle& buffer,
   // Fallback to buffer->GetOnDeviceSizeInBytes() if available, but for now we
   // might not have it easily without deprecated buffer pointer if it's not
   // cached in handle.
-  // Assuming shape gives enough info or buffer pointer is available as
-  // fallback in handle for now.
+  // Assuming shape gives enough info or buffer pointer is available as fallback
+  // in handle for now.
   const int64_t physical_size =
       buffer.buffer
           ? ValueOrThrow(

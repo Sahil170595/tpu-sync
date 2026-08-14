@@ -71,26 +71,26 @@ COMMON_DEPS = [
 # JAX native extensions + wrappers + public API. (TransferEngine was merged into
 # KVCacheManager upstream, so there is no _transfer_engine target.)
 JAX_DEPS = [
-    "//tpu_raiden/frameworks/jax:_tpu_raiden_jax",
-    "//tpu_raiden/frameworks/jax:_kv_cache_manager_ffi",
-    "//tpu_raiden/frameworks/jax:_weight_synchronizer_ffi",
-    "//tpu_raiden/frameworks/jax:weight_synchronizer_ffi_py",
-    "//tpu_raiden/frameworks/jax:resharding_planner",
-    "//tpu_raiden/frameworks/jax:jax_test_utils",
-    "//tpu_raiden/api/jax:kv_cache_manager_jax_py",
-    "//tpu_raiden/api/jax:weight_synchronizer_jax_py",
+    "//tpu_sync/frameworks/jax:_tpu_raiden_jax",
+    "//tpu_sync/frameworks/jax:_kv_cache_manager_ffi",
+    "//tpu_sync/frameworks/jax:_weight_synchronizer_ffi",
+    "//tpu_sync/frameworks/jax:weight_synchronizer_ffi_py",
+    "//tpu_sync/frameworks/jax:resharding_planner",
+    "//tpu_sync/frameworks/jax:jax_test_utils",
+    "//tpu_sync/api/jax:kv_cache_manager_jax_py",
+    "//tpu_sync/api/jax:weight_synchronizer_jax_py",
 ]
 # Excluded (non-OSS internal grpc / global registry):
-# //tpu_raiden/api/jax:kv_cache_store depends on
+# //tpu_sync/api/jax:kv_cache_store depends on
 # //tpu_sync/kv_cache:kv_cache_store -> //kv_cache/global_registry.
 
 # Torch native extensions + public API (require the torch_tpu module at build).
 TORCH_DEPS = [
-    "//tpu_raiden/frameworks/torch:_tpu_raiden_torch",
-    "//tpu_raiden/api/torch:kv_cache_manager_torch_py",
-    "//tpu_raiden/api/torch:reshard_client",
-    "//tpu_raiden/api/torch:reshard_store",
-    "//tpu_raiden/api/torch:weight_synchronizer_torch_py",
+    "//tpu_sync/frameworks/torch:_tpu_raiden_torch",
+    "//tpu_sync/api/torch:kv_cache_manager_torch_py",
+    "//tpu_sync/api/torch:reshard_client",
+    "//tpu_sync/api/torch:reshard_store",
+    "//tpu_sync/api/torch:weight_synchronizer_torch_py",
 ]
 
 # Two separate wheels, one per framework, so the JAX and Torch stacks can be

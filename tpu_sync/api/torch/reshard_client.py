@@ -30,12 +30,12 @@ deliberately not provided here and remains on the Python facade.
 import typing
 from typing import Any, Optional
 
-from tpu_raiden.api.torch import torch_tpu_common_loader
+from tpu_sync.api.torch import torch_tpu_common_loader
 
 torch_tpu_common_loader.load_torch_tpu_common()
 
 # pylint: disable=g-import-not-at-top
-from tpu_raiden.api.torch import torch_abi
+from tpu_sync.api.torch import torch_abi
 
 _impl = torch_abi.load_extension(
     "tpu_sync.frameworks.torch",

@@ -42,7 +42,7 @@ def load_torch_tpu_common() -> None:
     # Load the glue matching the installed torch; its SONAME is what the
     # raiden extension's NEEDED entry names.
     # pylint: disable=g-import-not-at-top
-    from tpu_raiden.api.torch import torch_abi
+    from tpu_sync.api.torch import torch_abi
     # pylint: enable=g-import-not-at-top
     built = [
         m.group(1)

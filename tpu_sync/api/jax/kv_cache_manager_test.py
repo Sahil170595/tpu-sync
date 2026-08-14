@@ -23,7 +23,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from tpu_raiden.api.jax import kv_cache_manager
+from tpu_sync.api.jax import kv_cache_manager
 
 KVCacheManager = kv_cache_manager.KVCacheManager
 os.environ["XLA_FLAGS"] = "--xla_force_host_platform_device_count=8"

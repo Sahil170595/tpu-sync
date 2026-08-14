@@ -29,8 +29,8 @@ import jax.numpy as jnp
 import numpy as np
 
 resources = None
-from tpu_raiden.api.jax import kv_cache_manager
-from tpu_raiden.api.jax import kv_cache_store
+from tpu_sync.api.jax import kv_cache_manager
+from tpu_sync.api.jax import kv_cache_store
 
 # Set XLA flags to force CPU/Host platform devices if running locally on
 # simulator

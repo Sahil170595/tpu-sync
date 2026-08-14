@@ -12,9 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""E2E physical unit tests for KVCacheManager transfer on XLA TPUs."""
+"""E2E physical unit tests for KVCacheManager on XLA TPUs."""
 
-import threading
 import time
 
 from absl.testing import absltest
@@ -22,10 +21,12 @@ from absl.testing import parameterized
 import numpy as np
 import torch
 
-from tpu_raiden.api.torch.kv_cache_manager import KVCacheManager
+from tpu_sync.api.torch import kv_cache_manager
+
+KVCacheManager = kv_cache_manager.KVCacheManager
 
 
-class KVCacheManagerTransferTest(parameterized.TestCase):
+class KVCacheManagerTest(parameterized.TestCase):
 
   def setUp(self):
     super().setUp()
@@ -35,17 +36,18 @@ class KVCacheManagerTransferTest(parameterized.TestCase):
     self.block_size = 1
 
   def test_initialization(self):
+    device = self.device
     shape = (4, 128, 8)
-    kv_caches = [torch.zeros(shape, device=self.device)]
+    kv_caches = [torch.zeros(shape, device=device)]
 
-    engine = KVCacheManager(
+    manager = KVCacheManager(
         kv_caches=kv_caches,
         node_id=0,
         local_control_port=0,
         max_blocks=4,
         num_slots=2,
     )
-    self.assertIsNotNone(engine)
+    self.assertIsNotNone(manager)
 
   def test_e2e_transfer_polling(self):
     num_blocks = 2
@@ -81,8 +83,7 @@ class KVCacheManagerTransferTest(parameterized.TestCase):
         num_slots=2,
     )
 
-    # Use getattr just in case local_control_port was completely hidden
-    port = getattr(producer, "local_control_port", 0)
+    port = producer.local_control_port
     self.assertGreater(port, 0)
 
     req_id = "test_req_poll"
@@ -101,7 +102,7 @@ class KVCacheManagerTransferTest(parameterized.TestCase):
     # Poll until consumer is done receiving
     done = False
     for _ in range(50):
-      done_sending, done_recving, failed_recving = consumer.poll_stats()
+      _, done_recving, failed_recving = consumer.poll_stats()
       if req_id in failed_recving:
         self.fail("Transfer failed")
       if req_id in done_recving:
@@ -118,7 +119,7 @@ class KVCacheManagerTransferTest(parameterized.TestCase):
     # Poll producer until it's done sending
     done_prod = False
     for _ in range(50):
-      done_sending, done_recving, failed_recving = producer.poll_stats()
+      done_sending, _, _ = producer.poll_stats()
       if req_id in done_sending:
         done_prod = True
         break
@@ -160,7 +161,7 @@ class KVCacheManagerTransferTest(parameterized.TestCase):
         num_slots=2,
     )
 
-    port = getattr(producer, "local_control_port", 0)
+    port = producer.local_control_port
     self.assertGreater(port, 0)
 
     req_id = "test_req_parallel"
@@ -179,7 +180,7 @@ class KVCacheManagerTransferTest(parameterized.TestCase):
 
     done = False
     for _ in range(50):
-      done_sending, done_recving, failed_recving = consumer.poll_stats()
+      _, done_recving, failed_recving = consumer.poll_stats()
       if req_id in failed_recving:
         self.fail("Transfer failed")
       if req_id in done_recving:
@@ -188,13 +189,14 @@ class KVCacheManagerTransferTest(parameterized.TestCase):
       time.sleep(0.1)
 
     self.assertTrue(done, "Consumer did not finish transfer in time")
+    time.sleep(0.5)
 
     for t in dst_caches:
       np.testing.assert_allclose(t.cpu().numpy(), 2.0, atol=1e-5)
 
     done_prod = False
     for _ in range(50):
-      done_sending, done_recving, failed_recving = producer.poll_stats()
+      done_sending, _, _ = producer.poll_stats()
       if req_id in done_sending:
         done_prod = True
         break

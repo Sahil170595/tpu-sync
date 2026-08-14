@@ -36,8 +36,8 @@ def _torch_impl():
   global _TORCH_IMPL
   if _TORCH_IMPL is None:
     # pylint: disable=g-import-not-at-top
-    from tpu_raiden.api.torch import torch_abi
-    from tpu_raiden.api.torch import torch_tpu_common_loader
+    from tpu_sync.api.torch import torch_abi
+    from tpu_sync.api.torch import torch_tpu_common_loader
 
     torch_tpu_common_loader.load_torch_tpu_common()
     # Multi-ABI wheels bundle one extension per supported torch release;
@@ -248,7 +248,7 @@ class KVCacheManager:
       A generic admission summary (also served by ``admission_summary``).
     """
     # pylint: disable=g-import-not-at-top
-    from tpu_raiden.api.torch import pool_layout
+    from tpu_sync.api.torch import pool_layout
     # pylint: enable=g-import-not-at-top
 
     coerced = tuple(pool_layout.coerce_pool_spec(pool) for pool in pools)

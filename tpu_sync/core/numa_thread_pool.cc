@@ -21,7 +21,6 @@
 #include <utility>
 
 #include "xla/tsl/platform/logging.h"
-#include "tpu_sync/core/tpu_utils.h"
 
 namespace tpu_raiden {
 

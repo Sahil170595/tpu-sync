@@ -1003,6 +1003,8 @@ def generate_strided_copy_chunks_tile_aware(
 ) -> list[tuple[int, int, int, int, int, int]]:
   """Translates an N-dimensional grid intersection into tile-aware physical strided copy chunks."""
   rank = len(src_shard_slice)
+  if rank == 0:
+    return [(0, 0, itemsize, 0, 0, 1)]
   if rank == 1:
     s_s, s_e = src_shard_slice[0]
     d_s, d_e = dst_shard_slice[0]
@@ -2240,29 +2242,30 @@ class RaidenController:
                             dst_stride,
                             count,
                         ) in chunks:
-                          src_block_bytes = (
-                              math.prod([e - s for s, e in src_slice[1:]])
-                              * itemsize
-                              if len(src_slice) > 1
-                              else itemsize
-                          )
-                          dst_block_bytes = (
-                              math.prod([e - s for s, e in dst_slice[1:]])
-                              * itemsize
-                              if len(dst_slice) > 1
-                              else itemsize
-                          )
-                          src_block_id = src_offset // src_block_bytes
-                          dst_block_id = dst_offset // dst_block_bytes
-
                           is_legacy = is_legacy_by_unit.get(
                               src_unit, True
                           ) or is_legacy_by_unit.get(dst_unit, True)
                           if is_legacy:
+                            src_block_bytes = (
+                                math.prod([e - s for s, e in src_slice[1:]])
+                                * itemsize
+                                if len(src_slice) > 1
+                                else itemsize
+                            )
+                            dst_block_bytes = (
+                                math.prod([e - s for s, e in dst_slice[1:]])
+                                * itemsize
+                                if len(dst_slice) > 1
+                                else itemsize
+                            )
+                            src_block_id = src_offset // src_block_bytes
+                            dst_block_id = dst_offset // dst_block_bytes
                             # Make offsets block-relative
                             src_block_offset = src_offset % src_block_bytes
                             dst_block_offset = dst_offset % dst_block_bytes
                           else:
+                            src_block_id = 0
+                            dst_block_id = 0
                             src_block_offset = src_offset
                             dst_block_offset = dst_offset
 

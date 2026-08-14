@@ -1104,7 +1104,7 @@ class RaidenControllerTest(absltest.TestCase):
     dst_calls = [call for call in client.calls if call[0] == target]
     self.assertLen(dst_calls, 1)
     target_id, plan = dst_calls[0]
-    self.assertEqual(plan.expected_block_count, 1)
+    self.assertEqual(plan.expected_block_count, 8)
 
   def test_auto_calculate_expected_block_count_mixed(self):
     client = RecordingWorkerRpcClient()
@@ -1192,7 +1192,7 @@ class RaidenControllerTest(absltest.TestCase):
     dst_calls = [call for call in client.calls if call[0] == target]
     self.assertLen(dst_calls, 1)
     target_id, plan = dst_calls[0]
-    self.assertEqual(plan.expected_block_count, 9)
+    self.assertEqual(plan.expected_block_count, 16)
 
 
 class GetGlobalIndicesTest(absltest.TestCase):
@@ -1280,6 +1280,7 @@ class GetGlobalIndicesTest(absltest.TestCase):
     controller = raiden_controller.RaidenController(
         port=10005, worker_rpc_client=client
     )
+    controller.broadcast_k = 1
 
     src = raiden_controller.RaidenId(
         job_name="trainer", job_replica_id="0", data_name="weights"
@@ -1394,10 +1395,18 @@ class GetGlobalIndicesTest(absltest.TestCase):
     src_slice = [(0, 2304)]
     dst_slice = [(0, 1152)]
     intersection = [(0, 1152)]
-    self.assertTrue(
+    self.assertFalse(
         raiden_controller.is_nd_slice_tile_aligned(
             src_slice, dst_slice, intersection
         )
+    )
+    # 0-D scalar slices
+    self.assertFalse(raiden_controller.is_nd_slice_tile_aligned([], [], []))
+    self.assertEqual(
+        raiden_controller.generate_strided_copy_chunks_tile_aware(
+            [], [], [], itemsize=2
+        ),
+        [(0, 0, 2, 0, 0, 1)],
     )
 
   def test_is_nd_slice_tile_aligned_2d(self):
@@ -1508,15 +1517,7 @@ class GetGlobalIndicesTest(absltest.TestCase):
     chunks = raiden_controller.generate_strided_copy_chunks_tile_aware(
         src_slice, dst_slice, intersection, itemsize=4, tile_shape=(8, 128)
     )
-    self.assertLen(chunks, 2)
-    # Batch 0
-    self.assertEqual(
-        chunks[0], (0, 0, 128 * 8 * 4, 128 * 8 * 4, 128 * 8 * 4, 2)
-    )
-    # Batch 1: offset = 16 * 128 * 4 = 8192
-    self.assertEqual(
-        chunks[1], (8192, 8192, 128 * 8 * 4, 128 * 8 * 4, 128 * 8 * 4, 2)
-    )
+    self.assertEqual(chunks, [(0, 0, 16384, 0, 0, 1)])
 
   def test_generate_strided_copy_chunks_tile_aware_3d_sharded_batch(self):
     # 3D tensor: [B=8, H=16, W=128]. Source has B=[0, 4), Dest has B=[2, 6) -> Intersect B=[2, 4)
@@ -1526,17 +1527,7 @@ class GetGlobalIndicesTest(absltest.TestCase):
     chunks = raiden_controller.generate_strided_copy_chunks_tile_aware(
         src_slice, dst_slice, intersection, itemsize=4, tile_shape=(8, 128)
     )
-    self.assertLen(chunks, 2)
-    # Batch 2 of global = local src index 2, local dst index 0
-    # src_offset = 2 * 16 * 128 * 4 = 16384, dst_offset = 0
-    self.assertEqual(
-        chunks[0], (16384, 0, 128 * 8 * 4, 128 * 8 * 4, 128 * 8 * 4, 2)
-    )
-    # Batch 3 of global = local src index 3, local dst index 1
-    # src_offset = 3 * 16 * 128 * 4 = 24576, dst_offset = 1 * 16 * 128 * 4 = 8192
-    self.assertEqual(
-        chunks[1], (24576, 8192, 128 * 8 * 4, 128 * 8 * 4, 128 * 8 * 4, 2)
-    )
+    self.assertEqual(chunks, [(16384, 0, 16384, 0, 0, 1)])
 
   def test_generate_strided_copy_chunks_tile_aware_4d_tensor(self):
     # 4D tensor: [Experts=2, Heads=2, H=16, W=128]

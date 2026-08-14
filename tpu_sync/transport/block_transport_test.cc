@@ -33,9 +33,12 @@
 #include "absl/cleanup/cleanup.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/match.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "absl/synchronization/mutex.h"
+#include "absl/time/clock.h"
+#include "absl/time/time.h"
 #include "absl/types/span.h"
 #include "tpu_sync/telemetry/metrics_api.h"
 #include "tpu_sync/telemetry/prometheus_exporter.h"
@@ -47,6 +50,32 @@ namespace {
 
 using ::testing::HasSubstr;
 using ::testing::Not;
+
+constexpr absl::Duration kMetricPollingTimeout = absl::Seconds(5);
+constexpr absl::Duration kMetricPollingInterval = absl::Milliseconds(10);
+
+// Polls the global metric store periodically at `kMetricPollingInterval` until
+// `expected_metric` is contained in the text snapshot or `timeout` expires.
+//
+// Returns the metric text snapshot immediately when `expected_metric` is found,
+// or returns the latest snapshot observed upon timeout so that downstream
+// `EXPECT_THAT(..., HasSubstr(...))` matchers can display informative failure
+// diffs.
+std::string WaitForMetricSnapshot(
+    absl::string_view expected_metric,
+    absl::Duration timeout = kMetricPollingTimeout) {
+  const absl::Time deadline = absl::Now() + timeout;
+  std::string snapshot;
+  while (absl::Now() < deadline) {
+    snapshot =
+        telemetry::RaidenMetricStore::GetGlobalMetricStore().GetTextSnapshot();
+    if (absl::StrContains(snapshot, expected_metric)) {
+      return snapshot;
+    }
+    absl::SleepFor(kMetricPollingInterval);
+  }
+  return snapshot;
+}
 
 class MockDelegate : public BlockTransportDelegate {
  public:
@@ -690,12 +719,11 @@ TEST(BlockTransportTest, SentBytesTelemetryIncrementedOnPushAndPull) {
                           /*parallelism=*/1, MajorOrder::kLayerMajor,
                           /*on_block_received=*/{}, /*uuid=*/0));
 
+  constexpr absl::string_view kExpectedPullResponseMetric =
+      "tpu_raiden_sent_bytes_total{direction=\"pull_response\"} 1024";
   const std::string snapshot2 =
-      telemetry::RaidenMetricStore::GetGlobalMetricStore().GetTextSnapshot();
-  EXPECT_THAT(
-      snapshot2,
-      HasSubstr(
-          "tpu_raiden_sent_bytes_total{direction=\"pull_response\"} 1024"));
+      WaitForMetricSnapshot(kExpectedPullResponseMetric);
+  EXPECT_THAT(snapshot2, HasSubstr(kExpectedPullResponseMetric));
 }
 
 TEST(BlockTransportTest, ReceivedBytesTelemetryIncrementedOnPushAndPull) {

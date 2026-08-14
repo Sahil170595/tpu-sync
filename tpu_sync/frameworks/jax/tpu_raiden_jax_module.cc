@@ -16,6 +16,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -632,7 +633,21 @@ NB_MODULE(_tpu_raiden_jax, m) {
           nb::arg("device_block_ids"))
       .def("poll_save_status",
            [](tpu_raiden::kv_cache::KVCacheStoreWrapper& self) {
-             auto [done, failed, pending] = self->PollSaveStatus();
+             // Poll drains whatever futures completed and can make blocking
+             // RPCs on the way -- a global-registry lookup on the load path,
+             // one call per outstanding remote write. Holding the GIL across
+             // that stalls every Python thread, not just this one.
+             //
+             // Released around the C++ call ONLY. The nb::bytes below are
+             // Python objects, so building them and letting std::make_tuple
+             // copy the vectors touches CPython refcounts, which must happen
+             // with the GIL held. This is why nb::call_guard is wrong here:
+             // it would span the whole lambda, including that.
+             std::vector<std::string> done, failed, pending;
+             {
+               nb::gil_scoped_release release;
+               std::tie(done, failed, pending) = self->PollSaveStatus();
+             }
              std::vector<nb::bytes> py_done, py_failed, py_pending;
              py_done.reserve(done.size());
              for (const auto& h : done) {
@@ -650,7 +665,15 @@ NB_MODULE(_tpu_raiden_jax, m) {
            })
       .def("poll_load_status",
            [](tpu_raiden::kv_cache::KVCacheStoreWrapper& self) {
-             auto [done, failed, pending] = self->PollLoadStatus();
+             // Released around the C++ call ONLY. The subsequent nb::bytes
+             // initialization happens with the GIL held (nb::call_guard
+             // is wrong here since it would span the whole lambda).
+             // See poll_save_status for the detailed stall analysis.
+             std::vector<std::string> done, failed, pending;
+             {
+               nb::gil_scoped_release release;
+               std::tie(done, failed, pending) = self->PollLoadStatus();
+             }
              std::vector<nb::bytes> py_done, py_failed, py_pending;
              py_done.reserve(done.size());
              for (const auto& h : done) {
@@ -678,7 +701,15 @@ NB_MODULE(_tpu_raiden_jax, m) {
           nb::arg("device_block_ids") = std::vector<int32_t>())
       .def("poll_remote_read_status",
            [](tpu_raiden::kv_cache::KVCacheStoreWrapper& self) {
-             auto [done, failed, pending] = self->PollRemoteReadStatus();
+             // Released around the C++ call ONLY. The subsequent nb::bytes
+             // initialization happens with the GIL held (nb::call_guard
+             // is wrong here since it would span the whole lambda).
+             // See poll_save_status for the detailed stall analysis.
+             std::vector<std::string> done, failed, pending;
+             {
+               nb::gil_scoped_release release;
+               std::tie(done, failed, pending) = self->PollRemoteReadStatus();
+             }
              std::vector<nb::bytes> py_done, py_failed, py_pending;
              py_done.reserve(done.size());
              for (const auto& h : done) {
@@ -708,8 +739,18 @@ NB_MODULE(_tpu_raiden_jax, m) {
              // Five vectors. `existing` and `unregistered` annotate
              // failures rather than being outcomes of their own. See
              // KVCacheStore::PollRemoteWriteStatus.
-             auto [done, failed, pending, existing, unregistered] =
-                 self->PollRemoteWriteStatus();
+             //
+             // Unlike the other pollers this one has no local future to
+             // test: it asks each destination, one blocking RPC per active
+             // write. Released around the C++ call ONLY -- the nb::bytes
+             // below are Python objects and need the GIL.
+             std::vector<std::string> done, failed, pending, existing,
+                 unregistered;
+             {
+               nb::gil_scoped_release release;
+               std::tie(done, failed, pending, existing, unregistered) =
+                   self->PollRemoteWriteStatus();
+             }
              std::vector<nb::bytes> py_done, py_failed, py_pending, py_existing,
                  py_unregistered;
              py_done.reserve(done.size());

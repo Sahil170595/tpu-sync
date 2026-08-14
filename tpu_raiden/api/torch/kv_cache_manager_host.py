@@ -36,7 +36,7 @@ class HostKVCacheManager:
     # Import lazily so importing the host-only wrapper never initializes the
     # torch_tpu runtime.
     # pylint: disable=g-import-not-at-top
-    from tpu_raiden.frameworks.torch import _tpu_raiden_host
+    from tpu_sync.frameworks.torch import _tpu_raiden_host
     # pylint: enable=g-import-not-at-top
 
     self._impl = _tpu_raiden_host.KVCacheManager(

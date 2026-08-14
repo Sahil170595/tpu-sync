@@ -16,7 +16,7 @@
 
 from typing import Any
 from tpu_raiden.api import common
-from tpu_raiden.frameworks.jax import _tpu_raiden_jax as _impl
+from tpu_sync.frameworks.jax import _tpu_raiden_jax as _impl
 
 BlockStatus = common.BlockStatus
 

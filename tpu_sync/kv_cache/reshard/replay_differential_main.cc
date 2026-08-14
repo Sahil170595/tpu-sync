@@ -46,9 +46,9 @@
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "absl/time/time.h"
-#include "third_party/protobuf/io/coded_stream.h"
-#include "third_party/protobuf/io/zero_copy_stream_impl_lite.h"
-#include "third_party/protobuf/util/message_differencer.h"
+#include "google/protobuf/io/coded_stream.h"
+#include "google/protobuf/io/zero_copy_stream_impl_lite.h"
+#include "google/protobuf/util/message_differencer.h"
 #include "tpu_sync/core/transfer_program_reshard.h"
 #include "tpu_sync/kv_cache/reshard/framed_rpc.h"
 #include "tpu_sync/kv_cache/reshard/reshard_service.h"
@@ -130,8 +130,8 @@ template <typename Message>
 std::string CanonicalBytes(const Message& message) {
   std::string out;
   {
-    proto2::io::StringOutputStream stream(&out);
-    proto2::io::CodedOutputStream coded(&stream);
+    google::protobuf::io::StringOutputStream stream(&out);
+    google::protobuf::io::CodedOutputStream coded(&stream);
     coded.SetSerializationDeterministic(true);
     message.SerializePartialToCodedStream(&coded);
   }
@@ -205,7 +205,7 @@ void ReportByteDiff(const std::string& expected, const std::string& actual) {
   if (expected_req.ParseFromString(expected) &&
       actual_req.ParseFromString(actual)) {
     std::string report;
-    proto2::util::MessageDifferencer differencer;
+    google::protobuf::util::MessageDifferencer differencer;
     differencer.ReportDifferencesToString(&report);
     differencer.Compare(expected_req, actual_req);
     if (report.size() > 4000) report.resize(4000);

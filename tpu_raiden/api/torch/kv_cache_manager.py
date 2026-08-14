@@ -25,7 +25,7 @@ def _host_impl():
   global _HOST_IMPL
   if _HOST_IMPL is None:
     # pylint: disable=g-import-not-at-top
-    from tpu_raiden.frameworks.torch import _tpu_raiden_host as impl
+    from tpu_sync.frameworks.torch import _tpu_raiden_host as impl
     # pylint: enable=g-import-not-at-top
     _HOST_IMPL = impl
   return _HOST_IMPL
@@ -44,7 +44,7 @@ def _torch_impl():
     # load_extension picks the variant matching the installed torch (a
     # source checkout's single unversioned extension imports as before).
     impl = torch_abi.load_extension(
-        "tpu_raiden.frameworks.torch",
+        "tpu_sync.frameworks.torch",
         "_tpu_raiden_torch",
     )
     # pylint: enable=g-import-not-at-top

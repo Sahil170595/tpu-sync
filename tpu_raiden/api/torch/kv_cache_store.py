@@ -25,7 +25,7 @@ torch_tpu_common_loader.load_torch_tpu_common()
 from tpu_raiden.api.torch import torch_abi
 
 _impl = torch_abi.load_extension(
-    "tpu_raiden.frameworks.torch", "_tpu_raiden_torch"
+    "tpu_sync.frameworks.torch", "_tpu_raiden_torch"
 )
 # pylint: enable=g-import-not-at-top
 

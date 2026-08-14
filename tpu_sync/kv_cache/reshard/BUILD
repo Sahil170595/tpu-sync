@@ -192,8 +192,8 @@ cc_binary(
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/time",
-        "@com_google_protobuf//io",
-        "@com_google_protobuf//util:differencer",
+        "@com_google_protobuf//:differencer",
+        "@com_google_protobuf//src/google/protobuf/io",
     ],
 )
 

@@ -36,7 +36,7 @@ import torch.distributed as dist
 import torch.multiprocessing as mp
 
 from google3.pyglib.contrib.g3_multiprocessing import g3_multiprocessing
-from tpu_raiden.frameworks.torch import _tpu_raiden_torch as _kv_cache_manager
+from tpu_sync.frameworks.torch import _tpu_raiden_torch as _kv_cache_manager
 
 _GOOGLE_PCI_VENDOR_ID = "0x1ae0"
 _TOPOLOGY_BY_TPU_PCI_DEVICE_ID = {

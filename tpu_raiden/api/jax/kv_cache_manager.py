@@ -15,7 +15,7 @@
 """High-performance JAX KV Cache Manager (repurposed as TransferEngine)."""
 
 from typing import Any, Dict, List, Optional, Tuple, Union
-from tpu_raiden.frameworks.jax import _tpu_raiden_jax as _impl
+from tpu_sync.frameworks.jax import _tpu_raiden_jax as _impl
 
 
 class KVCacheManager:

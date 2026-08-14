@@ -20,8 +20,8 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include "absl/status/status.h"
-#include "third_party/protobuf/io/coded_stream.h"
-#include "third_party/protobuf/io/zero_copy_stream_impl_lite.h"
+#include "google/protobuf/io/coded_stream.h"
+#include "google/protobuf/io/zero_copy_stream_impl_lite.h"
 #include "tpu_sync/proto/transfer_program.pb.h"
 #include "tpu_sync/rpc/raiden_service.pb.h"
 
@@ -33,8 +33,8 @@ using ::testing::HasSubstr;
 
 std::string Canonical(const rpc::StartTransferRequest& msg) {
   std::string out;
-  proto2::io::StringOutputStream stream(&out);
-  proto2::io::CodedOutputStream coded(&stream);
+  google::protobuf::io::StringOutputStream stream(&out);
+  google::protobuf::io::CodedOutputStream coded(&stream);
   coded.SetSerializationDeterministic(true);
   EXPECT_TRUE(msg.SerializeToCodedStream(&coded));
   coded.Trim();

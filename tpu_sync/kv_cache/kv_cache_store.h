@@ -58,6 +58,8 @@ namespace global_registry {
 class GlobalRegistryClient;
 }
 
+class StoreMonitor;
+
 // KV Store that manages the indices and routing of prefix cache across serving
 // nodes and microservice slices.
 class KVCacheStore {
@@ -549,6 +551,15 @@ class KVCacheStore {
   std::unique_ptr<KVCacheStoreServer> owned_store_server_;
   // True once this store published itself, so teardown knows to unpublish.
   bool registered_in_global_registry_ = false;
+
+  // Registration attributes from the tier-0 BackendConfig.
+  std::string kv_pool_group_;
+  int32_t evict_tier_ = 0;
+  bool enable_store_monitor_ = false;
+  absl::Duration store_monitor_heartbeat_period_ = absl::ZeroDuration();
+  // Constructed and started at the end of Create when enabled; stopped first
+  // thing in the destructor, before anything its callbacks touch goes away.
+  std::unique_ptr<StoreMonitor> store_monitor_;
 
   struct RemoteWriteState {
     RaidenId dst_raiden_id;

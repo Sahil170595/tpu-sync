@@ -56,10 +56,17 @@
 #include "tpu_sync/kv_cache/raiden_id.h"
 #include "tpu_sync/kv_cache/reshard/reshard_service.h"
 #include "tpu_sync/rpc/raiden_service.pb.h"
+#include "tpu_sync/kv_cache/store_monitor.h"
 
 namespace tpu_raiden {
 namespace kv_cache {
 namespace {
+
+// Registration TTL, in heartbeat periods: the registration survives two
+// missed heartbeats and expires on the third. A lapse is cheap to recover
+// from anyway -- the next heartbeat's NotFound answer makes the monitor
+// re-register.
+constexpr int kRegistrationTtlInHeartbeats = 3;
 
 // Bind-and-advertise address for this store's RaidenController.
 //
@@ -232,6 +239,16 @@ absl::StatusOr<std::unique_ptr<KVCacheStore>> KVCacheStore::Create(
       std::move(backends), effective_raiden_id, std::move(raiden_controller),
       store_server_ip, global_registry_address));
 
+  // Before SetRaidenController: the registration published there carries
+  // these attributes.
+  store->kv_pool_group_ = effective_config0.kv_pool_group;
+  store->evict_tier_ = effective_config0.evict_tier;
+  store->enable_store_monitor_ = effective_config0.enable_store_monitor;
+  store->store_monitor_heartbeat_period_ =
+      effective_config0.store_monitor_heartbeat_period > absl::ZeroDuration()
+          ? effective_config0.store_monitor_heartbeat_period
+          : StoreMonitor::kDefaultHeartbeatPeriod;
+
   if (store->raiden_controller_ != nullptr) {
     RETURN_IF_ERROR(
         store->SetRaidenController(store->raiden_controller_.get()));
@@ -258,6 +275,43 @@ absl::StatusOr<std::unique_ptr<KVCacheStore>> KVCacheStore::Create(
           "tier 0");
     }
     RETURN_IF_ERROR(host_backend->RegisterKVTransferSpecFromWorkers());
+  }
+
+  if (store->enable_store_monitor_) {
+    // The flag promises heartbeats; a store that never registered has
+    // nothing to heartbeat, so this configuration is a contradiction, not a
+    // degraded mode.
+    if (!store->registered_in_global_registry_) {
+      return absl::FailedPreconditionError(
+          "enable_store_monitor requires a global_registry_address: the "
+          "monitor's heartbeats refresh this store's registration there.");
+    }
+    store->store_monitor_ = std::make_unique<StoreMonitor>(
+        StoreMonitor::Options{
+            .heartbeat_period = store->store_monitor_heartbeat_period_},
+        store->registry_client_, store->raiden_id_,
+        /*status_fn=*/
+        [s = store.get()] {
+          global_registry::StoreStatus status;
+          status.set_free_blocks(s->backend()->GetAvailableSpace());
+          return status;
+        },
+        // Re-publishes the registration EnsureStoreServerAndRegister first
+        // made; runs only on the monitor thread, so the TTL applies
+        // unconditionally.
+        /*reregister_fn=*/
+        [s = store.get()] {
+          return s->registry_client_->RegisterStore(
+              s->raiden_id_, s->store_server_address_,
+              s->raiden_controller_ != nullptr
+                  ? s->raiden_controller_->controller_address()
+                  : "",
+              kRegistrationTtlInHeartbeats * s->store_monitor_heartbeat_period_,
+              !s->kv_pool_group_.empty() ? s->kv_pool_group_
+                                         : s->raiden_id_.job_name,
+              s->evict_tier_);
+        });
+    store->store_monitor_->Start();
   }
 
   return store;
@@ -612,10 +666,19 @@ absl::Status KVCacheStore::EnsureStoreServerAndRegister(
         "or empty host); cannot register with the global registry.");
   }
 
+  // A TTL is only safe with a heartbeat refreshing it: an expiring
+  // registration on an unmonitored store would just vanish. The kv_pool_group
+  // fallback is the same as the KVTransferSpec registration key's
+  // (BackendConfig.kv_pool_group).
   absl::Status register_status = registry_client_->RegisterStore(
       raiden_id_, store_server_address_,
       raiden_controller_ != nullptr ? raiden_controller_->controller_address()
-                                    : "");
+                                    : "",
+      enable_store_monitor_
+          ? kRegistrationTtlInHeartbeats * store_monitor_heartbeat_period_
+          : absl::ZeroDuration(),
+      !kv_pool_group_.empty() ? kv_pool_group_ : raiden_id_.job_name,
+      evict_tier_);
   if (!register_status.ok()) {
     return absl::Status(
         register_status.code(),
@@ -644,6 +707,12 @@ void KVCacheStore::ShutdownBackendStoreServers(
 }
 
 KVCacheStore::~KVCacheStore() {
+  // First, before the registry client or the backends its callbacks read go
+  // away -- and before UnregisterStore below, which a late heartbeat's
+  // re-register would undo.
+  if (store_monitor_ != nullptr) {
+    store_monitor_->Stop();
+  }
   // Stop being discoverable, then stop serving, and do both BEFORE anything the
   // service dereferences is destroyed. `backends_` is declared before
   // `raiden_controller_`, so member destruction would otherwise free the

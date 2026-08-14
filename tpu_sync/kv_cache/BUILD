@@ -341,6 +341,7 @@ cc_library(
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/synchronization",
+        "@com_google_absl//absl/time",
     ],
     alwayslink = 1,
 )
@@ -366,6 +367,40 @@ cc_test(
 )
 
 cc_library(
+    name = "store_monitor",
+    srcs = ["store_monitor.cc"],
+    hdrs = ["store_monitor.h"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":raiden_id",
+        "//tpu_sync/kv_cache/global_registry:global_registry_cc_proto",
+        "//tpu_sync/kv_cache/global_registry:global_registry_client_cc",
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/synchronization",
+        "@com_google_absl//absl/time",
+    ],
+)
+
+cc_test(
+    name = "store_monitor_test",
+    srcs = ["store_monitor_test.cc"],
+    deps = [
+        ":raiden_id",
+        ":store_monitor",
+        "//tpu_sync/kv_cache/global_registry:global_registry_cc_proto",
+        "//tpu_sync/kv_cache/global_registry:global_registry_client_cc",
+        "//tpu_sync/kv_cache/global_registry:global_registry_server_lib",
+        "//tpu_sync/kv_cache/global_registry:test_util",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/time",
+        "@com_google_googletest//:gtest",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+cc_library(
     name = "kv_cache_store",
     srcs = ["kv_cache_store.cc"],
     hdrs = ["kv_cache_store.h"],
@@ -383,6 +418,7 @@ cc_library(
         ":kv_cache_store_server",
         ":lru_cache",
         ":raiden_id",
+        ":store_monitor",
         "//tpu_sync/core:buffer",
         "//tpu_sync/core:numa_thread_pool",
         "//tpu_sync/core:raw_transfer_core",

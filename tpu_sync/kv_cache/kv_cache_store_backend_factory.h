@@ -25,6 +25,7 @@
 #include <vector>
 
 #include "absl/base/no_destructor.h"
+#include "absl/time/time.h"
 #include "absl/base/thread_annotations.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/status/status.h"
@@ -66,6 +67,16 @@ struct BackendConfig {
   // KV pool group KVTransferSpecs are registered under (see
   // global_registry.proto). Empty falls back to raiden_id.job_name.
   std::string kv_pool_group;
+  // Placement tier the store registers under (see StoreInfo.evict_tier).
+  int32_t evict_tier = 0;
+  // Runs a StoreMonitor thread that heartbeats the store's status to the
+  // global registry; the store's registration then carries a TTL and expires
+  // when heartbeats stop.
+  bool enable_store_monitor = false;
+  // StoreMonitor heartbeat period. Zero means the StoreMonitor default. With
+  // the monitor enabled this also sets the registration TTL, a fixed multiple
+  // of the period.
+  absl::Duration store_monitor_heartbeat_period = absl::ZeroDuration();
 
   std::string GetProperty(absl::string_view key,
                           absl::string_view default_val = "") const;

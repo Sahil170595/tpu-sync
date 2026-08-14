@@ -3786,6 +3786,76 @@ TEST_F(StoreDiscoveryTest, ControllerAddressComposedFromIpAndPort) {
   EXPECT_THAT(store.raiden_controller_address(), Not(EndsWith(":0")));
 }
 
+// With the monitor enabled the registration carries a TTL and lives on
+// heartbeats alone, and the placement attributes from the BackendConfig ride
+// along -- so the store shows up as a placement target for a smaller-tier
+// caller in its group.
+TEST_F(StoreDiscoveryTest, StoreMonitorHeartbeatsTheRegistration) {
+  RaidenId rid{"disco_job_monitored", "0", "kv_cache", 0};
+  BackendConfig config;
+  config.type = "HostOffloadBackend";
+  config.capacity = 16;
+  config.raiden_id = rid;
+  config.global_registry_address = registry_address_;
+  config.kv_pool_group = "groupA";
+  config.evict_tier = 1;
+  config.enable_store_monitor = true;
+  config.store_monitor_heartbeat_period = absl::Milliseconds(300);
+
+  auto store_or = KVCacheStore::Create(config, /*capacity=*/16,
+                                       registry_address_, rid,
+                                       /*num_shards=*/1,
+                                       /*shard_size_bytes=*/512,
+                                       /*store_server_ip=*/"127.0.0.1");
+  ASSERT_TRUE(store_or.ok()) << store_or.status().ToString();
+
+  // The registration's TTL is three heartbeat periods (900ms here); well
+  // past it, only the heartbeats keep the store resolvable.
+  absl::SleepFor(absl::Seconds(2));
+  auto resolved = client_->ResolveStore(rid);
+  ASSERT_TRUE(resolved.ok()) << resolved.status().ToString();
+  EXPECT_EQ(resolved->store_server_address(),
+            (*store_or)->store_server_address());
+
+  // A tier-0 caller in the same group is offered this store: the
+  // kv_pool_group and evict_tier from the BackendConfig were published.
+  RaidenId caller{"disco_caller", "0", "kv_cache", 0};
+  ASSERT_TRUE(client_
+                  ->RegisterStore(caller, "10.0.0.7:1111",
+                                  /*controller_address=*/"",
+                                  /*ttl=*/absl::ZeroDuration(), "groupA",
+                                  /*evict_tier=*/0)
+                  .ok());
+  auto targets = client_->GetPlacementTargets(caller, /*max_targets=*/8);
+  ASSERT_TRUE(targets.ok()) << targets.status().ToString();
+  ASSERT_EQ(targets->size(), 1);
+  EXPECT_EQ((*targets)[0].raiden_id().job_name(), "disco_job_monitored");
+
+  // Destruction stops the monitor before unpublishing, so no late heartbeat
+  // re-registers the store after this.
+  store_or->reset();
+  EXPECT_TRUE(absl::IsNotFound(client_->ResolveStore(rid).status()));
+}
+
+// The flag promises heartbeats; without a registry there is no registration
+// to refresh, and Create says so instead of quietly not monitoring.
+TEST_F(StoreDiscoveryTest, StoreMonitorWithoutARegistryIsAnError) {
+  RaidenId rid{"disco_job_unmonitorable", "0", "kv_cache", 0};
+  BackendConfig config;
+  config.type = "HostOffloadBackend";
+  config.capacity = 16;
+  config.raiden_id = rid;
+  config.enable_store_monitor = true;
+
+  auto store_or = KVCacheStore::Create(config, /*capacity=*/16,
+                                       /*global_registry_address=*/"", rid,
+                                       /*num_shards=*/1,
+                                       /*shard_size_bytes=*/512,
+                                       /*store_server_ip=*/"127.0.0.1");
+  EXPECT_TRUE(absl::IsFailedPrecondition(store_or.status()))
+      << store_or.status().ToString();
+}
+
 // A tier-0 backend whose Lookup parks, so a peer's Fetch can be held inside the
 // store's own service while the store is being destroyed.
 class ParkingBackend : public TestHostOffloadBackend {

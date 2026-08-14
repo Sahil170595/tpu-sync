@@ -42,21 +42,25 @@ TEST(PrometheusExporterTest, RecordAndExportFormat) {
 
   store.IncrementCounter(metric_names::kSentBytesTotal, {label1}, 1024);
 
+  // Record transfer failures (Counter)
+  const MetricLabel failure_labels[] = {
+      {metric_labels::kErrorCode, "DEADLINE_EXCEEDED"},
+      {metric_labels::kDirection, metric_labels::kDirectionPull},
+  };
+  store.IncrementCounter(metric_names::kTransferFailuresTotal, failure_labels,
+                         2);
+
   std::string output = store.GetTextSnapshot();
 
   EXPECT_THAT(output, HasSubstr("# TYPE tpu_raiden_sent_bytes_total counter"));
   EXPECT_THAT(output,
               HasSubstr("tpu_raiden_sent_bytes_total{interface=\"ICI\"} 1024"));
-}
 
-TEST(PrometheusExporterTest, MetricMetadataConstantsMapped) {
-  EXPECT_EQ(metric_metadata::kSentBytesTotal.name,
-            metric_names::kSentBytesTotal);
-  EXPECT_EQ(metric_metadata::kSentBytesTotal.description,
-            metric_descriptions::kSentBytesTotal);
-  EXPECT_THAT(
-      metric_metadata::kSentBytesTotal.description,
-      HasSubstr("Total count of bytes sent over TPU Raiden interfaces."));
+  EXPECT_THAT(output,
+              HasSubstr("# TYPE tpu_raiden_transfer_failures_total counter"));
+  EXPECT_THAT(output,
+              HasSubstr("tpu_raiden_transfer_failures_total{direction=\"pull\","
+                        "error_code=\"DEADLINE_EXCEEDED\"} 2"));
 }
 
 TEST(PrometheusExporterTest, UnmappedMetricIgnored) {

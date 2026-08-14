@@ -82,10 +82,12 @@ cc_test(
     deps = [
         ":block_transport",
         ":block_transport_delegate",
+        ":buffer_push_task",
         "//tpu_sync/telemetry:metrics_3p_prometheus_exporter",
         "//tpu_sync/telemetry:metrics_api",
         "@com_google_absl//absl/cleanup",
         "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:string_view",

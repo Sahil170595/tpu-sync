@@ -97,15 +97,31 @@ TEST_F(MetricsApiTest, MetricMetadataConstants) {
             "Total count of bytes received over TPU Raiden interfaces.");
   EXPECT_EQ(metric_metadata::kReceivedBytesTotal.type, MetricType::kCounter);
 
+  // TransferFailuresTotal
+  EXPECT_EQ(metric_names::kTransferFailuresTotal, "transfer_failures_total");
+  EXPECT_EQ(
+      metric_descriptions::kTransferFailuresTotal,
+      "Cumulative total count of transfer failures across all interfaces.");
+  EXPECT_EQ(metric_metadata::kTransferFailuresTotal.name,
+            "transfer_failures_total");
+  EXPECT_EQ(
+      metric_metadata::kTransferFailuresTotal.description,
+      "Cumulative total count of transfer failures across all interfaces.");
+  EXPECT_EQ(metric_metadata::kTransferFailuresTotal.type, MetricType::kCounter);
+
   // Direction Labels
   EXPECT_EQ(metric_labels::kDirection, "direction");
   EXPECT_EQ(metric_labels::kDirectionPush, "push");
+  EXPECT_EQ(metric_labels::kDirectionPull, "pull");
   EXPECT_EQ(metric_labels::kDirectionPullResponse, "pull_response");
+
+  EXPECT_EQ(metric_labels::kErrorCode, "error_code");
 
   // All Metrics
   EXPECT_THAT(metric_metadata::kAllMetrics,
               ElementsAre(metric_metadata::kSentBytesTotal,
-                          metric_metadata::kReceivedBytesTotal));
+                          metric_metadata::kReceivedBytesTotal,
+                          metric_metadata::kTransferFailuresTotal));
 }
 
 TEST_F(MetricsApiTest, FastPathExitWhenNoBackends) {
@@ -113,6 +129,7 @@ TEST_F(MetricsApiTest, FastPathExitWhenNoBackends) {
 
   store_.IncrementCounter(metric_names::kSentBytesTotal, {}, 1024);
   store_.IncrementCounter(metric_names::kReceivedBytesTotal, {}, 1024);
+  store_.IncrementCounter(metric_names::kTransferFailuresTotal, {}, 1);
 }
 
 TEST_F(MetricsApiTest, DispatchesToRegisteredBackend) {
@@ -125,6 +142,9 @@ TEST_F(MetricsApiTest, DispatchesToRegisteredBackend) {
   EXPECT_CALL(*raw_mock,
               IncrementCounter(Eq(metric_names::kReceivedBytesTotal), _, 4096))
       .Times(1);
+  EXPECT_CALL(*raw_mock,
+              IncrementCounter(Eq(metric_names::kTransferFailuresTotal), _, 1))
+      .Times(1);
   EXPECT_CALL(*raw_mock, GetTextSnapshot()).WillOnce(Return("# HELP mock\n"));
   std::vector<std::unique_ptr<MetricsBackend>> backends;
   backends.push_back(std::move(mock_backend));
@@ -133,6 +153,7 @@ TEST_F(MetricsApiTest, DispatchesToRegisteredBackend) {
 
   store_.IncrementCounter(metric_names::kSentBytesTotal, {}, 2048);
   store_.IncrementCounter(metric_names::kReceivedBytesTotal, {}, 4096);
+  store_.IncrementCounter(metric_names::kTransferFailuresTotal, {}, 1);
   EXPECT_EQ(store_.GetTextSnapshot(), "# HELP mock\n");
 }
 

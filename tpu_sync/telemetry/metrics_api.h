@@ -51,6 +51,8 @@ namespace metric_names {
 
 inline constexpr absl::string_view kSentBytesTotal = "sent_bytes_total";
 inline constexpr absl::string_view kReceivedBytesTotal = "received_bytes_total";
+inline constexpr absl::string_view kTransferFailuresTotal =
+    "transfer_failures_total";
 
 }  // namespace metric_names
 
@@ -60,6 +62,8 @@ inline constexpr absl::string_view kSentBytesTotal =
     "Total count of bytes sent over TPU Raiden interfaces.";
 inline constexpr absl::string_view kReceivedBytesTotal =
     "Total count of bytes received over TPU Raiden interfaces.";
+inline constexpr absl::string_view kTransferFailuresTotal =
+    "Cumulative total count of transfer failures across all interfaces.";
 
 }  // namespace metric_descriptions
 
@@ -75,9 +79,15 @@ inline constexpr MetricMetadata kReceivedBytesTotal{
     .description = metric_descriptions::kReceivedBytesTotal,
     .type = MetricType::kCounter};
 
+inline constexpr MetricMetadata kTransferFailuresTotal{
+    .name = metric_names::kTransferFailuresTotal,
+    .description = metric_descriptions::kTransferFailuresTotal,
+    .type = MetricType::kCounter};
+
 inline constexpr MetricMetadata kAllMetrics[] = {
     kSentBytesTotal,
     kReceivedBytesTotal,
+    kTransferFailuresTotal,
 };
 
 }  // namespace metric_metadata
@@ -86,7 +96,10 @@ namespace metric_labels {
 
 inline constexpr absl::string_view kDirection = "direction";
 inline constexpr absl::string_view kDirectionPush = "push";
+inline constexpr absl::string_view kDirectionPull = "pull";
 inline constexpr absl::string_view kDirectionPullResponse = "pull_response";
+
+inline constexpr absl::string_view kErrorCode = "error_code";
 
 }  // namespace metric_labels
 

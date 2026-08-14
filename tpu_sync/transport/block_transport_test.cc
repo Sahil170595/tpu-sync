@@ -32,6 +32,7 @@
 #include <gtest/gtest.h>
 #include "absl/cleanup/cleanup.h"
 #include "absl/status/status.h"
+#include "absl/status/status_matchers.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/match.h"
 #include "absl/strings/str_cat.h"
@@ -43,11 +44,13 @@
 #include "tpu_sync/telemetry/metrics_api.h"
 #include "tpu_sync/telemetry/prometheus_exporter.h"
 #include "tpu_sync/transport/block_transport_delegate.h"
+#include "tpu_sync/transport/buffer_push_task.h"
 
 namespace tpu_raiden {
 namespace transport {
 namespace {
 
+using ::absl_testing::StatusIs;
 using ::testing::HasSubstr;
 using ::testing::Not;
 
@@ -77,6 +80,20 @@ std::string WaitForMetricSnapshot(
   return snapshot;
 }
 
+struct ScopedPrometheusBackend {
+  ScopedPrometheusBackend() {
+    auto exporter = std::make_unique<telemetry::PrometheusExporter>();
+    std::vector<std::unique_ptr<telemetry::MetricsBackend>> backends;
+    backends.push_back(std::move(exporter));
+    telemetry::RaidenMetricStore::GetGlobalMetricStore().SetBackends(
+        std::move(backends));
+  }
+
+  ~ScopedPrometheusBackend() {
+    telemetry::RaidenMetricStore::GetGlobalMetricStore().SetBackends({});
+  }
+};
+
 class MockDelegate : public BlockTransportDelegate {
  public:
   MockDelegate(size_t slice_size, int max_blocks = 1, size_t num_layers = 1,
@@ -91,8 +108,8 @@ class MockDelegate : public BlockTransportDelegate {
     }
   }
 
-  absl::StatusOr<std::vector<int>> AllocateBlocks(
-      size_t num_blocks, uint64_t uuid = 0) override {
+  absl::StatusOr<std::vector<int>> AllocateBlocks(size_t num_blocks,
+                                                  uint64_t uuid = 0) override {
     std::vector<int> ids;
     for (size_t i = 0; i < num_blocks; ++i) {
       ids.push_back(i % max_blocks_);
@@ -273,12 +290,12 @@ TEST(BlockTransportTest, PoolModeReceiverRejectsPlanlessExplicitPush) {
   BlockTransport sender(&sender_delegate, 0);
   BlockTransport receiver(&receiver_delegate, 0);
   std::this_thread::sleep_for(std::chrono::milliseconds(50));
-  std::string peer = "localhost:" + std::to_string(receiver.local_port());
 
   // Explicit destination (op=6) without a registered plan: the pool-mode
   // receiver drops the push before any payload byte lands in its mirror.
   auto rejected =
-      sender.SyncPush({peer}, /*src_block_ids=*/{0}, /*dst_block_ids=*/{0},
+      sender.SyncPush({absl::StrCat("localhost:", receiver.local_port())},
+                      /*src_block_ids=*/{0}, /*dst_block_ids=*/{0},
                       /*parallelism=*/1, MajorOrder::kLayerMajor, /*uuid=*/77,
                       /*layer_idx=*/-1);
   EXPECT_FALSE(rejected.ok());
@@ -287,7 +304,8 @@ TEST(BlockTransportTest, PoolModeReceiverRejectsPlanlessExplicitPush) {
   // The plan-less legacy contract (receiver-allocated destinations) is
   // untouched.
   auto legacy =
-      sender.SyncPush({peer}, /*src_block_ids=*/{0}, /*dst_block_ids=*/{},
+      sender.SyncPush({absl::StrCat("localhost:", receiver.local_port())},
+                      /*src_block_ids=*/{0}, /*dst_block_ids=*/{},
                       /*parallelism=*/1, MajorOrder::kLayerMajor, /*uuid=*/0,
                       /*layer_idx=*/-1);
   ASSERT_TRUE(legacy.ok()) << legacy.status().message();
@@ -308,11 +326,10 @@ TEST(BlockTransportTest, PushAndPullCorrectness) {
 
   std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
-  std::string peer2 = "localhost:" + std::to_string(transport2.local_port());
-
   // Push block 0 from transport1 to transport2
   auto push_res = transport1.SyncPush(
-      {peer2}, /*src_block_ids=*/{0}, /*dst_block_ids=*/{},
+      {absl::StrCat("localhost:", transport2.local_port())},
+      /*src_block_ids=*/{0}, /*dst_block_ids=*/{},
       /*parallelism=*/1, MajorOrder::kLayerMajor, /*uuid=*/0, /*layer_idx=*/-1);
   ASSERT_TRUE(push_res.ok()) << push_res.status().message();
 
@@ -324,9 +341,9 @@ TEST(BlockTransportTest, PushAndPullCorrectness) {
   std::memset(delegate2.data(), 0x00, size);
 
   // Pull block 0 from transport1 using transport2
-  std::string peer1 = "localhost:" + std::to_string(transport1.local_port());
   auto pull_res =
-      transport2.SyncPull({peer1}, /*src_block_ids=*/{0},
+      transport2.SyncPull({absl::StrCat("localhost:", transport1.local_port())},
+                          /*src_block_ids=*/{0},
                           /*local_block_ids=*/{}, /*explicit_dst_ptrs=*/{},
                           /*parallelism=*/1, MajorOrder::kLayerMajor,
                           /*on_block_received=*/{}, /*uuid=*/0);
@@ -357,12 +374,11 @@ TEST(BlockTransportTest, PullNonContiguous) {
 
   std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
-  std::string peer1 = "localhost:" + std::to_string(transport1.local_port());
-
   // Pull block 0 and 2 (non-contiguous) from transport1 using transport2
   // We expect they will be written to local block 0 and 1 respectively.
   auto pull_res = transport2.SyncPull(
-      {peer1}, /*src_block_ids=*/{0, 2},
+      {absl::StrCat("localhost:", transport1.local_port())},
+      /*src_block_ids=*/{0, 2},
       /*local_block_ids=*/{}, /*explicit_dst_ptrs=*/{}, /*parallelism=*/1,
       MajorOrder::kLayerMajor, /*on_block_received=*/{}, /*uuid=*/0);
   ASSERT_TRUE(pull_res.ok()) << pull_res.status().message();
@@ -400,11 +416,10 @@ TEST(BlockTransportTest, PullExplicitDestPtrsMultiLayerUnevenParallelism) {
 
   std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
-  std::string source_peer =
-      "localhost:" + std::to_string(source_transport.local_port());
   auto pull_res = receiver_transport.SyncPull(
-      {source_peer}, {0, 1, 2}, /*local_block_ids=*/{0, 1, 2},
-      explicit_dst_ptrs, /*parallelism=*/2, MajorOrder::kLayerMajor,
+      {absl::StrCat("localhost:", source_transport.local_port())}, {0, 1, 2},
+      /*local_block_ids=*/{0, 1, 2}, explicit_dst_ptrs, /*parallelism=*/2,
+      MajorOrder::kLayerMajor,
       /*on_block_received=*/{}, /*uuid=*/0);
   ASSERT_TRUE(pull_res.ok()) << pull_res.status().message();
   EXPECT_EQ(*pull_res, std::vector<int>({0, 1, 2}));
@@ -428,10 +443,9 @@ TEST(BlockTransportTest, PullRejectsOutOfBoundsRemoteBlock) {
 
   std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
-  std::string source_peer =
-      "localhost:" + std::to_string(source_transport.local_port());
   auto pull_res = receiver_transport.SyncPull(
-      {source_peer}, /*src_block_ids=*/{1},
+      {absl::StrCat("localhost:", source_transport.local_port())},
+      /*src_block_ids=*/{1},
       /*local_block_ids=*/{0}, /*explicit_dst_ptrs=*/{},
       /*parallelism=*/1, MajorOrder::kLayerMajor,
       /*on_block_received=*/{}, /*uuid=*/0);
@@ -457,10 +471,9 @@ TEST(BlockTransportTest, PullSupportsBlockMajorOrder) {
 
   std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
-  std::string source_peer =
-      "localhost:" + std::to_string(source_transport.local_port());
   auto pull_res = receiver_transport.SyncPull(
-      {source_peer}, /*src_block_ids=*/{0, 1},
+      {absl::StrCat("localhost:", source_transport.local_port())},
+      /*src_block_ids=*/{0, 1},
       /*local_block_ids=*/{0, 1}, /*explicit_dst_ptrs=*/{},
       /*parallelism=*/1, MajorOrder::kBlockMajor,
       /*on_block_received=*/{}, /*uuid=*/0);
@@ -490,11 +503,9 @@ TEST(BlockTransportTest, SamePeerFanoutFiltersEachDestinationStream) {
   BlockTransport sender_transport(&sender, 0);
   BlockTransport receiver_transport(&receiver, 0);
   std::this_thread::sleep_for(std::chrono::milliseconds(50));
-  const std::string peer =
-      "localhost:" + std::to_string(receiver_transport.local_port());
-
   auto result = sender_transport.SyncPush(
-      {peer}, /*src_block_ids=*/{0, 0, 0, 0},
+      {absl::StrCat("localhost:", receiver_transport.local_port())},
+      /*src_block_ids=*/{0, 0, 0, 0},
       /*dst_block_ids=*/{0, 1, 2, 3}, /*parallelism=*/4,
       MajorOrder::kLayerMajor, /*uuid=*/901, /*layer_idx=*/0);
 
@@ -516,12 +527,10 @@ TEST(BlockTransportTest, ForgetPushProgressAllowsUuidReuse) {
   BlockTransport sender_transport(&sender, 0);
   BlockTransport receiver_transport(&receiver, 0);
   std::this_thread::sleep_for(std::chrono::milliseconds(50));
-  const std::string peer =
-      "localhost:" + std::to_string(receiver_transport.local_port());
-
   auto push_layer = [&](int layer_idx) {
     return sender_transport.SyncPush(
-        {peer}, /*src_block_ids=*/{0}, /*dst_block_ids=*/{0},
+        {absl::StrCat("localhost:", receiver_transport.local_port())},
+        /*src_block_ids=*/{0}, /*dst_block_ids=*/{0},
         /*parallelism=*/1, MajorOrder::kLayerMajor, kUuid, layer_idx);
   };
 
@@ -551,12 +560,10 @@ TEST(BlockTransportTest,
   BlockTransport sender_transport(&sender, 0);
   BlockTransport receiver_transport(&receiver, 0);
   std::this_thread::sleep_for(std::chrono::milliseconds(50));
-  const std::string peer =
-      "localhost:" + std::to_string(receiver_transport.local_port());
-
   auto push_pool = [&](int pool_idx) {
     return sender_transport.SyncPush(
-        {peer}, /*src_block_ids=*/{0}, /*dst_block_ids=*/{0},
+        {absl::StrCat("localhost:", receiver_transport.local_port())},
+        /*src_block_ids=*/{0}, /*dst_block_ids=*/{0},
         /*parallelism=*/1, MajorOrder::kLayerMajor, kUuid, pool_idx);
   };
 
@@ -587,12 +594,10 @@ TEST(BlockTransportTest, ForgetPushProgressResetsPartialPoolGeneration) {
   BlockTransport sender_transport(&sender, 0);
   BlockTransport receiver_transport(&receiver, 0);
   std::this_thread::sleep_for(std::chrono::milliseconds(50));
-  const std::string peer =
-      "localhost:" + std::to_string(receiver_transport.local_port());
-
   auto push_once = [&]() {
     return sender_transport.SyncPush(
-        {peer}, /*src_block_ids=*/{0}, /*dst_block_ids=*/{0},
+        {absl::StrCat("localhost:", receiver_transport.local_port())},
+        /*src_block_ids=*/{0}, /*dst_block_ids=*/{0},
         /*parallelism=*/1, MajorOrder::kLayerMajor, kUuid, /*layer_idx=*/0);
   };
 
@@ -678,15 +683,7 @@ TEST(BlockTransportTest, RoundRobinDistribution) {
 #endif
 
 TEST(BlockTransportTest, SentBytesTelemetryIncrementedOnPushAndPull) {
-  auto exporter = std::make_unique<telemetry::PrometheusExporter>();
-  std::vector<std::unique_ptr<telemetry::MetricsBackend>> backends;
-  backends.push_back(std::move(exporter));
-  telemetry::RaidenMetricStore::GetGlobalMetricStore().SetBackends(
-      std::move(backends));
-
-  auto reset_backends = absl::MakeCleanup([] {
-    telemetry::RaidenMetricStore::GetGlobalMetricStore().SetBackends({});
-  });
+  ScopedPrometheusBackend scoped_telemetry;
 
   constexpr size_t kSize = 1024;
   MockDelegate delegate1(kSize);
@@ -698,23 +695,21 @@ TEST(BlockTransportTest, SentBytesTelemetryIncrementedOnPushAndPull) {
   BlockTransport transport1(&delegate1, 0);
   BlockTransport transport2(&delegate2, 0);
 
-  const std::string peer2 = absl::StrCat("localhost:", transport2.local_port());
-
   auto push_res = transport1.SyncPush(
-      {peer2}, /*src_block_ids=*/{0}, /*dst_block_ids=*/{},
+      {absl::StrCat("localhost:", transport2.local_port())},
+      /*src_block_ids=*/{0}, /*dst_block_ids=*/{},
       /*parallelism=*/1, MajorOrder::kLayerMajor, /*uuid=*/0, /*layer_idx=*/-1);
   ASSERT_OK(push_res);
 
-  const std::string snapshot1 =
-      telemetry::RaidenMetricStore::GetGlobalMetricStore().GetTextSnapshot();
-  EXPECT_THAT(
-      snapshot1,
-      HasSubstr("tpu_raiden_sent_bytes_total{direction=\"push\"} 1024"));
+  constexpr absl::string_view kExpectedPushMetric =
+      "tpu_raiden_sent_bytes_total{direction=\"push\"} 1024";
+  const std::string snapshot1 = WaitForMetricSnapshot(kExpectedPushMetric);
+  EXPECT_THAT(snapshot1, HasSubstr(kExpectedPushMetric));
 
-  const std::string peer1 = absl::StrCat("localhost:", transport1.local_port());
   ASSERT_OK_AND_ASSIGN(
       auto pull_res,
-      transport2.SyncPull({peer1}, /*src_block_ids=*/{0},
+      transport2.SyncPull({absl::StrCat("localhost:", transport1.local_port())},
+                          /*src_block_ids=*/{0},
                           /*local_block_ids=*/{}, /*explicit_dst_ptrs=*/{},
                           /*parallelism=*/1, MajorOrder::kLayerMajor,
                           /*on_block_received=*/{}, /*uuid=*/0));
@@ -727,15 +722,7 @@ TEST(BlockTransportTest, SentBytesTelemetryIncrementedOnPushAndPull) {
 }
 
 TEST(BlockTransportTest, ReceivedBytesTelemetryIncrementedOnPushAndPull) {
-  auto exporter = std::make_unique<telemetry::PrometheusExporter>();
-  std::vector<std::unique_ptr<telemetry::MetricsBackend>> backends;
-  backends.push_back(std::move(exporter));
-  telemetry::RaidenMetricStore::GetGlobalMetricStore().SetBackends(
-      std::move(backends));
-
-  auto reset_backends = absl::MakeCleanup([] {
-    telemetry::RaidenMetricStore::GetGlobalMetricStore().SetBackends({});
-  });
+  ScopedPrometheusBackend scoped_telemetry;
 
   constexpr size_t kSize = 1024;
   MockDelegate delegate1(kSize);
@@ -747,37 +734,269 @@ TEST(BlockTransportTest, ReceivedBytesTelemetryIncrementedOnPushAndPull) {
   BlockTransport transport1(&delegate1, 0);
   BlockTransport transport2(&delegate2, 0);
 
-  const std::string peer2 = absl::StrCat("localhost:", transport2.local_port());
-
   auto push_res = transport1.SyncPush(
-      {peer2}, /*src_block_ids=*/{0}, /*dst_block_ids=*/{},
+      {absl::StrCat("localhost:", transport2.local_port())},
+      /*src_block_ids=*/{0}, /*dst_block_ids=*/{},
       /*parallelism=*/1, MajorOrder::kLayerMajor, /*uuid=*/0, /*layer_idx=*/-1);
   ASSERT_OK(push_res);
 
-  const std::string snapshot1 =
-      telemetry::RaidenMetricStore::GetGlobalMetricStore().GetTextSnapshot();
-  EXPECT_THAT(
-      snapshot1,
-      HasSubstr("tpu_raiden_received_bytes_total{direction=\"push\"} 1024"));
+  constexpr absl::string_view kExpectedPushMetric =
+      "tpu_raiden_received_bytes_total{direction=\"push\"} 1024";
+  const std::string snapshot1 = WaitForMetricSnapshot(kExpectedPushMetric);
+  EXPECT_THAT(snapshot1, HasSubstr(kExpectedPushMetric));
   EXPECT_THAT(snapshot1, Not(HasSubstr("direction=\"pull_response\"")));
 
-  const std::string peer1 = absl::StrCat("localhost:", transport1.local_port());
   auto pull_res =
-      transport2.SyncPull({peer1}, /*src_block_ids=*/{0},
+      transport2.SyncPull({absl::StrCat("localhost:", transport1.local_port())},
+                          /*src_block_ids=*/{0},
                           /*local_block_ids=*/{}, /*explicit_dst_ptrs=*/{},
                           /*parallelism=*/1, MajorOrder::kLayerMajor,
                           /*on_block_received=*/{}, /*uuid=*/0);
   ASSERT_OK(pull_res);
 
+  constexpr absl::string_view kExpectedPullResponseMetric =
+      "tpu_raiden_received_bytes_total{direction=\"pull_response\"} 1024";
   const std::string snapshot2 =
-      telemetry::RaidenMetricStore::GetGlobalMetricStore().GetTextSnapshot();
+      WaitForMetricSnapshot(kExpectedPullResponseMetric);
   EXPECT_THAT(
       snapshot2,
       HasSubstr("tpu_raiden_received_bytes_total{direction=\"push\"} 1024"));
-  EXPECT_THAT(
-      snapshot2,
-      HasSubstr(
-          "tpu_raiden_received_bytes_total{direction=\"pull_response\"} 1024"));
+  EXPECT_THAT(snapshot2, HasSubstr(kExpectedPullResponseMetric));
+}
+
+TEST(BlockTransportTest, TransferFailuresTelemetryPushValidationFailures) {
+  ScopedPrometheusBackend scoped_telemetry;
+
+  constexpr size_t kSize = 1024;
+  MockDelegate delegate(kSize);
+  BlockTransport transport(&delegate, 0);
+
+  // 1. Empty block list (memory error)
+  absl::StatusOr<std::vector<int>> res1 = transport.SyncPush(
+      {"localhost:1234"}, /*src_block_ids=*/{}, /*dst_block_ids=*/{},
+      /*parallelism=*/1, MajorOrder::kLayerMajor, /*uuid=*/0, /*layer_idx=*/-1);
+  EXPECT_THAT(res1, StatusIs(absl::StatusCode::kInvalidArgument));
+
+  constexpr absl::string_view kExpectedError1 =
+      "tpu_raiden_transfer_failures_total{direction=\"push\","
+      "error_code=\"INVALID_ARGUMENT\"} 1";
+  EXPECT_THAT(WaitForMetricSnapshot(kExpectedError1),
+              HasSubstr(kExpectedError1));
+
+  // 2. Empty peers list (memory error)
+  absl::StatusOr<std::vector<int>> res2 = transport.SyncPush(
+      /*peers=*/{}, /*src_block_ids=*/{0}, /*dst_block_ids=*/{},
+      /*parallelism=*/1, MajorOrder::kLayerMajor, /*uuid=*/0, /*layer_idx=*/-1);
+  EXPECT_THAT(res2, StatusIs(absl::StatusCode::kInvalidArgument));
+
+  constexpr absl::string_view kExpectedError2 =
+      "tpu_raiden_transfer_failures_total{direction=\"push\","
+      "error_code=\"INVALID_ARGUMENT\"} 2";
+  EXPECT_THAT(WaitForMetricSnapshot(kExpectedError2),
+              HasSubstr(kExpectedError2));
+
+  // 3. Invalid parallelism (P <= 0)
+  absl::StatusOr<std::vector<int>> res3 = transport.SyncPush(
+      {"localhost:1234"}, /*src_block_ids=*/{0}, /*dst_block_ids=*/{},
+      /*parallelism=*/0, MajorOrder::kLayerMajor, /*uuid=*/0, /*layer_idx=*/-1);
+  EXPECT_THAT(res3, StatusIs(absl::StatusCode::kInvalidArgument));
+
+  constexpr absl::string_view kExpectedError3 =
+      "tpu_raiden_transfer_failures_total{direction=\"push\","
+      "error_code=\"INVALID_ARGUMENT\"} 3";
+  EXPECT_THAT(WaitForMetricSnapshot(kExpectedError3),
+              HasSubstr(kExpectedError3));
+}
+
+TEST(BlockTransportTest, TransferFailuresTelemetryPushTransferFailure) {
+  ScopedPrometheusBackend scoped_telemetry;
+
+  constexpr size_t kSize = 1024;
+  MockDelegate delegate(kSize);
+  BlockTransport transport(&delegate, 0);
+
+  absl::StatusOr<std::vector<int>> res = transport.SyncPush(
+      {"localhost:1"}, /*src_block_ids=*/{0}, /*dst_block_ids=*/{},
+      /*parallelism=*/1, MajorOrder::kLayerMajor, /*uuid=*/0, /*layer_idx=*/-1);
+  EXPECT_THAT(res, StatusIs(absl::StatusCode::kUnavailable));
+
+  constexpr absl::string_view kExpectedError =
+      "tpu_raiden_transfer_failures_total{direction=\"push\","
+      "error_code=\"UNAVAILABLE\"} 1";
+  EXPECT_THAT(WaitForMetricSnapshot(kExpectedError), HasSubstr(kExpectedError));
+}
+
+TEST(BlockTransportTest, TransferFailuresTelemetryPushBufferAndPushBuffers) {
+  ScopedPrometheusBackend scoped_telemetry;
+
+  constexpr size_t kSize = 1024;
+  MockDelegate delegate(kSize);
+  BlockTransport transport(&delegate, 0);
+
+  // PushBuffer failure to non-existent peer
+  uint8_t dummy_data[64] = {0};
+  absl::Status status1 = transport.PushBuffer(
+      "localhost:1", /*buffer_id=*/0, /*dst_shard_idx=*/0,
+      /*dst_offset_bytes=*/0, dummy_data, sizeof(dummy_data));
+  EXPECT_THAT(status1, StatusIs(absl::StatusCode::kUnavailable));
+
+  constexpr absl::string_view kExpectedError1 =
+      "tpu_raiden_transfer_failures_total{direction=\"push\","
+      "error_code=\"UNAVAILABLE\"} 1";
+  EXPECT_THAT(WaitForMetricSnapshot(kExpectedError1),
+              HasSubstr(kExpectedError1));
+
+  // PushBuffers failure with unreachable peer
+  BufferPushTask task = {
+      .peer = "localhost:1",
+      .buffer_id = 0,
+      .dst_shard_idx = 0,
+      .dst_offset_bytes = 0,
+      .data_ptr = dummy_data,
+      .size_bytes = sizeof(dummy_data),
+  };
+  absl::Status status2 = transport.PushBuffers({task}, /*parallelism=*/1, 0);
+  EXPECT_THAT(status2, StatusIs(absl::StatusCode::kUnavailable));
+
+  constexpr absl::string_view kExpectedError2 =
+      "tpu_raiden_transfer_failures_total{direction=\"push\","
+      "error_code=\"UNAVAILABLE\"} 2";
+  EXPECT_THAT(WaitForMetricSnapshot(kExpectedError2),
+              HasSubstr(kExpectedError2));
+}
+
+TEST(BlockTransportTest, TransferFailuresTelemetryPullValidationFailures) {
+  ScopedPrometheusBackend scoped_telemetry;
+
+  constexpr size_t kSize = 1024;
+  MockDelegate delegate(kSize);
+  BlockTransport transport(&delegate, 0);
+
+  // 1. Empty block list
+  absl::StatusOr<std::vector<int>> res1 = transport.SyncPull(
+      {"localhost:1234"}, /*src_block_ids=*/{},
+      /*local_block_ids=*/{}, /*explicit_dst_ptrs=*/{}, /*parallelism=*/1,
+      MajorOrder::kLayerMajor, /*on_block_received=*/{}, /*uuid=*/0);
+  EXPECT_THAT(res1, StatusIs(absl::StatusCode::kInvalidArgument));
+
+  constexpr absl::string_view kExpectedError1 =
+      "tpu_raiden_transfer_failures_total{direction=\"pull\","
+      "error_code=\"INVALID_ARGUMENT\"} 1";
+  EXPECT_THAT(WaitForMetricSnapshot(kExpectedError1),
+              HasSubstr(kExpectedError1));
+
+  // 2. Empty peers
+  absl::StatusOr<std::vector<int>> res2 = transport.SyncPull(
+      /*peers=*/{}, /*src_block_ids=*/{0},
+      /*local_block_ids=*/{}, /*explicit_dst_ptrs=*/{}, /*parallelism=*/1,
+      MajorOrder::kLayerMajor, /*on_block_received=*/{}, /*uuid=*/0);
+  EXPECT_THAT(res2, StatusIs(absl::StatusCode::kInvalidArgument));
+
+  constexpr absl::string_view kExpectedError2 =
+      "tpu_raiden_transfer_failures_total{direction=\"pull\","
+      "error_code=\"INVALID_ARGUMENT\"} 2";
+  EXPECT_THAT(WaitForMetricSnapshot(kExpectedError2),
+              HasSubstr(kExpectedError2));
+
+  // 3. Invalid parallelism (P <= 0)
+  absl::StatusOr<std::vector<int>> res3 = transport.SyncPull(
+      {"localhost:1234"}, /*src_block_ids=*/{0},
+      /*local_block_ids=*/{}, /*explicit_dst_ptrs=*/{}, /*parallelism=*/0,
+      MajorOrder::kLayerMajor, /*on_block_received=*/{}, /*uuid=*/0);
+  EXPECT_THAT(res3, StatusIs(absl::StatusCode::kInvalidArgument));
+
+  constexpr absl::string_view kExpectedError3 =
+      "tpu_raiden_transfer_failures_total{direction=\"pull\","
+      "error_code=\"INVALID_ARGUMENT\"} 3";
+  EXPECT_THAT(WaitForMetricSnapshot(kExpectedError3),
+              HasSubstr(kExpectedError3));
+
+  // 4. explicit_dst_ptrs size mismatch
+  uint8_t dummy_dst[16] = {0};
+  absl::StatusOr<std::vector<int>> res4 = transport.SyncPull(
+      {"localhost:1234"}, /*src_block_ids=*/{0},
+      /*local_block_ids=*/{}, /*explicit_dst_ptrs=*/{dummy_dst, dummy_dst},
+      /*parallelism=*/1, MajorOrder::kLayerMajor, /*on_block_received=*/{},
+      /*uuid=*/0);
+  EXPECT_THAT(res4, StatusIs(absl::StatusCode::kInvalidArgument));
+
+  constexpr absl::string_view kExpectedError4 =
+      "tpu_raiden_transfer_failures_total{direction=\"pull\","
+      "error_code=\"INVALID_ARGUMENT\"} 4";
+  EXPECT_THAT(WaitForMetricSnapshot(kExpectedError4),
+              HasSubstr(kExpectedError4));
+
+  // 5. local_block_ids size mismatch
+  absl::StatusOr<std::vector<int>> res5 = transport.SyncPull(
+      {"localhost:1234"}, /*src_block_ids=*/{0},
+      /*local_block_ids=*/{0, 1}, /*explicit_dst_ptrs=*/{},
+      /*parallelism=*/1, MajorOrder::kLayerMajor, /*on_block_received=*/{},
+      /*uuid=*/0);
+  EXPECT_THAT(res5, StatusIs(absl::StatusCode::kInvalidArgument));
+
+  constexpr absl::string_view kExpectedError5 =
+      "tpu_raiden_transfer_failures_total{direction=\"pull\","
+      "error_code=\"INVALID_ARGUMENT\"} 5";
+  EXPECT_THAT(WaitForMetricSnapshot(kExpectedError5),
+              HasSubstr(kExpectedError5));
+}
+
+TEST(BlockTransportTest, TransferFailuresTelemetryPullTransferFailure) {
+  ScopedPrometheusBackend scoped_telemetry;
+
+  constexpr size_t kSliceSize = 16;
+  constexpr int kNumBlocks = 1;
+  MockDelegate source(kSliceSize, kNumBlocks);
+  MockDelegate receiver(kSliceSize, kNumBlocks);
+
+  BlockTransport source_transport(&source, 0);
+  BlockTransport receiver_transport(&receiver, 0);
+
+  absl::StatusOr<std::vector<int>> pull_res = receiver_transport.SyncPull(
+      {absl::StrCat("localhost:", source_transport.local_port())},
+      /*src_block_ids=*/{1},
+      /*local_block_ids=*/{0}, /*explicit_dst_ptrs=*/{},
+      /*parallelism=*/1, MajorOrder::kLayerMajor,
+      /*on_block_received=*/{}, /*uuid=*/0);
+  EXPECT_FALSE(pull_res.ok());
+
+  constexpr absl::string_view kExpectedError =
+      "tpu_raiden_transfer_failures_total{direction=\"pull\",";
+  EXPECT_THAT(WaitForMetricSnapshot(kExpectedError), HasSubstr(kExpectedError));
+}
+
+TEST(BlockTransportTest, NoTransferFailuresTelemetryOnSuccess) {
+  ScopedPrometheusBackend scoped_telemetry;
+
+  constexpr size_t kSize = 1024;
+  MockDelegate delegate1(kSize);
+  MockDelegate delegate2(kSize);
+
+  std::memset(delegate1.data(), 0xAB, kSize);
+  std::memset(delegate2.data(), 0x00, kSize);
+
+  BlockTransport transport1(&delegate1, 0);
+  BlockTransport transport2(&delegate2, 0);
+
+  ASSERT_OK(
+      transport1.SyncPush({absl::StrCat("localhost:", transport2.local_port())},
+                          /*src_block_ids=*/{0},
+                          /*dst_block_ids=*/{},
+                          /*parallelism=*/1, MajorOrder::kLayerMajor,
+                          /*uuid=*/0, /*layer_idx=*/-1));
+
+  ASSERT_OK(
+      transport2.SyncPull({absl::StrCat("localhost:", transport1.local_port())},
+                          /*src_block_ids=*/{0},
+                          /*local_block_ids=*/{},
+                          /*explicit_dst_ptrs=*/{},
+                          /*parallelism=*/1, MajorOrder::kLayerMajor,
+                          /*on_block_received=*/{}, /*uuid=*/0));
+
+  constexpr absl::string_view kNotExpectedError =
+      "tpu_raiden_transfer_failures_total{";
+  EXPECT_THAT(WaitForMetricSnapshot(kNotExpectedError),
+              Not(HasSubstr(kNotExpectedError)));
 }
 
 }  // namespace

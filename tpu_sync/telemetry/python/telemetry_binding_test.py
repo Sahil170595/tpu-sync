@@ -33,6 +33,18 @@ class TelemetryBindingTest(absltest.TestCase):
         snapshot,
     )
     self.assertIn("# TYPE tpu_raiden_sent_bytes_total counter", snapshot)
+    self.assertIn(
+        "# HELP tpu_raiden_received_bytes_total Total count of bytes received"
+        " over TPU Raiden interfaces.",
+        snapshot,
+    )
+    self.assertIn("# TYPE tpu_raiden_received_bytes_total counter", snapshot)
+    self.assertIn(
+        "# HELP tpu_raiden_transfer_failures_total Cumulative total count of"
+        " transfer failures across all interfaces.",
+        snapshot,
+    )
+    self.assertIn("# TYPE tpu_raiden_transfer_failures_total counter", snapshot)
 
   def test_configure_telemetry_case_insensitive(self):
     telemetry_ext.configure_telemetry(["Prometheus"])

@@ -49,6 +49,7 @@
 #include "tpu_sync/core/status_macros.h"
 #include "tpu_sync/telemetry/metrics_api.h"
 #include "tpu_sync/transport/block_transport_delegate.h"
+#include "tpu_sync/transport/buffer_push_task.h"
 #include "tpu_sync/transport/lib/chunk.h"
 #include "tpu_sync/transport/lib/chunk_serializer.h"
 #include "tpu_sync/transport/lib/raw_buffer_transport.h"
@@ -71,6 +72,19 @@ using ::tpu_raiden::telemetry::MetricLabel;
 using ::tpu_raiden::telemetry::RaidenMetricStore;
 namespace metric_labels = ::tpu_raiden::telemetry::metric_labels;
 namespace metric_names = ::tpu_raiden::telemetry::metric_names;
+
+void RecordTransferFailure(const absl::Status& status,
+                           absl::string_view direction, uint64_t count = 1) {
+  RaidenMetricStore& store = RaidenMetricStore::GetGlobalMetricStore();
+  if (status.ok() || !store.HasBackends()) return;
+  const absl::string_view error_code =
+      absl::StatusCodeToStringView(status.code());
+  const MetricLabel labels[] = {
+      {metric_labels::kErrorCode, error_code},
+      {metric_labels::kDirection, direction},
+  };
+  store.IncrementCounter(metric_names::kTransferFailuresTotal, labels, count);
+}
 
 constexpr MetricLabel kPushLabels[] = {
     {.key = metric_labels::kDirection, .value = metric_labels::kDirectionPush},
@@ -671,7 +685,13 @@ void BlockTransport::AsyncPush(
     const std::vector<int>& src_block_ids,
     const std::vector<int>& dst_block_ids, int parallelism,
     MajorOrder major_order, uint64_t uuid, int layer_idx,
-    std::function<void(absl::StatusOr<std::vector<int>>)> on_complete) {
+    std::function<void(absl::StatusOr<std::vector<int>>)> raw_on_complete) {
+  auto on_complete = [raw_on_complete](absl::StatusOr<std::vector<int>> res) {
+    if (!res.ok()) {
+      RecordTransferFailure(res.status(), metric_labels::kDirectionPush);
+    }
+    raw_on_complete(std::move(res));
+  };
   size_t num_blocks = src_block_ids.size();
   if (num_blocks == 0) {
     on_complete(absl::InvalidArgumentError("Block list cannot be empty"));
@@ -755,6 +775,22 @@ void BlockTransport::AsyncPush(
 }
 
 absl::StatusOr<std::vector<int>> BlockTransport::SyncPull(
+    const std::vector<std::string>& peers,
+    const std::vector<int>& src_block_ids,
+    const std::vector<int>& local_block_ids,
+    const std::vector<uint8_t*>& explicit_dst_ptrs, int parallelism,
+    MajorOrder major_order, BlockReceivedCallback on_block_received,
+    uint64_t uuid) {
+  auto res =
+      SyncPullInternal(peers, src_block_ids, local_block_ids, explicit_dst_ptrs,
+                       parallelism, major_order, on_block_received, uuid);
+  if (!res.ok()) {
+    RecordTransferFailure(res.status(), metric_labels::kDirectionPull);
+  }
+  return res;
+}
+
+absl::StatusOr<std::vector<int>> BlockTransport::SyncPullInternal(
     const std::vector<std::string>& peers,
     const std::vector<int>& src_block_ids,
     const std::vector<int>& local_block_ids,
@@ -1201,6 +1237,29 @@ void BlockTransport::ForgetPushProgress(uint64_t uuid) {
       ++it;
     }
   }
+}
+
+absl::Status BlockTransport::PushBuffer(absl::string_view peer,
+                                        size_t buffer_id, size_t dst_shard_idx,
+                                        size_t dst_offset_bytes,
+                                        const uint8_t* data_ptr,
+                                        size_t size_bytes, uint64_t uuid) {
+  absl::Status status =
+      raw_transport_.PushBuffer(peer, buffer_id, dst_shard_idx,
+                                dst_offset_bytes, data_ptr, size_bytes, uuid);
+  if (!status.ok()) {
+    RecordTransferFailure(status, metric_labels::kDirectionPush);
+  }
+  return status;
+}
+
+absl::Status BlockTransport::PushBuffers(
+    const std::vector<BufferPushTask>& tasks, int parallelism, uint64_t uuid) {
+  absl::Status status = raw_transport_.PushBuffers(tasks, parallelism, uuid);
+  if (!status.ok()) {
+    RecordTransferFailure(status, metric_labels::kDirectionPush);
+  }
+  return status;
 }
 
 }  // namespace transport

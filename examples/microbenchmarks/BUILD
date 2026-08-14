@@ -13,6 +13,7 @@
 # limitations under the License.
 
 load("@rules_cc//cc:defs.bzl", "cc_binary")
+load("@rules_python//python:defs.bzl", "py_binary")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -33,7 +34,7 @@ cc_binary(
     ],
 )
 
-pytype_strict_binary(
+py_binary(
     name = "jax_d2d_read_benchmark_runner",
     srcs = ["jax_d2d_read_benchmark_runner.py"],
     deps = [

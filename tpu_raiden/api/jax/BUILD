@@ -33,7 +33,6 @@ py_library(
     deps = [
         "//tpu_raiden/api:common",
         "//tpu_sync/frameworks/jax:_tpu_raiden_jax",
-        "//tpu_sync/frameworks/jax:jax_test_utils",
     ],
 )
 

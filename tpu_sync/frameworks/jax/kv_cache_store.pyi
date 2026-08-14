@@ -1,11 +1,15 @@
 import enum
-from typing import Any
+from typing import Any, overload
 
 class BlockStatus(enum.Enum):
   INIT = ...
   REMOTE = ...
   HOST = ...
   HBM = ...
+  # A load that sourced from local DRAM ends here; one that sourced from a
+  # peer ends at HBM instead, because its landing blocks are freed and no host
+  # copy is kept.
+  HOST_AND_HBM = ...
 
 class RaidenId:
   job_name: str
@@ -22,12 +26,24 @@ class RaidenId:
 
 class RaidenBlockID:
   raiden_id: RaidenId
+  # The local host block when status is HOST or HOST_AND_HBM; the OWNING
+  # PEER's host block when status is REMOTE, where it means nothing locally.
   host_block_id: int
+  device_block_id: int
   status: BlockStatus
+  @overload
   def __init__(
       self,
       raiden_id: RaidenId = ...,
       host_block_id: int = ...,
+      status: BlockStatus = ...,
+  ) -> None: ...
+  @overload
+  def __init__(
+      self,
+      raiden_id: RaidenId = ...,
+      host_block_id: int = ...,
+      device_block_id: int = ...,
       status: BlockStatus = ...,
   ) -> None: ...
 
@@ -59,15 +75,15 @@ class KVCacheStore:
       self,
       block_hashes: list[bytes],
       enable_global: bool = False,
-  ) -> list[tuple[bytes, list[RaidenBlockID]]]:
+  ) -> list[tuple[bytes, RaidenBlockID]]:
     """Checks the LRU directory for cached block hashes. Returns a list of all matched replica pairs prior to the first miss."""
     ...
   def insert(
       self,
       block_hashes: list[bytes],
-      slices: list[list[RaidenBlockID]],
+      slices: list[RaidenBlockID],
       on_host: bool,
-  ) -> tuple[bool, list[tuple[bytes, list[RaidenBlockID]]]]:
+  ) -> tuple[bool, list[tuple[bytes, RaidenBlockID]]]:
     """Caches sharded buffers into host-RAM/HBM backing store."""
     ...
   def insert_and_lock(
@@ -102,7 +118,7 @@ class KVCacheStore:
   def delete(
       self,
       block_hashes: list[bytes],
-      slices: list[list[RaidenBlockID]],
+      slices: list[RaidenBlockID],
   ) -> None:
     """Deletes cached sharded buffers from host-RAM/HBM backing store entirely."""
     ...
@@ -131,19 +147,36 @@ class KVCacheStore:
       4. release(completed_block_hashes)
     """
     ...
+  @overload
   def load(self, block_hashes: list[bytes], device_block_ids: list[int]) -> bool:
-    """Loads blocks from host (DRAM) to device (HBM) asynchronously.
+    """Asynchronously loads KV cache blocks to device (HBM) from local host DRAM.
 
-    NOTE: The block_hashes must be pinned in the LRU cache (e.g. via pin or
-    insert_and_lock) before calling load. Once the operation is complete (as
-    reported by poll_load_status), the caller must manually release/unpin them
-    via release so they can be evicted if needed.
+    `device_block_ids` is the destination and must name one device block per hash.
 
-    Recommended usage flow:
-      1. insert_and_lock(block_hashes) (or pin if they already exist in store)
-      2. load(block_hashes, device_block_ids)
-      3. poll_load_status() -> wait for completion
-      4. release(completed_block_hashes)
+    NOTE: The block_hashes must be pinned in the LRU cache before calling load.
+    Once the operation is complete (as reported by poll_load_status), the caller
+    must manually release/unpin them via release.
+    """
+    ...
+  @overload
+  def load(
+      self,
+      block_hashes: list[bytes],
+      slices: list[RaidenBlockID],
+      device_block_ids: list[int],
+  ) -> bool:
+    """Asynchronously loads KV cache blocks to device (HBM), either from local
+    host DRAM or from a peer.
+
+    ONE CALL IS ONE SOURCE. Every block in a batch must carry the same status,
+    and remote blocks must all refer to the same peer.
+
+    `device_block_ids` is the destination and must name one device block per hash.
+
+    If `slices` is provided, the caller's pre-looked up RaidenBlockIDs are
+    used directly. Note that blocks in `slices` must be already pinned
+    externally (when Loading from local host), and remote loads will re-resolve
+    hashes at the peer, ignoring `slices`.
     """
     ...
   def poll_save_status(self) -> tuple[list[bytes], list[bytes], list[bytes]]:
@@ -161,4 +194,29 @@ class KVCacheStore:
     ...
   def poll_remote_read_status(self) -> tuple[list[bytes], list[bytes], list[bytes]]:
     """Polls status of active remote reads."""
+    ...
+  def write_remote(
+      self,
+      block_hashes: list[bytes],
+      dst_raiden_id: RaidenId,
+  ) -> bool:
+    """Offers blocks to a peer, which takes its own copy.
+
+    The destination pulls the bytes; this node never pushes. Returns as soon
+    as the offer is issued -- poll with poll_remote_write_status.
+    """
+    ...
+  def poll_remote_write_status(
+      self,
+  ) -> tuple[list[bytes], list[bytes], list[bytes], list[bytes], list[bytes]]:
+    """Polls status of active remote writes.
+
+    Five lists, unlike the three-list save/load/read pollers:
+    (done, failed, pending, existing, unregistered). The last two annotate
+    failures rather than being outcomes of their own -- a hash in `existing`
+    or `unregistered` also appears in `failed`, not instead of it. `existing`
+    is what a destination already held when it refused a partial batch;
+    `unregistered` is a destination that HAS the bytes but could not publish
+    them, so no lookup will find them there.
+    """
     ...

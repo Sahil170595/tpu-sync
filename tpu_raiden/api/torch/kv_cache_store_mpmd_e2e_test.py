@@ -45,6 +45,7 @@ from tpu_raiden.api.torch import kv_cache_store
 FLAGS = flags.FLAGS
 flags.DEFINE_boolean("run_worker", False, "")
 flags.DEFINE_string("worker_mode", "save_load", "")
+flags.DEFINE_boolean("use_slices", False, "")
 flags.DEFINE_integer("rank", 0, "")
 flags.DEFINE_integer("world_size", 0, "")
 flags.DEFINE_integer("master_port", 0, "")
@@ -259,7 +260,25 @@ def _worker_save_load_main(argv):
     if rank == 0:
       print("=== [Rank 0] Loading checkpoint from Host DRAM into TPU HBM blocks [2, 3] (store.load) ===")
       assert store.pin(hashes), "Failed to pin hashes before load"
-      store.load(hashes, [2, 3])
+      if FLAGS.use_slices:
+        # Hand the store the entries this rank already has instead of letting
+        # it resolve the hashes again. Resolved AFTER the pin above, so
+        # nothing can evict them out from under the slices -- that ordering is
+        # the whole safety contract of this form, since it performs no lookup
+        # of its own.
+        load_slices = [entry for _, entry in store.lookup(hashes)]
+        assert len(load_slices) == len(hashes), (
+            f"expected {len(hashes)} entries, got {load_slices}"
+        )
+        for entry in load_slices:
+          assert entry.status == kv_cache_store.BlockStatus.HOST_AND_HBM, (
+              f"entry is {entry.status}, not HOST_AND_HBM"
+          )
+        assert store.load(hashes, [2, 3], slices=load_slices), (
+            "load with slices failed"
+        )
+      else:
+        assert store.load(hashes, [2, 3]), "load failed"
       done = False
       while not done:
         load_done, load_failed, _ = store.poll_load_status()
@@ -286,6 +305,7 @@ def _worker_save_load_main(argv):
 
 
 def _worker_read_remote_main(argv):
+  use_slices = FLAGS.use_slices
   rank = FLAGS.rank
   world_size = FLAGS.world_size
   master_port = FLAGS.master_port
@@ -425,43 +445,62 @@ def _worker_read_remote_main(argv):
           time.sleep(0.01)
       store_a.release(hashes)
 
-      time.sleep(0.5)
-      lookup_res_b = store_b.lookup(hashes, enable_global=True)
+      # Wait for global registry propagation
+      deadline = time.time() + 10.0
+      lookup_res_b = []
+      while time.time() < deadline:
+        lookup_res_b = store_b.lookup(hashes, enable_global=True)
+        if len(lookup_res_b) == 2:
+          break
+        time.sleep(0.5)
       assert len(lookup_res_b) == 2, (
           f"Expected 2 remote blocks, got {len(lookup_res_b)}"
       )
 
       slices_b = [lookup_res_b[0][1], lookup_res_b[1][1]]
-      assert store_b.insert_and_lock(
-          hashes, slices_b, on_host=True
-      ), "insert_and_lock failed on store_b"
-
-      print("=== [Rank 0] Launching ReadRemote from Job A to Job B ===")
-      assert store_b.read_remote(
-          hashes
-      ), "read_remote launch failed on store_b"
-
-      done = False
-      while not done:
-        read_done, read_failed, _ = store_b.poll_remote_read_status()
-        if read_failed:
-          raise RuntimeError(f"Job B ReadRemote failed: {read_failed}")
-        if len(read_done) == 2:
-          done = True
-        if not done:
-          time.sleep(0.01)
-
-      # Now load blocks [0, 1] from Job B's host pool into TPU HBM
-      assert store_b.load(hashes, [0, 1]), "load failed on store_b"
-      done = False
-      while not done:
-        load_done, load_failed, _ = store_b.poll_load_status()
-        if load_failed:
-          raise RuntimeError(f"Job B Load failed: {load_failed}")
-        if len(load_done) == 2:
-          done = True
-        if not done:
-          time.sleep(0.01)
+      if use_slices:
+        print("=== [Rank 0] Launching peer-fetch Load from Job A to Job B with slices ===")
+        assert store_b.load(hashes, [0, 1], slices=slices_b), "load failed on store_b"
+        done = False
+        while not done:
+          load_done, load_failed, _ = store_b.poll_load_status()
+          if load_failed:
+            raise RuntimeError(f"Job B Load failed: {load_failed}")
+          if len(load_done) == 2:
+            done = True
+          if not done:
+            time.sleep(0.01)
+      else:
+        assert store_b.insert_and_lock(
+            hashes, slices_b, on_host=True
+        ), "insert_and_lock failed on store_b"
+  
+        print("=== [Rank 0] Launching ReadRemote from Job A to Job B ===")
+        assert store_b.read_remote(
+            hashes
+        ), "read_remote launch failed on store_b"
+  
+        done = False
+        while not done:
+          read_done, read_failed, _ = store_b.poll_remote_read_status()
+          if read_failed:
+            raise RuntimeError(f"Job B ReadRemote failed: {read_failed}")
+          if len(read_done) == 2:
+            done = True
+          if not done:
+            time.sleep(0.01)
+  
+        # Now load blocks [0, 1] from Job B's host pool into TPU HBM
+        assert store_b.load(hashes, [0, 1]), "load failed on store_b"
+        done = False
+        while not done:
+          load_done, load_failed, _ = store_b.poll_load_status()
+          if load_failed:
+            raise RuntimeError(f"Job B Load failed: {load_failed}")
+          if len(load_done) == 2:
+            done = True
+          if not done:
+            time.sleep(0.01)
 
       store_b.release_and_delete(hashes)
 
@@ -720,6 +759,75 @@ class KVCacheStoreMpmdE2ETest(absltest.TestCase):
           f"--world_size={world_size}",
           f"--master_port={master_port}",
           f"--controller_port={controller_port}",
+          f"--registry_port={_registry_port}",
+      ]
+      procs.append(subprocess.Popen(cmd, env=env))
+
+    failed = False
+    for p in procs:
+      p.wait()
+      if p.returncode != 0:
+        failed = True
+
+    if failed:
+      self.fail("One or more workers failed!")
+
+  # The same 8-rank save/load/compare run, with rank 0's load driven through
+  # the slices form. Worth running under MPMD rather than only single-process:
+  # every rank has its own store and its own shard of each block, so a slices
+  # path that resolved entries against the wrong rank's index would land the
+  # wrong shards here and nowhere else.
+  def test_mpmd_8rank_e2e_save_and_load_with_slices(self):
+    world_size = 8
+    prepare_tpu_environment(world_size)
+    master_port = pick_unused_ports(1)[0]
+    controller_port = pick_unused_ports(1)[0]
+
+    procs = []
+    for rank in range(world_size):
+      env = os.environ.copy()
+      cmd = [
+          sys.argv[0],
+          "--run_worker",
+          "--use_slices",
+          f"--rank={rank}",
+          f"--world_size={world_size}",
+          f"--master_port={master_port}",
+          f"--controller_port={controller_port}",
+          f"--registry_port={_registry_port}",
+      ]
+      procs.append(subprocess.Popen(cmd, env=env))
+
+    failed = False
+    for p in procs:
+      p.wait()
+      if p.returncode != 0:
+        failed = True
+
+    if failed:
+      self.fail("One or more workers failed!")
+
+
+  def test_mpmd_8rank_e2e_read_remote_with_slices(self):
+    world_size = 8
+    prepare_tpu_environment(world_size)
+    master_port = pick_unused_ports(1)[0]
+    controller_port_a = pick_unused_ports(1)[0]
+    controller_port_b = pick_unused_ports(1)[0]
+
+    procs = []
+    for rank in range(world_size):
+      env = os.environ.copy()
+      cmd = [
+          sys.argv[0],
+          "--run_worker",
+          "--worker_mode=read_remote",
+          "--use_slices",
+          f"--rank={rank}",
+          f"--world_size={world_size}",
+          f"--master_port={master_port}",
+          f"--controller_port={controller_port_a}",
+          f"--controller_port_b={controller_port_b}",
           f"--registry_port={_registry_port}",
       ]
       procs.append(subprocess.Popen(cmd, env=env))

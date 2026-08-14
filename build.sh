@@ -163,7 +163,7 @@ TORCH_REPO_ENV_FLAGS=()
 if [ "$BUILD_JAX" = true ]; then
   echo "Configuring build for JAX..."
   BAZEL_TARGETS+=(
-    "//tpu_raiden/frameworks/jax:_tpu_raiden_jax"
+    "//tpu_sync/frameworks/jax:_tpu_raiden_jax"
   )
 else
   DEFINE_FLAGS+=" --define with_jax=false"
@@ -279,8 +279,8 @@ PY
   TORCH_REPO_ENV_FLAGS+=("--@torch_tpu//shims/torch:local_torch=True")
   TORCH_REPO_ENV_FLAGS+=("--repo_env=TORCH_SOURCE=${TORCH_SOURCE}")
   BAZEL_TARGETS+=(
-    "//tpu_raiden/frameworks/torch:_tpu_raiden_host"
-    "//tpu_raiden/frameworks/torch:_tpu_raiden_torch"
+    "//tpu_sync/frameworks/torch:_tpu_raiden_host"
+    "//tpu_sync/frameworks/torch:_tpu_raiden_torch"
   )
 else
   DEFINE_FLAGS+=" --define with_torch=false"
@@ -339,16 +339,16 @@ link_service_binary "tpu_sync/kv_cache/global_registry/global_registry_server"
 echo "=== Copying compiled shared libraries to source directory ==="
 if [ "$BUILD_JAX" = true ]; then
   echo "Copying JAX artifacts..."
-  cp -f "${WORKSPACE_DIR}/bazel-bin/tpu_raiden/frameworks/jax/_tpu_raiden_jax.so" "${WORKSPACE_DIR}/tpu_raiden/frameworks/jax/"
+  cp -f "${WORKSPACE_DIR}/bazel-bin/tpu_sync/frameworks/jax/_tpu_raiden_jax.so" "${WORKSPACE_DIR}/tpu_sync/frameworks/jax/"
 fi
 
 if [ "$BUILD_TORCH" = true ]; then
   echo "Copying Torch artifacts..."
-  HOST_SO="${WORKSPACE_DIR}/tpu_raiden/frameworks/torch/_tpu_raiden_host.so"
-  cp -f "${WORKSPACE_DIR}/bazel-bin/tpu_raiden/frameworks/torch/_tpu_raiden_host.so" "${HOST_SO}"
+  HOST_SO="${WORKSPACE_DIR}/tpu_sync/frameworks/torch/_tpu_raiden_host.so"
+  cp -f "${WORKSPACE_DIR}/bazel-bin/tpu_sync/frameworks/torch/_tpu_raiden_host.so" "${HOST_SO}"
 
-  TORCH_SO="${WORKSPACE_DIR}/tpu_raiden/frameworks/torch/_tpu_raiden_torch.so"
-  cp -f "${WORKSPACE_DIR}/bazel-bin/tpu_raiden/frameworks/torch/_tpu_raiden_torch.so" "${TORCH_SO}"
+  TORCH_SO="${WORKSPACE_DIR}/tpu_sync/frameworks/torch/_tpu_raiden_torch.so"
+  cp -f "${WORKSPACE_DIR}/bazel-bin/tpu_sync/frameworks/torch/_tpu_raiden_torch.so" "${TORCH_SO}"
   chmod u+w "${TORCH_SO}"
   # The torch extension statically links its own XLA and references a few
   # torch_tpu symbols (MaterializeAndReturn, AwaitBuffer). Add a NEEDED
@@ -381,10 +381,10 @@ fi
 
 echo "=== Build Complete! ==="
 if [ "$BUILD_JAX" = true ]; then
-  echo "JAX Artifacts are located in: ${WORKSPACE_DIR}/tpu_raiden/frameworks/jax/"
+  echo "JAX Artifacts are located in: ${WORKSPACE_DIR}/tpu_sync/frameworks/jax/"
 fi
 if [ "$BUILD_TORCH" = true ]; then
-  echo "Torch Artifacts are located in: ${WORKSPACE_DIR}/tpu_raiden/frameworks/torch/"
+  echo "Torch Artifacts are located in: ${WORKSPACE_DIR}/tpu_sync/frameworks/torch/"
 fi
 
 echo "=== Install Python Dependencies! ==="

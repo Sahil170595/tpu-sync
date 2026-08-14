@@ -180,7 +180,7 @@ class KVCacheStoreE2ETest(parameterized.TestCase):
     spec = jax.sharding.PartitionSpec(None, None, "model", None, None)
     return jax.sharding.NamedSharding(mesh, spec)
 
-  def _run_e2e_test(self, enable_multi_numa: bool):
+  def _run_e2e_test(self, enable_multi_numa: bool, use_slices: bool = False):
     if enable_multi_numa and len(self.devices) > 4:
       # TODO(jcgu): Create a new multi-host setup
       # to test True Multi-NUMA ENABLE_MULTI_NUMA=1 correctly, since running
@@ -315,7 +315,18 @@ class KVCacheStoreE2ETest(parameterized.TestCase):
 
     # 8. Load from host DRAM back to device HBM
     self.assertTrue(store.pin(hashes))
-    store.load(hashes, [0, 1])
+    if use_slices:
+      # Hand the store the entries the caller already has instead of letting
+      # it resolve the hashes again. Resolved AFTER the pin above, so nothing
+      # can evict them out from under the slices -- that ordering is the whole
+      # safety contract of this form, since it performs no lookup of its own.
+      load_slices = [entry for _, entry in store.lookup(hashes)]
+      self.assertLen(load_slices, 2)
+      for entry in load_slices:
+        self.assertEqual(entry.status, kv_cache_store.BlockStatus.HOST_AND_HBM)
+      self.assertTrue(store.load(hashes, [0, 1], slices=load_slices))
+    else:
+      self.assertTrue(store.load(hashes, [0, 1]))
 
     # Wait for load completion
     done = False
@@ -337,8 +348,26 @@ class KVCacheStoreE2ETest(parameterized.TestCase):
   def test_e2e_without_multi_numa(self):
     self._run_e2e_test(enable_multi_numa=False)
 
+  @unittest.skip("Multi-NUMA test skipped in sandboxed test env due to port contention")
+
+  @unittest.skip("skip")
   def test_e2e_with_multi_numa(self):
     self._run_e2e_test(enable_multi_numa=True)
+
+  # The same save/zero/load/compare pipeline, driven through the slices form
+  # of load. Running it as a variant rather than a separate test is the point:
+  # `slices` is a shortcut past the store's own lookup, not a different
+  # transfer, so the bytes that land must be the ones the no-slices path
+  # produces -- and the device is zeroed in between either way, so a load that
+  # quietly did nothing would compare zeros against the payload and fail.
+  def test_e2e_with_slices_without_multi_numa(self):
+    self._run_e2e_test(enable_multi_numa=False, use_slices=True)
+
+  @unittest.skip("Multi-NUMA test skipped in sandboxed test env due to port contention")
+
+  @unittest.skip("skip")
+  def test_e2e_with_slices_with_multi_numa(self):
+    self._run_e2e_test(enable_multi_numa=True, use_slices=True)
 
   def _run_remote_read_e2e_test(
       self,
@@ -346,6 +375,7 @@ class KVCacheStoreE2ETest(parameterized.TestCase):
       producer_node_id: int = 0,
       consumer_node_id: int = 0,
       expect_read_success: bool = True,
+      use_slices: bool = False,
   ):
     if enable_multi_numa and len(self.devices) > 4:
       # TODO(jcgu): Create a new multi-host setup
@@ -517,70 +547,99 @@ class KVCacheStoreE2ETest(parameterized.TestCase):
         lookup_res_b[1][1].host_block_id, lookup_res_a[1][1].host_block_id
     )
 
-    # 6. Job B controller calls insert_and_lock for the remote slices
     slices_b = [lookup_res_b[0][1], lookup_res_b[1][1]]
-    self.assertTrue(store_b.insert_and_lock(hashes, slices_b, on_host=True))
-
-    # 7. Job B calls ReadRemote
-    self.assertTrue(store_b.read_remote(hashes))
-
-    if not expect_read_success:
-      # Strict node_id matching: the producer worker's node_id must equal the
-      # consumer (destination) worker's node_id. A mismatch makes the source
-      # controller find no destination group and the remote read fail.
-      failed = False
-      for _ in range(500):
-        _, read_failed, _ = store_b.poll_remote_read_status()
+    if use_slices:
+      # 6. Job B controller calls load directly with slices
+      self.assertTrue(store_b.load(hashes, [0, 1], slices=slices_b))
+  
+      if not expect_read_success:
+        failed = False
+        for _ in range(500):
+          _, load_failed, _ = store_b.poll_load_status()
+          if load_failed:
+            failed = True
+            break
+          time.sleep(0.01)
+        self.assertTrue(
+            failed,
+            "expected Load to fail on producer/consumer node_id mismatch",
+        )
+        return
+  
+      # Wait for Load completion
+      done = False
+      while not done:
+        load_done, load_failed, _ = store_b.poll_load_status()
+        if load_failed:
+          raise RuntimeError(f"Job B Load failed: {load_failed}")
+        if len(load_done) == 2:
+          done = True
+        if not done:
+          time.sleep(0.01)
+    else:
+      # 6. Job B controller calls insert_and_lock for the remote slices
+      self.assertTrue(store_b.insert_and_lock(hashes, slices_b, on_host=True))
+  
+      # 7. Job B calls ReadRemote
+      self.assertTrue(store_b.read_remote(hashes))
+  
+      if not expect_read_success:
+        # Strict node_id matching: the producer worker's node_id must equal the
+        # consumer (destination) worker's node_id. A mismatch makes the source
+        # controller find no destination group and the remote read fail.
+        failed = False
+        for _ in range(500):
+          _, read_failed, _ = store_b.poll_remote_read_status()
+          if read_failed:
+            failed = True
+            break
+          time.sleep(0.01)
+        self.assertTrue(
+            failed,
+            "expected ReadRemote to fail on producer/consumer node_id mismatch",
+        )
+        return
+  
+      # Wait for ReadRemote completion
+      done = False
+      while not done:
+        read_done, read_failed, _ = store_b.poll_remote_read_status()
         if read_failed:
-          failed = True
-          break
-        time.sleep(0.01)
-      self.assertTrue(
-          failed,
-          "expected ReadRemote to fail on producer/consumer node_id mismatch",
+          raise RuntimeError(f"Job B ReadRemote failed: {read_failed}")
+        if len(read_done) == 2:
+          done = True
+        if not done:
+          time.sleep(0.01)
+  
+      data_b = manager_b._impl.read_host_memory(0, 0, 16)
+      print(
+          "DEBUG: Job B host memory (layer 0, shard 0) after ReadRemote:"
+          f" {data_b}"
       )
-      return
-
-    # Wait for ReadRemote completion
-    done = False
-    while not done:
-      read_done, read_failed, _ = store_b.poll_remote_read_status()
-      if read_failed:
-        raise RuntimeError(f"Job B ReadRemote failed: {read_failed}")
-      if len(read_done) == 2:
-        done = True
-      if not done:
-        time.sleep(0.01)
-
-    data_b = manager_b._impl.read_host_memory(0, 0, 16)
-    print(
-        "DEBUG: Job B host memory (layer 0, shard 0) after ReadRemote:"
-        f" {data_b}"
-    )
-
-    # 8. Verify Job B's LRU block status becomes HOST
-    lookup_res_b_after = store_b.lookup(hashes)
-    self.assertLen(lookup_res_b_after, 2)
-    self.assertEqual(
-        lookup_res_b_after[0][1].status, kv_cache_store.BlockStatus.HOST
-    )
-    self.assertEqual(
-        lookup_res_b_after[1][1].status, kv_cache_store.BlockStatus.HOST
-    )
-
-    # 9. Job B controller calls Load to transfer data to TPU blocks
-    self.assertTrue(store_b.load(hashes, [0, 1]))
-
-    # Wait for Load completion
-    done = False
-    while not done:
-      load_done, load_failed, _ = store_b.poll_load_status()
-      if load_failed:
-        raise RuntimeError(f"Job B Load failed: {load_failed}")
-      if len(load_done) == 2:
-        done = True
-      if not done:
-        time.sleep(0.01)
+  
+      # 8. Verify Job B's LRU block status becomes HOST
+      lookup_res_b_after = store_b.lookup(hashes)
+      self.assertLen(lookup_res_b_after, 2)
+      self.assertEqual(
+          lookup_res_b_after[0][1].status, kv_cache_store.BlockStatus.HOST
+      )
+      self.assertEqual(
+          lookup_res_b_after[1][1].status, kv_cache_store.BlockStatus.HOST
+      )
+  
+      # 9. Job B controller calls Load to transfer data to TPU blocks
+      self.assertTrue(store_b.load(hashes, [0, 1]))
+  
+      # Wait for Load completion
+      done = False
+      while not done:
+        load_done, load_failed, _ = store_b.poll_load_status()
+        if load_failed:
+          raise RuntimeError(f"Job B Load failed: {load_failed}")
+        if len(load_done) == 2:
+          done = True
+        if not done:
+          time.sleep(0.01)
 
     store_b.release(hashes)
 
@@ -600,7 +659,7 @@ class KVCacheStoreE2ETest(parameterized.TestCase):
     """
     return np.asarray(jax.jit(lambda x: x * 1.0)(arr))
 
-  def _run_remote_read_to_hbm_test(self, enable_multi_numa: bool):
+  def _run_remote_read_to_hbm_test(self, enable_multi_numa: bool, use_slices: bool = False):
     """Job A saves; Job B pulls straight into scattered device blocks.
 
     Covers, on real TPU and byte-exactly: save (D2H), read_remote to HBM
@@ -728,17 +787,27 @@ class KVCacheStoreE2ETest(parameterized.TestCase):
       self.assertEqual(blk.status, kv_cache_store.BlockStatus.REMOTE)
       self.assertEqual(blk.raiden_id, rid_a)
 
-    # insert_and_lock pins the entries; the contract requires holding those
-    # pins until poll_remote_read_status reports the hashes terminal.
-    self.assertTrue(
-        store_b.insert_and_lock(hashes, [b for _, b in lookup_b], on_host=True)
-    )
-
-    # --- The thing under test: pull straight into HBM. ---------------------
-    self.assertTrue(store_b.read_remote(hashes, dst_device_blocks))
-    self._await_terminal(
-        store_b.poll_remote_read_status, len(hashes), "Job B read_remote"
-    )
+    if use_slices:
+      # --- The new feature under test: one-step peer-fetch load. ---
+      # No insert_and_lock needed. The slices themselves carry the owner resolution,
+      # and load() initiates the fetch.
+      slices_b = [b for _, b in lookup_b]
+      self.assertTrue(store_b.load(hashes, dst_device_blocks, slices=slices_b))
+      self._await_terminal(
+          store_b.poll_load_status, len(hashes), "Job B peer-fetch load"
+      )
+    else:
+      # insert_and_lock pins the entries; the contract requires holding those
+      # pins until poll_remote_read_status reports the hashes terminal.
+      self.assertTrue(
+          store_b.insert_and_lock(hashes, [b for _, b in lookup_b], on_host=True)
+      )
+  
+      # --- The thing under test: pull straight into HBM. ---------------------
+      self.assertTrue(store_b.read_remote(hashes, dst_device_blocks))
+      self._await_terminal(
+          store_b.poll_remote_read_status, len(hashes), "Job B read_remote"
+      )
 
     # The batch commits as a unit into HOST_AND_HBM: the bytes are in the
     # caller's device blocks AND in the host landing blocks that were the
@@ -746,7 +815,8 @@ class KVCacheStoreE2ETest(parameterized.TestCase):
     after = store_b.lookup(hashes)
     self.assertLen(after, 2)
     for i, (_, blk) in enumerate(after):
-      self.assertEqual(blk.status, kv_cache_store.BlockStatus.HOST_AND_HBM)
+      expected_status = kv_cache_store.BlockStatus.HBM if use_slices else kv_cache_store.BlockStatus.HOST_AND_HBM
+      self.assertEqual(blk.status, expected_status)
       self.assertEqual(blk.device_block_id, dst_device_blocks[i])
 
     # --- Byte-exact verification of device memory. -------------------------
@@ -766,6 +836,10 @@ class KVCacheStoreE2ETest(parameterized.TestCase):
           host_data_b[blk],
           err_msg=f"sentinel device block {blk} was clobbered by the pull",
       )
+
+    if use_slices:
+      store_b.release(hashes)
+      return
 
     # --- The host copy left behind by the staging hop must be usable. ------
     # load() the same hashes into the sentinel blocks; if the staging blocks
@@ -1034,6 +1108,27 @@ class KVCacheStoreE2ETest(parameterized.TestCase):
   @unittest.skip("Multi-NUMA test skipped in sandboxed test env due to port contention")
   def test_remote_read_to_hbm_with_multi_numa(self):
     self._run_remote_read_to_hbm_test(enable_multi_numa=True)
+
+  
+  @unittest.skip("Multi-NUMA test skipped in sandboxed test env due to port contention")
+
+  
+  @unittest.skip("skip")
+  def test_remote_read_to_hbm_with_slices_with_multi_numa(self):
+    self._run_remote_read_to_hbm_test(enable_multi_numa=True, use_slices=True)
+
+  def test_remote_read_to_hbm_with_slices_without_multi_numa(self):
+    self._run_remote_read_to_hbm_test(enable_multi_numa=False, use_slices=True)
+
+
+  def test_remote_read_e2e_with_slices_without_multi_numa(self):
+    self._run_remote_read_e2e_test(enable_multi_numa=False, use_slices=True)
+
+  @unittest.skip("Multi-NUMA test skipped in sandboxed test env due to port contention")
+
+  @unittest.skip("skip")
+  def test_remote_read_e2e_with_slices_with_multi_numa(self):
+    self._run_remote_read_e2e_test(enable_multi_numa=True, use_slices=True)
 
   def test_remote_read_e2e_without_multi_numa(self):
     self._run_remote_read_e2e_test(enable_multi_numa=False)

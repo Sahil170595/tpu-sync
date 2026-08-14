@@ -788,6 +788,17 @@ NB_MODULE(_tpu_raiden_torch, m) {
             return self->Load(hashes, device_block_ids).ok();
           },
           nb::arg("block_hashes"), nb::arg("device_block_ids"))
+      .def(
+          "load",
+          [](tpu_raiden::kv_cache::KVCacheStoreWrapper& self,
+             const std::vector<nb::bytes>& block_hashes,
+             const std::vector<tpu_raiden::kv_cache::RaidenBlockID>& slices,
+             const std::vector<int>& device_block_ids) -> bool {
+            auto hashes = ToStdStringVector(block_hashes);
+            return self->Load(hashes, slices, device_block_ids).ok();
+          },
+          nb::arg("block_hashes"), nb::arg("slices"),
+          nb::arg("device_block_ids"))
       .def("poll_save_status",
            [](tpu_raiden::kv_cache::KVCacheStoreWrapper& self) {
              auto [done, failed, pending] = self->PollSaveStatus();

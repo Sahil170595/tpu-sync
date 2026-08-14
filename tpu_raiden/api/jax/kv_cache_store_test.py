@@ -569,6 +569,126 @@ class KVCacheStoreTest(absltest.TestCase):
     self.assertEqual(lookup_res2[0][1].host_block_id, 4)
     self.assertEqual(lookup_res2[0][1].device_block_id, 6)
 
+  def test_e2e_load_with_slices(self):
+    """Tests end-to-end load (H2D) driven by pre-resolved slices, on TPU.
+
+    Same transfer as test_e2e_load, but the caller hands the store the index
+    entries it already looked up instead of letting the store resolve the
+    hashes again. The bytes that land must be identical either way -- `slices`
+    is a shortcut past the lookup, not a different transfer.
+    """
+    self._require_tpu()
+    listener_port = _pick_unused_port()
+
+    num_blocks = 10
+    num_layers = 10
+    shape = (num_blocks, 128, 8, 8, 128)
+    devices = self.devices
+    sharding = self._make_sharding(devices)
+
+    device_caches = []
+    for l in range(num_layers):
+      data = np.arange(np.prod(shape), dtype=np.float32).reshape(shape) + (
+          l * 7919.0
+      )
+      device_caches.append(self._make_device_array(data, sharding))
+
+    bytes_per_block = 128 * 8 * 8 * 128 * 4
+    local_bytes_per_block = bytes_per_block // len(devices)
+
+    store_id = kv_cache_store.RaidenId("slices_job", "0", "kv_cache", 0)
+    store = kv_cache_store.KVCacheStore(
+        capacity=10,
+        global_registry_address=f"localhost:{_registry_port}",
+        raiden_id=store_id,
+        num_shards=len(devices),
+        shard_size_bytes=local_bytes_per_block,
+        store_server_ip="localhost",
+    )
+
+    manager = KVCacheManager(
+        kv_caches=device_caches,
+        node_id=0,
+        local_control_port=0,
+        max_blocks=num_blocks,
+        num_slots=2,
+        raiden_worker_port=listener_port,
+        raiden_controller_address=store.raiden_controller_address,
+    )
+    self.assertTrue(manager.is_listener_active)
+    time.sleep(1)
+
+    # Stage device blocks 0 and 1 into host blocks 3 and 4.
+    manager.d2h([0, 1], [3, 4]).wait()
+
+    hashes = [b"slice_hash1", b"slice_hash2"]
+    self.assertTrue(
+        store.insert(
+            [hashes[0]],
+            [
+                kv_cache_store.RaidenBlockID(
+                    store_id, 3, kv_cache_store.BlockStatus.HOST
+                )
+            ],
+            True,
+        )[0]
+    )
+    self.assertTrue(
+        store.insert(
+            [hashes[1]],
+            [
+                kv_cache_store.RaidenBlockID(
+                    store_id, 4, kv_cache_store.BlockStatus.HOST
+                )
+            ],
+            True,
+        )[0]
+    )
+
+    # Pin BEFORE resolving, so the entries cannot be evicted out from under
+    # the slices between the lookup and the load. This is the ordering the
+    # slices form depends on.
+    self.assertTrue(store.pin(hashes))
+
+    looked_up = store.lookup(hashes)
+    self.assertLen(looked_up, 2)
+    slices = [entry for _, entry in looked_up]
+    self.assertEqual(slices[0].host_block_id, 3)
+    self.assertEqual(slices[1].host_block_id, 4)
+
+    self.assertTrue(store.load(hashes, [5, 6], slices=slices))
+
+    done = False
+    for _ in range(50):
+      done_loading, failed_loading, _ = store.poll_load_status()
+      if failed_loading:
+        self.fail(f"Load failed: {failed_loading}")
+      if len(done_loading) == 2:
+        done = True
+        break
+      time.sleep(0.1)
+    self.assertTrue(done, "Load did not finish in time")
+
+    # Byte-exact, every layer: block 5 must equal block 0 and 6 equal 1.
+    for l in range(num_layers):
+      device_data = np.asarray(device_caches[l])
+      np.testing.assert_array_equal(device_data[5], device_data[0])
+      np.testing.assert_array_equal(device_data[6], device_data[1])
+
+    for hash_val, expected_host, expected_device in (
+        (hashes[0], 3, 5),
+        (hashes[1], 4, 6),
+    ):
+      res = store.lookup([hash_val])
+      self.assertLen(res, 1)
+      self.assertEqual(
+          res[0][1].status, kv_cache_store.BlockStatus.HOST_AND_HBM
+      )
+      self.assertEqual(res[0][1].host_block_id, expected_host)
+      self.assertEqual(res[0][1].device_block_id, expected_device)
+
+    store.release(hashes)
+
   def test_e2e_save(self):
     """Tests end-to-end save (D2H) and load (H2D) back on TPU."""
     self._require_tpu()
@@ -913,6 +1033,137 @@ class KVCacheStoreTest(absltest.TestCase):
     self.assertIn("worker", str(cm.exception).lower())
     self.assertGreaterEqual(elapsed, 2.0)
     self.assertLess(elapsed, 60.0)
+
+
+class KVCacheStoreLoadWithSlicesTest(absltest.TestCase):
+  """Covers load(..., slices=...), the pre-resolved-entry form.
+
+  The validation cases below need no TPU: every one of them is rejected before
+  any transfer is issued, which is the whole point of asserting on them.
+  """
+
+  def _make_store(self):
+    return kv_cache_store.KVCacheStore(
+        capacity=20, num_shards=1, store_server_ip="127.0.0.1"
+    )
+
+  def test_rejects_slices_count_mismatch(self):
+    store = self._make_store()
+    store_id = store.raiden_id
+    slices = [
+        kv_cache_store.RaidenBlockID(
+            store_id, 0, kv_cache_store.BlockStatus.HOST
+        )
+    ]
+    # Two hashes, one slice, two destinations: the store must not guess which
+    # hash the single slice belongs to.
+    self.assertFalse(
+        store.load([b"h1", b"h2"], [0, 1], slices=slices)
+    )
+
+  def test_rejects_device_block_ids_count_mismatch(self):
+    store = self._make_store()
+    store_id = store.raiden_id
+    slices = [
+        kv_cache_store.RaidenBlockID(
+            store_id, 0, kv_cache_store.BlockStatus.HOST
+        ),
+        kv_cache_store.RaidenBlockID(
+            store_id, 1, kv_cache_store.BlockStatus.HOST
+        ),
+    ]
+    # Every block needs a destination; there is no load-to-host mode.
+    self.assertFalse(store.load([b"h1", b"h2"], [0], slices=slices))
+
+  def test_rejects_mixed_local_and_remote_slices(self):
+    store = self._make_store()
+    local_id = store.raiden_id
+    peer_id = kv_cache_store.RaidenId("peer_job", "0", "kv_cache", 0)
+    slices = [
+        kv_cache_store.RaidenBlockID(
+            local_id, 0, kv_cache_store.BlockStatus.HOST
+        ),
+        kv_cache_store.RaidenBlockID(
+            peer_id, 7, kv_cache_store.BlockStatus.REMOTE
+        ),
+    ]
+    # One call is one source. A partially cached prefix looks exactly like
+    # this, and the caller has to split it rather than hand it over whole.
+    self.assertFalse(store.load([b"h1", b"h2"], [0, 1], slices=slices))
+
+  def test_rejects_two_different_peers_in_one_call(self):
+    store = self._make_store()
+    peer_a = kv_cache_store.RaidenId("peer_a", "0", "kv_cache", 0)
+    peer_b = kv_cache_store.RaidenId("peer_b", "0", "kv_cache", 0)
+    slices = [
+        kv_cache_store.RaidenBlockID(
+            peer_a, 7, kv_cache_store.BlockStatus.REMOTE
+        ),
+        kv_cache_store.RaidenBlockID(
+            peer_b, 9, kv_cache_store.BlockStatus.REMOTE
+        ),
+    ]
+    self.assertFalse(store.load([b"h1", b"h2"], [0, 1], slices=slices))
+
+  def test_rejects_slice_without_a_host_block(self):
+    store = self._make_store()
+    store_id = store.raiden_id
+    # host_block_id -1 means the entry names no host block, so there is
+    # nothing to copy up even though the status claims HOST.
+    slices = [
+        kv_cache_store.RaidenBlockID(
+            store_id, -1, kv_cache_store.BlockStatus.HOST
+        )
+    ]
+    self.assertFalse(store.load([b"h1"], [0], slices=slices))
+
+  def test_empty_request_is_a_no_op(self):
+    store = self._make_store()
+    self.assertTrue(store.load([], [], slices=[]))
+    done, failed, pending = store.poll_load_status()
+    self.assertEmpty(done)
+    self.assertEmpty(failed)
+    self.assertEmpty(pending)
+
+  def test_forwards_slices_in_the_order_the_impl_expects(self):
+    """Guards the one transposition this wrapper can make.
+
+    Python takes (hashes, device_block_ids, slices) because slices is the
+    optional one; the bound C++ overload takes (hashes, slices,
+    device_block_ids). Swapping the last two is a type error the binding would
+    reject, but only once something actually calls it -- and on the Torch side
+    there is no end-to-end test to do that. So assert the order here, where it
+    costs nothing and needs no hardware.
+    """
+    store = self._make_store()
+    store_id = store.raiden_id
+    slices = [
+        kv_cache_store.RaidenBlockID(
+            store_id, 0, kv_cache_store.BlockStatus.HOST
+        ),
+        kv_cache_store.RaidenBlockID(
+            store_id, 1, kv_cache_store.BlockStatus.HOST
+        ),
+    ]
+    hashes = [b"h1", b"h2"]
+    device_block_ids = [4, 5]
+
+    mock_impl = unittest.mock.MagicMock()
+    store._impl = mock_impl
+    mock_impl.load.return_value = True
+
+    self.assertTrue(store.load(hashes, device_block_ids, slices=slices))
+    mock_impl.load.assert_called_with(
+        hashes,
+        [s._impl for s in slices],  # pylint: disable=protected-access
+        device_block_ids,
+    )
+
+    # Omitting slices must still reach the two-argument overload, not the
+    # three-argument one with an empty list.
+    mock_impl.reset_mock()
+    self.assertTrue(store.load(hashes, device_block_ids))
+    mock_impl.load.assert_called_with(hashes, device_block_ids)
 
 
 if __name__ == "__main__":

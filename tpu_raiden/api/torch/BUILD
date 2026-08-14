@@ -90,9 +90,9 @@ py_library(
     deps = [
         ":torch_abi",
         ":torch_tpu_common_loader",
-        "//tpu_sync/frameworks/torch:_tpu_raiden_torch",
         "@torch_tpu//torch_tpu",
-        "@torch_tpu//torch_tpu:_loader",
+        # buildcleaner: keep
+        "//tpu_sync/frameworks/torch:_tpu_raiden_torch",
     ],
 )
 

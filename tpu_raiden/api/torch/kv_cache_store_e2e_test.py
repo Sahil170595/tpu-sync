@@ -151,7 +151,7 @@ class KVCacheStoreE2ETest(parameterized.TestCase):
   def tearDown(self):
     super().tearDown()
 
-  def test_e2e_save_and_load(self):
+  def _run_e2e_save_and_load(self, use_slices: bool = False):
     num_blocks = 4
     shape = (num_blocks, 128, 8, 8, 128)
 
@@ -273,7 +273,18 @@ class KVCacheStoreE2ETest(parameterized.TestCase):
     # 7. Load from host DRAM into device HBM blocks [2, 3]
     print("=== [Step 7/8] Loading checkpoint from Host DRAM into TPU HBM blocks [2, 3] (store.load) ===")
     self.assertTrue(store.pin(hashes))
-    store.load(hashes, [2, 3])
+    if use_slices:
+      # Hand the store the entries the caller already has instead of letting
+      # it resolve the hashes again. Resolved AFTER the pin above, so nothing
+      # can evict them out from under the slices -- that ordering is the whole
+      # safety contract of this form, since it performs no lookup of its own.
+      load_slices = [entry for _, entry in store.lookup(hashes)]
+      self.assertLen(load_slices, 2)
+      for entry in load_slices:
+        self.assertEqual(entry.status, kv_cache_store.BlockStatus.HOST_AND_HBM)
+      self.assertTrue(store.load(hashes, [2, 3], slices=load_slices))
+    else:
+      self.assertTrue(store.load(hashes, [2, 3]))
 
     # Wait for load completion
     done = False
@@ -299,11 +310,23 @@ class KVCacheStoreE2ETest(parameterized.TestCase):
     print("=== [SUCCESS] E2E Save/Load [0, 1] -> [2, 3] roundtrip verified on physical TPU! ===")
     del manager, store
 
+  def test_e2e_save_and_load(self):
+    self._run_e2e_save_and_load()
+
+  # The same save/load/compare pipeline, driven through the slices form of
+  # load. Running it as a variant rather than a separate test is the point:
+  # `slices` is a shortcut past the store's own lookup, not a different
+  # transfer, so the bytes that land in blocks [2, 3] must be the ones the
+  # no-slices path produces.
+  def test_e2e_save_and_load_with_slices(self):
+    self._run_e2e_save_and_load(use_slices=True)
+
   def _run_remote_read_e2e_test(
       self,
       producer_node_id: int = 0,
       consumer_node_id: int = 0,
       expect_read_success: bool = True,
+      use_slices: bool = False,
   ):
     num_blocks = 4
     shape = (num_blocks, 128, 8, 8, 128)

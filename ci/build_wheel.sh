@@ -183,7 +183,7 @@ if [[ "${BUILD_MODE}" == "torch" ]]; then
   UNPACK_DIR="$(mktemp -d)"
   wheel unpack "${WHL}" -d "${UNPACK_DIR}"
   PKG_DIR="$(ls -d "${UNPACK_DIR}"/*/)"
-  EXT_DIR="${PKG_DIR}tpu_raiden/frameworks/torch"
+  EXT_DIR="${PKG_DIR}tpu_sync/frameworks/torch"
 
   # Primary variant: the torch this wheel build compiled against.
   SUFFIX="$(torch_suffix)"
@@ -207,7 +207,7 @@ if [[ "${BUILD_MODE}" == "torch" ]]; then
     export RAIDEN_PYWRAP_SONAME="libpywrap_${SUFFIX}_common.so"
     ./build.sh torch
     unset RAIDEN_PYWRAP_SONAME
-    cp /workspace/tpu_raiden/frameworks/torch/_tpu_raiden_torch.so \
+    cp /workspace/tpu_sync/frameworks/torch/_tpu_raiden_torch.so \
       "${EXT_DIR}/_tpu_raiden_torch_${SUFFIX}.so"
     echo "wheel variant: _tpu_raiden_torch_${SUFFIX}.so"
   done

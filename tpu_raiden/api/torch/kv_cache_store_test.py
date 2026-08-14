@@ -437,5 +437,130 @@ class KVCacheStoreTest(absltest.TestCase):
     self.assertLess(elapsed, 60.0)
 
 
+class KVCacheStoreLoadWithSlicesTest(absltest.TestCase):
+  """Covers load(..., slices=...), the pre-resolved-entry form.
+
+  The cases below need no TPU: every one of them is rejected before any
+  transfer is issued, which is the whole point of asserting on them.
+  """
+
+  def _make_store(self):
+    return kv_cache_store.KVCacheStore(
+        capacity=20, num_shards=1, store_server_ip="127.0.0.1"
+    )
+
+  def test_rejects_slices_count_mismatch(self):
+    store = self._make_store()
+    slices = [
+        kv_cache_store.RaidenBlockID(
+            store.raiden_id, 0, kv_cache_store.BlockStatus.HOST
+        )
+    ]
+    # Two hashes, one slice: the store must not guess which hash it belongs to.
+    self.assertFalse(store.load([b"h1", b"h2"], [0, 1], slices=slices))
+
+  def test_rejects_device_block_ids_count_mismatch(self):
+    store = self._make_store()
+    store_id = store.raiden_id
+    slices = [
+        kv_cache_store.RaidenBlockID(
+            store_id, 0, kv_cache_store.BlockStatus.HOST
+        ),
+        kv_cache_store.RaidenBlockID(
+            store_id, 1, kv_cache_store.BlockStatus.HOST
+        ),
+    ]
+    # Every block needs a destination; there is no load-to-host mode.
+    self.assertFalse(store.load([b"h1", b"h2"], [0], slices=slices))
+
+  def test_rejects_mixed_local_and_remote_slices(self):
+    store = self._make_store()
+    peer_id = kv_cache_store.RaidenId("peer_job", "0", "kv_cache", 0)
+    slices = [
+        kv_cache_store.RaidenBlockID(
+            store.raiden_id, 0, kv_cache_store.BlockStatus.HOST
+        ),
+        kv_cache_store.RaidenBlockID(
+            peer_id, 7, kv_cache_store.BlockStatus.REMOTE
+        ),
+    ]
+    # One call is one source. A partially cached prefix looks exactly like
+    # this, and the caller has to split it rather than hand it over whole.
+    self.assertFalse(store.load([b"h1", b"h2"], [0, 1], slices=slices))
+
+  def test_rejects_two_different_peers_in_one_call(self):
+    store = self._make_store()
+    peer_a = kv_cache_store.RaidenId("peer_a", "0", "kv_cache", 0)
+    peer_b = kv_cache_store.RaidenId("peer_b", "0", "kv_cache", 0)
+    slices = [
+        kv_cache_store.RaidenBlockID(
+            peer_a, 7, kv_cache_store.BlockStatus.REMOTE
+        ),
+        kv_cache_store.RaidenBlockID(
+            peer_b, 9, kv_cache_store.BlockStatus.REMOTE
+        ),
+    ]
+    self.assertFalse(store.load([b"h1", b"h2"], [0, 1], slices=slices))
+
+  def test_rejects_slice_without_a_host_block(self):
+    store = self._make_store()
+    # host_block_id -1 means the entry names no host block, so there is
+    # nothing to copy up even though the status claims HOST.
+    slices = [
+        kv_cache_store.RaidenBlockID(
+            store.raiden_id, -1, kv_cache_store.BlockStatus.HOST
+        )
+    ]
+    self.assertFalse(store.load([b"h1"], [0], slices=slices))
+
+  def test_empty_request_is_a_no_op(self):
+    store = self._make_store()
+    self.assertTrue(store.load([], [], slices=[]))
+    done, failed, pending = store.poll_load_status()
+    self.assertEmpty(done)
+    self.assertEmpty(failed)
+    self.assertEmpty(pending)
+
+  def test_forwards_slices_in_the_order_the_impl_expects(self):
+    """Guards the one transposition this wrapper can make.
+
+    Python takes (hashes, device_block_ids, slices) because slices is the
+    optional one; the bound C++ overload takes (hashes, slices,
+    device_block_ids). Swapping the last two is a type error the binding would
+    reject, but only once something actually calls it -- and there is no
+    end-to-end Torch test to do that. So assert the order here, where it costs
+    nothing and needs no hardware.
+    """
+    store = self._make_store()
+    store_id = store.raiden_id
+    slices = [
+        kv_cache_store.RaidenBlockID(
+            store_id, 0, kv_cache_store.BlockStatus.HOST
+        ),
+        kv_cache_store.RaidenBlockID(
+            store_id, 1, kv_cache_store.BlockStatus.HOST
+        ),
+    ]
+    hashes = [b"h1", b"h2"]
+    device_block_ids = [4, 5]
+
+    mock_impl = unittest.mock.MagicMock()
+    store._impl = mock_impl
+    mock_impl.load.return_value = True
+
+    self.assertTrue(store.load(hashes, device_block_ids, slices=slices))
+    mock_impl.load.assert_called_with(
+        hashes,
+        [s._impl for s in slices],  # pylint: disable=protected-access
+        device_block_ids,
+    )
+
+    # Omitting slices must still reach the two-argument overload, not the
+    # three-argument one with an empty list.
+    mock_impl.reset_mock()
+    self.assertTrue(store.load(hashes, device_block_ids))
+    mock_impl.load.assert_called_with(hashes, device_block_ids)
+
+
 if __name__ == "__main__":
   absltest.main()

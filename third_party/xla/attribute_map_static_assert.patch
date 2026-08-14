@@ -1,6 +1,6 @@
 --- a/xla/python/ifrt/attribute_map.h
 +++ b/xla/python/ifrt/attribute_map.h
-@@ -35,6 +35,9 @@
+@@ -38,6 +38,9 @@
  namespace xla {
  namespace ifrt {
  

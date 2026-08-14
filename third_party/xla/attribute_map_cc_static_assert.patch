@@ -1,6 +1,6 @@
 --- a/xla/ffi/attribute_map.cc
 +++ b/xla/ffi/attribute_map.cc
-@@ -39,4 +39,8 @@
+@@ -40,6 +40,10 @@
  #include "xla/tsl/platform/statusor.h"
  
  namespace xla::ffi {
@@ -9,7 +9,9 @@
 +constexpr bool always_false = false;
 +
  template <typename OutputVariant, typename... InputTypes>
-@@ -286,7 +290,7 @@
+ static OutputVariant Convert(std::variant<InputTypes...> input) {
+   return std::visit(
+@@ -287,7 +291,7 @@
          } else if constexpr (std::is_same_v<U, AttributesDictionary>) {
            *proto.mutable_dict() = value.ToProto();
          } else {
@@ -18,7 +20,7 @@
          }
        },
        AsVariant());
-@@ -321,7 +325,7 @@
+@@ -322,7 +326,7 @@
          } else if constexpr (std::is_same_v<U, double>) {
            proto.set_f64(value);
          } else {
@@ -27,8 +29,7 @@
          }
        },
        AsVariant());
-@@ -409,8 +413,8 @@
-         } else if constexpr (std::is_same_v<U, std::vector<double>>) {
+@@ -410,7 +414,7 @@
            proto.mutable_f64()->mutable_values()->Assign(value.begin(),
                                                          value.end());
          } else {
@@ -37,7 +38,7 @@
          }
        },
        AsVariant());
-@@ -481,7 +485,7 @@
+@@ -482,7 +486,7 @@
          } else if constexpr (std::is_same_v<U, std::string>) {
            proto.set_str(value);
          } else {

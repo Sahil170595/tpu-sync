@@ -1,6 +1,6 @@
 --- a/xla/tsl/concurrency/future.h
 +++ b/xla/tsl/concurrency/future.h
-@@ -743,9 +743,10 @@
+@@ -798,9 +798,10 @@
    }
  
    // Flattens a `Future<Future<T>>` to `Future<T>`
@@ -14,7 +14,7 @@
    Flatten() const&;
  
    // Flattens a `Future<Future<T>>` to `Future<T>`
-@@ -1273,10 +1274,11 @@
+@@ -1331,10 +1332,11 @@
  }
  
  template <typename T>

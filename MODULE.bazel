@@ -10,19 +10,22 @@ bazel_dep(name = "rules_go", version = "0.60.0", repo_name = "io_bazel_rules_go"
 bazel_dep(name = "rules_ml_toolchain")
 archive_override(
     module_name = "rules_ml_toolchain",
-    integrity = "sha256-y3Y1Yi6lJsiSOl6tbpncK6Vc3mrpYTv5stNLPwAPKc4=",
+    integrity = "sha256-axspTL7LmKCLz+WWQUYfcuET2zD6kbRPzEnZgJm1umU=",
     patch_strip = 1,
     patches = [
-        "//:third_party/rules_ml_toolchain/load_toolchain_config_provider.patch",
+        # Keep tpu-raiden on the host C++ toolchain: rules_ml_toolchain's
+        # MODULE.bazel registers its own hermetic clang/sysroot toolchains,
+        # which would otherwise win toolchain resolution for the extension.
+        "//:third_party/rules_ml_toolchain/no_register_toolchains.patch",
     ],
-    strip_prefix = "rules_ml_toolchain-84ac62e4db38215a2a7d3ad8cd4d7452134e3ec6",
-    urls = ["https://github.com/google-ml-infra/rules_ml_toolchain/archive/84ac62e4db38215a2a7d3ad8cd4d7452134e3ec6.tar.gz"],
+    strip_prefix = "rules_ml_toolchain-b11745590f513ec55b32e2d126073576fde18c71",
+    urls = ["https://github.com/google-ml-infra/rules_ml_toolchain/archive/b11745590f513ec55b32e2d126073576fde18c71.tar.gz"],
 )
 
 bazel_dep(name = "jax")
 git_override(
     module_name = "jax",
-    commit = "990e6a0b84138346e6a38785412f36356e0e5dc3",
+    commit = "a1521744c6dc074443fe549f19f48d7197abf759",
     patch_strip = 1,
     patches = [
         # This patch makes two jax MODULE.bazel fixups: (1) drop
@@ -38,7 +41,7 @@ git_override(
 bazel_dep(name = "xla")
 git_override(
     module_name = "xla",
-    commit = "5a9e73cbd92530cac2ac36f4736a774b2412afe2",
+    commit = "131bf41acb4650e4391a640c3f1859c1c86ad74b",
     patch_strip = 1,
     patches = [
         "//:third_party/xla/future_sfinae.patch",

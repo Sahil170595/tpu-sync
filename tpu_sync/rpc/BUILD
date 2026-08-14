@@ -96,15 +96,6 @@ py_library(
 )
 
 py_library(
-    name = "controller_service_pb2",
-    srcs = ["controller_service_pb2.py"],
-    deps = [
-        ":raiden_service_py_pb2",
-        "//third_party/py/google/protobuf",
-    ],
-)
-
-py_library(
     name = "raiden_controller",
     srcs = ["raiden_controller.py"],
     deps = [

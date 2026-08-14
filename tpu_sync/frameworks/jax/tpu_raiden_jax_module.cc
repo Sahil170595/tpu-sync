@@ -390,6 +390,8 @@ NB_MODULE(_tpu_raiden_jax, m) {
   nb::class_<tpu_raiden::weight_sync::WeightSyncMetrics>(m, "WeightSyncMetrics")
       .def_ro("last_d2h_time_ms",
               &tpu_raiden::weight_sync::WeightSyncMetrics::last_d2h_time_ms)
+      .def_ro("last_h2d_time_ms",
+              &tpu_raiden::weight_sync::WeightSyncMetrics::last_h2d_time_ms)
       .def_ro("last_h2h_time_ms",
               &tpu_raiden::weight_sync::WeightSyncMetrics::last_h2h_time_ms)
       .def_ro("last_staging_time_ms",
@@ -403,6 +405,8 @@ NB_MODULE(_tpu_raiden_jax, m) {
                   last_total_push_resharded_time_ms)
       .def_ro("last_d2h_bytes",
               &tpu_raiden::weight_sync::WeightSyncMetrics::last_d2h_bytes)
+      .def_ro("last_h2d_bytes",
+              &tpu_raiden::weight_sync::WeightSyncMetrics::last_h2d_bytes)
       .def_ro("last_h2h_bytes",
               &tpu_raiden::weight_sync::WeightSyncMetrics::last_h2h_bytes)
       .def_ro("last_tiled_bytes",
@@ -411,6 +415,8 @@ NB_MODULE(_tpu_raiden_jax, m) {
               &tpu_raiden::weight_sync::WeightSyncMetrics::last_detiled_bytes)
       .def_ro("total_d2h_time_ms",
               &tpu_raiden::weight_sync::WeightSyncMetrics::total_d2h_time_ms)
+      .def_ro("total_h2d_time_ms",
+              &tpu_raiden::weight_sync::WeightSyncMetrics::total_h2d_time_ms)
       .def_ro("total_h2h_time_ms",
               &tpu_raiden::weight_sync::WeightSyncMetrics::total_h2h_time_ms)
       .def_ro(
@@ -426,6 +432,8 @@ NB_MODULE(_tpu_raiden_jax, m) {
                   total_push_resharded_time_ms)
       .def_ro("total_d2h_bytes",
               &tpu_raiden::weight_sync::WeightSyncMetrics::total_d2h_bytes)
+      .def_ro("total_h2d_bytes",
+              &tpu_raiden::weight_sync::WeightSyncMetrics::total_h2d_bytes)
       .def_ro("total_h2h_bytes",
               &tpu_raiden::weight_sync::WeightSyncMetrics::total_h2h_bytes)
       .def_ro("total_tiled_bytes",

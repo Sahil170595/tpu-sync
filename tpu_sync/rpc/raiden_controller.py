@@ -292,6 +292,12 @@ class TransferPlan:
   )
   skip_d2h: bool = False
   skip_tiling: dict[int, bool] = dataclasses.field(default_factory=dict)
+  expected_layer_chunk_counts: dict[int, int] = dataclasses.field(
+      default_factory=dict
+  )
+  dst_expected_layer_chunk_counts: dict[RaidenId, dict[int, int]] = (
+      dataclasses.field(default_factory=dict)
+  )
 
 
 def _coerce_pool_spec_proto(pool: Any) -> Any:
@@ -592,6 +598,12 @@ class WorkerRpcClient:
     )
     for layer_idx, skip in transfer_plan.skip_tiling.items():
       start_req.skip_tiling[layer_idx] = skip
+
+    layer_counts = transfer_plan.dst_expected_layer_chunk_counts.get(
+        target_id, transfer_plan.expected_layer_chunk_counts
+    )
+    for layer_idx, count in layer_counts.items():
+      start_req.expected_layer_chunk_counts[layer_idx] = count
 
     for group in transfer_plan.pool_groups:
       group_proto = start_req.pool_groups.add()
@@ -2567,8 +2579,9 @@ class RaidenController:
               )
               tree_broadcast_tasks.append(task)
 
-            if expected_block_count == 0 and direct_schedules:
+            if direct_schedules:
               dst_unit_counts = {}
+              dst_unit_layer_counts = {}
               for src_unit, schedules in direct_schedules.items():
                 for shard_idx, entries in schedules.items():
                   for entry in entries:
@@ -2579,6 +2592,7 @@ class RaidenController:
                       src_stride = entry[7]
                       dst_stride = entry[8]
                       count = entry[9]
+                      layer_idx = entry[10] if len(entry) > 10 else 0
                       is_contiguous = (count == 1) or (
                           src_stride == size and dst_stride == size
                       )
@@ -2586,7 +2600,12 @@ class RaidenController:
                       dst_unit_counts[dst_unit] = (
                           dst_unit_counts.get(dst_unit, 0) + tasks_count
                       )
-              if dst_unit_counts:
+                      dst_unit_layer_counts.setdefault(dst_unit, {})
+                      dst_unit_layer_counts[dst_unit][layer_idx] = (
+                          dst_unit_layer_counts[dst_unit].get(layer_idx, 0)
+                          + tasks_count
+                      )
+              if expected_block_count == 0 and dst_unit_counts:
                 expected_block_count = max(dst_unit_counts.values())
                 logging.info(
                     "Auto-calculated expected_block_count: %d (counts: %s)",
@@ -2594,6 +2613,7 @@ class RaidenController:
                     dst_unit_counts,
                 )
                 final_plan.expected_block_count = expected_block_count
+              final_plan.dst_expected_layer_chunk_counts = dst_unit_layer_counts
 
             # Execute direct schedules (traditional flat route) and tree
             # broadcasts in parallel!
@@ -2610,6 +2630,7 @@ class RaidenController:
                   use_block_chunks=True,
                   is_sender=True,
                   expected_block_count=expected_block_count,
+                  dst_expected_layer_chunk_counts=dst_unit_layer_counts,
                   req_id=req_id,
                   skip_d2h=skip_d2h,
                   skip_tiling=local_skip_tiling,

@@ -28,6 +28,7 @@
 #include <thread>  // NOLINT
 #include <vector>
 
+#include "absl/container/flat_hash_map.h"
 #include "absl/log/log.h"
 #include "tpu_sync/rpc/raiden_service.pb.h"
 #include "tpu_sync/weight_sync/weight_synchronizer_base.h"
@@ -202,6 +203,23 @@ void WeightSynchronizerListener::ConnectionWorker(int client_fd) {
       }
       uint64_t uuid = req.start_transfer_request().uuid();
       engine_->StoreSkipTiling(uuid, req.start_transfer_request());
+
+      const auto& layer_counts_proto =
+          req.start_transfer_request().expected_layer_chunk_counts();
+      if (!layer_counts_proto.empty()) {
+        absl::flat_hash_map<size_t, uint32_t> layer_counts;
+        for (const auto& [layer_idx, count] : layer_counts_proto) {
+          layer_counts[static_cast<size_t>(layer_idx)] =
+              static_cast<uint32_t>(count);
+        }
+        absl::Status layer_status =
+            engine_->RegisterExpectedLayerChunks(uuid, layer_counts);
+        if (!layer_status.ok()) {
+          LOG(WARNING) << "RegisterExpectedLayerChunks failed: "
+                       << layer_status;
+        }
+      }
+
       absl::Status status = engine_->RegisterExpectedChunks(
           uuid, static_cast<uint32_t>(expected_block_count));
       if (!status.ok()) {

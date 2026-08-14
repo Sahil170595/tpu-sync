@@ -180,6 +180,10 @@ message StartTransferRequest {
   // skipped for the corresponding layer because the source and destination
   // shards have identical shapes, layouts, and mesh configurations.
   map<int32, bool> skip_tiling = 20;
+  // Keyed by layer/tensor index. Specifies the expected number of push chunks
+  // destined for this receiver for each layer/tensor. Used to trigger pipelined
+  // per-layer H2D upon completion of all chunks for a layer.
+  map<int32, int64> expected_layer_chunk_counts = 21;
 }
 
 // One tag class's slice of a multi-tag byte-span transfer.

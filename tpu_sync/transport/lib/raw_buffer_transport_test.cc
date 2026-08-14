@@ -70,7 +70,7 @@ class RawMockDelegate : public RawBufferTransportDelegate {
     return buffer_.size();
   }
 
-  absl::Status OnDataReceived() override {
+  absl::Status OnDataReceived(uint64_t uuid = 0) override {
     absl::MutexLock lock( mu_ );
     on_data_received_called_ = true;
     return absl::OkStatus();

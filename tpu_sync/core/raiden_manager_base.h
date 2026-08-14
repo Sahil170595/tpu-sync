@@ -88,7 +88,11 @@ class RaidenManagerBase : public tpu_raiden::transport::BlockTransportDelegate {
       const std::vector<transport::BufferPushTask>& tasks, int parallelism,
       uint64_t uuid);
 
-  absl::Status RegisterExpectedChunks(uint64_t uuid, uint32_t expected_chunks);
+  virtual absl::Status RegisterExpectedChunks(uint64_t uuid,
+                                              uint32_t expected_chunks);
+  virtual absl::Status RegisterExpectedLayerChunks(
+      uint64_t uuid,
+      const absl::flat_hash_map<size_t, uint32_t>& expected_layer_chunks);
 
   virtual void ForgetPushProgress(uint64_t uuid);
 
@@ -164,7 +168,14 @@ class RaidenManagerBase : public tpu_raiden::transport::BlockTransportDelegate {
     return base_remote_id + chunk_k;
   }
 
-  absl::Status OnDataReceived() override { return absl::OkStatus(); }
+  absl::Status OnLayerDataReceived(size_t layer_idx,
+                                   uint64_t uuid = 0) override {
+    return absl::OkStatus();
+  }
+
+  absl::Status OnDataReceived(uint64_t uuid = 0) override {
+    return absl::OkStatus();
+  }
 };
 
 }  // namespace tpu_raiden

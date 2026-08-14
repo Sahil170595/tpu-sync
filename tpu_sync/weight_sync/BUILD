@@ -55,6 +55,7 @@ cc_library(
     deps = [
         ":tiling_utils",
         "//tpu_sync/core:host_memory_allocator",
+        "//tpu_sync/core:numa_thread_pool",
         "//tpu_sync/core:raiden_manager_base",
         "//tpu_sync/core:raw_transfer_core",
         "//tpu_sync/core:status_macros",
@@ -70,6 +71,7 @@ cc_library(
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/synchronization",
+        "@com_google_absl//absl/time",
         "@com_google_absl//absl/types:span",
     ],
     alwayslink = 1,

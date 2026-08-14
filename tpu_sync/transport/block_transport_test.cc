@@ -71,7 +71,7 @@ class MockDelegate : public BlockTransportDelegate {
     return ids;
   }
 
-  absl::Status OnDataReceived() override {
+  absl::Status OnDataReceived(uint64_t uuid = 0) override {
     on_data_received_called_ = true;
     return absl::OkStatus();
   }

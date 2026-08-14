@@ -17,6 +17,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <future>
 #include <memory>
 #include <optional>
 #include <string>
@@ -30,6 +31,7 @@
 #include "absl/synchronization/mutex.h"
 #include "xla/pjrt/c/pjrt_c_api.h"
 #include "xla/pjrt/c/pjrt_c_api_raw_buffer_extension.h"
+#include "tpu_sync/core/numa_thread_pool.h"
 #include "tpu_sync/core/raiden_manager_base.h"
 #include "tpu_sync/core/raw_transfer_core.h"
 
@@ -42,6 +44,7 @@ namespace weight_sync {
 
 struct WeightSyncMetrics {
   double last_d2h_time_ms = 0.0;
+  double last_h2d_time_ms = 0.0;
   double last_h2h_time_ms = 0.0;
   double last_staging_time_ms = 0.0;
   double last_tiling_time_ms = 0.0;
@@ -49,11 +52,13 @@ struct WeightSyncMetrics {
   double last_total_push_resharded_time_ms = 0.0;
 
   size_t last_d2h_bytes = 0;
+  size_t last_h2d_bytes = 0;
   size_t last_h2h_bytes = 0;
   size_t last_tiled_bytes = 0;
   size_t last_detiled_bytes = 0;
 
   double total_d2h_time_ms = 0.0;
+  double total_h2d_time_ms = 0.0;
   double total_h2h_time_ms = 0.0;
   double total_staging_time_ms = 0.0;
   double total_tiling_time_ms = 0.0;
@@ -61,6 +66,7 @@ struct WeightSyncMetrics {
   double total_push_resharded_time_ms = 0.0;
 
   size_t total_d2h_bytes = 0;
+  size_t total_h2d_bytes = 0;
   size_t total_h2h_bytes = 0;
   size_t total_tiled_bytes = 0;
   size_t total_detiled_bytes = 0;
@@ -142,6 +148,8 @@ class WeightSynchronizerBase : public tpu_raiden::RaidenManagerBase {
   const std::vector<std::string>& layer_names() const { return layer_names_; }
 
   absl::StatusOr<raiden::PjRtCopyFuture> H2d(uint64_t uuid = 0);
+  absl::StatusOr<raiden::PjRtCopyFuture> H2dLayer(size_t layer_idx,
+                                                  uint64_t uuid = 0);
   absl::StatusOr<raiden::PjRtCopyFuture> D2h(uint64_t uuid = 0);
 
   // Binds new device buffers to the weight synchronizer in-place.
@@ -184,6 +192,17 @@ class WeightSynchronizerBase : public tpu_raiden::RaidenManagerBase {
   absl::Status OnBlocksReceived(const std::vector<int>& block_ids,
                                 uint64_t uuid = 0) override;
 
+  absl::Status RegisterExpectedChunks(uint64_t uuid,
+                                      uint32_t expected_chunks) override;
+  absl::Status RegisterExpectedLayerChunks(
+      uint64_t uuid,
+      const absl::flat_hash_map<size_t, uint32_t>& expected_layer_chunks)
+      override;
+
+  absl::Status OnLayerDataReceived(size_t layer_idx,
+                                   uint64_t uuid = 0) override;
+  absl::Status OnDataReceived(uint64_t uuid = 0) override;
+
   void ForgetPushProgress(uint64_t uuid) override;
 
  protected:
@@ -210,12 +229,19 @@ class WeightSynchronizerBase : public tpu_raiden::RaidenManagerBase {
     return base_remote_id + chunk_k;
   }
 
-  absl::Status OnDataReceived() override;
-
  private:
   // When enabled, automatically schedules asynchronous device transfers (H2D)
   // upon complete host buffer writes.
   bool auto_h2d_ = false;
+
+  struct PendingH2dState {
+    size_t expected_layers = 0;
+    absl::flat_hash_map<size_t,
+                        std::future<absl::StatusOr<raiden::PjRtCopyFuture>>>
+        layer_futures;
+  };
+
+  std::unique_ptr<tpu_raiden::NumaThreadPool> h2d_pool_;
 
   mutable absl::Mutex skip_tiling_mu_;
   absl::flat_hash_map<uint64_t, std::vector<bool>> uuid_to_skip_tiling_
@@ -224,6 +250,10 @@ class WeightSynchronizerBase : public tpu_raiden::RaidenManagerBase {
 
   mutable absl::Mutex d2h_mu_;
   absl::flat_hash_set<uint64_t> completed_d2h_uuids_ ABSL_GUARDED_BY(d2h_mu_);
+
+  mutable absl::Mutex pending_h2d_mu_;
+  absl::flat_hash_map<uint64_t, PendingH2dState> pending_h2d_states_
+      ABSL_GUARDED_BY(pending_h2d_mu_);
 
   mutable absl::Mutex metrics_mu_;
   WeightSyncMetrics metrics_ ABSL_GUARDED_BY(metrics_mu_);

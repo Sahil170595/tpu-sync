@@ -26,6 +26,7 @@
 #include <utility>
 #include <vector>
 
+#include "absl/container/flat_hash_map.h"
 #include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
@@ -310,6 +311,16 @@ absl::Status RaidenManagerBase::RegisterExpectedChunks(
     return absl::FailedPreconditionError("Transport server is not running");
   }
   return transport->RegisterExpectedChunks(uuid, expected_chunks);
+}
+
+absl::Status RaidenManagerBase::RegisterExpectedLayerChunks(
+    uint64_t uuid,
+    const absl::flat_hash_map<size_t, uint32_t>& expected_layer_chunks) {
+  auto* transport = InitTransportServer();
+  if (!transport) {
+    return absl::FailedPreconditionError("Transport server is not running");
+  }
+  return transport->RegisterExpectedLayerChunks(uuid, expected_layer_chunks);
 }
 
 void RaidenManagerBase::ForgetPushProgress(uint64_t uuid) {

@@ -36,8 +36,18 @@ class RawBufferTransportDelegate {
   // Authoritative total byte capacity of the target shard staging buffer.
   virtual size_t GetHostSize(size_t buffer_id, size_t shard_idx) = 0;
 
-  // Notification triggered upon verified data chunk arrival.
-  virtual absl::Status OnDataReceived() { return absl::OkStatus(); }
+  // Notification triggered upon verified data chunk arrival for a specific
+  // layer/tensor.
+  virtual absl::Status OnLayerDataReceived(size_t layer_idx,
+                                           uint64_t uuid = 0) {
+    return absl::OkStatus();
+  }
+
+  // Notification triggered upon verified data chunk arrival for the entire
+  // transfer.
+  virtual absl::Status OnDataReceived(uint64_t uuid = 0) {
+    return absl::OkStatus();
+  }
 };
 
 }  // namespace tpu_raiden::transport::lib

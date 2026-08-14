@@ -38,6 +38,7 @@
 
 #include "absl/base/optimization.h"
 #include "absl/cleanup/cleanup.h"
+#include "absl/container/flat_hash_map.h"
 #include "absl/log/check.h"
 #include "absl/log/log.h"
 #include "absl/status/status.h"
@@ -251,11 +252,23 @@ absl::Status RawBufferTransport::ProcessPeerRequest(int client_fd) {
     uint8_t* const dest_ptr = base_host_ptr + dst_offset;
     RETURN_IF_ERROR(ReadExact(client_fd, dest_ptr, size_bytes));
 
+    const uint8_t ack = 1;
+    RETURN_IF_ERROR(WriteExact(client_fd, &ack, 1));
+
     bool trigger_h2d = false;
+    std::vector<size_t> layers_to_trigger;
     if (header.uuid > 0) {
       absl::MutexLock lock(raw_progress_mu_);
       auto& prog = raw_progress_[header.uuid];
       prog.completed_chunks++;
+      prog.completed_chunks_per_layer[buf_id]++;
+      auto it = prog.expected_chunks_per_layer.find(buf_id);
+      if (it != prog.expected_chunks_per_layer.end() &&
+          prog.completed_chunks_per_layer[buf_id] == it->second &&
+          !prog.triggered_layers.contains(buf_id)) {
+        prog.triggered_layers.insert(buf_id);
+        layers_to_trigger.push_back(buf_id);
+      }
       VLOG(1) << "Received chunk for uuid=" << header.uuid
               << " shard=" << dst_shard_idx << " offset=" << dst_offset
               << " size=" << size_bytes << " progress=" << prog.completed_chunks
@@ -271,12 +284,13 @@ absl::Status RawBufferTransport::ProcessPeerRequest(int client_fd) {
       }
     }
 
+    for (size_t l : layers_to_trigger) {
+      RETURN_IF_ERROR(raw_delegate_->OnLayerDataReceived(l, header.uuid));
+    }
     if (trigger_h2d) {
-      RETURN_IF_ERROR(raw_delegate_->OnDataReceived());
+      RETURN_IF_ERROR(raw_delegate_->OnDataReceived(header.uuid));
     }
 
-    const uint8_t ack = 1;
-    RETURN_IF_ERROR(WriteExact(client_fd, &ack, 1));
     return absl::OkStatus();
 
   } else if (header.op == kOpBufferPushBatched) {  // peer batched push request
@@ -324,11 +338,26 @@ absl::Status RawBufferTransport::ProcessPeerRequest(int client_fd) {
       RETURN_IF_ERROR(ReadVExact(client_fd, iovs));
     }
 
+    const uint8_t ack = 1;
+    RETURN_IF_ERROR(WriteExact(client_fd, &ack, 1));
+
     bool trigger_h2d = false;
+    std::vector<size_t> layers_to_trigger;
     if (header.uuid > 0) {
       absl::MutexLock lock(raw_progress_mu_);
       auto& prog = raw_progress_[header.uuid];
       prog.completed_chunks += batch_size;
+      for (uint32_t i = 0; i < batch_size; ++i) {
+        size_t l = metadata[i].layer_idx;
+        prog.completed_chunks_per_layer[l]++;
+        auto it = prog.expected_chunks_per_layer.find(l);
+        if (it != prog.expected_chunks_per_layer.end() &&
+            prog.completed_chunks_per_layer[l] == it->second &&
+            !prog.triggered_layers.contains(l)) {
+          prog.triggered_layers.insert(l);
+          layers_to_trigger.push_back(l);
+        }
+      }
       VLOG(1) << "Received batched chunks for uuid=" << header.uuid
               << " batch_size=" << batch_size
               << " progress=" << prog.completed_chunks << "/"
@@ -343,12 +372,13 @@ absl::Status RawBufferTransport::ProcessPeerRequest(int client_fd) {
       }
     }
 
+    for (size_t l : layers_to_trigger) {
+      RETURN_IF_ERROR(raw_delegate_->OnLayerDataReceived(l, header.uuid));
+    }
     if (trigger_h2d) {
-      RETURN_IF_ERROR(raw_delegate_->OnDataReceived());
+      RETURN_IF_ERROR(raw_delegate_->OnDataReceived(header.uuid));
     }
 
-    const uint8_t ack = 1;
-    RETURN_IF_ERROR(WriteExact(client_fd, &ack, 1));
     return absl::OkStatus();
   } else {
     if (custom_request_handler_) {
@@ -491,7 +521,37 @@ absl::Status RawBufferTransport::RegisterExpectedChunks(
   }
 
   if (trigger_h2d) {
-    RETURN_IF_ERROR(raw_delegate_->OnDataReceived());
+    RETURN_IF_ERROR(raw_delegate_->OnDataReceived(uuid));
+  }
+
+  return absl::OkStatus();
+}
+
+absl::Status RawBufferTransport::RegisterExpectedLayerChunks(
+    uint64_t uuid,
+    const absl::flat_hash_map<size_t, uint32_t>& expected_layer_chunks) {
+  if (expected_layer_chunks.empty()) {
+    return absl::OkStatus();
+  }
+
+  std::vector<size_t> layers_to_trigger;
+  {
+    absl::MutexLock lock(raw_progress_mu_);
+    auto& prog = raw_progress_[uuid];
+    prog.expected_chunks_per_layer = expected_layer_chunks;
+    for (const auto& [layer_idx, expected_count] : expected_layer_chunks) {
+      auto it = prog.completed_chunks_per_layer.find(layer_idx);
+      if (it != prog.completed_chunks_per_layer.end() &&
+          it->second == expected_count &&
+          !prog.triggered_layers.contains(layer_idx)) {
+        prog.triggered_layers.insert(layer_idx);
+        layers_to_trigger.push_back(layer_idx);
+      }
+    }
+  }
+
+  for (size_t layer_idx : layers_to_trigger) {
+    RETURN_IF_ERROR(raw_delegate_->OnLayerDataReceived(layer_idx, uuid));
   }
 
   return absl::OkStatus();

@@ -43,6 +43,9 @@ namespace tpu_raiden::transport::lib {
 struct RawProgress {
   uint32_t completed_chunks = 0;
   std::optional<uint32_t> expected_chunks;
+  absl::flat_hash_map<size_t, uint32_t> completed_chunks_per_layer;
+  absl::flat_hash_map<size_t, uint32_t> expected_chunks_per_layer;
+  absl::flat_hash_set<size_t> triggered_layers;
 };
 
 // Standalone raw buffer TCP socket transport engine.
@@ -99,6 +102,12 @@ class RawBufferTransport final {
   // If the completed number of chunks is equal to the expected, it triggers
   // the delegate's `OnDataReceived()` H2D callback.
   absl::Status RegisterExpectedChunks(uint64_t uuid, uint32_t expected_chunks);
+
+  // Registers the per-layer expected number of chunks for the given `uuid`.
+  // When all chunks for a layer arrive, it triggers `OnLayerDataReceived(layer_idx, uuid)`.
+  absl::Status RegisterExpectedLayerChunks(
+      uint64_t uuid,
+      const absl::flat_hash_map<size_t, uint32_t>& expected_layer_chunks);
 
   // Drops receive-progress counters belonging to the give `uuid`.
   void ForgetPushProgress(uint64_t uuid);

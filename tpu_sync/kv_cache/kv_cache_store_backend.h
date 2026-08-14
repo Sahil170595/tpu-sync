@@ -114,11 +114,19 @@ class KVCacheStoreBackend {
       absl::Span<const std::string> block_hashes,
       const LookupOptions& options = {}) = 0;
 
-  // Asynchronously loads KV cache blocks from a peer node into local
-  // storage / device.
+  // Asynchronously loads KV cache blocks to device (HBM), either from local
+  // host DRAM or from the peer named by `remote_id`.
+  //
+  // `device_block_ids` is the destination and must name one device block per
+  // hash.
+  //
+  // If `slices` is non-empty, the caller's pre-looked up RaidenBlockIDs are
+  // used directly. Note that blocks in `slices` must be already pinned
+  // externally (when Load from local host), and remote loads will re-resolve
+  // hashes at the peer, ignoring `slices`.
   virtual tsl::Future<> Load(const RaidenId& remote_id,
                              absl::Span<const std::string> block_hashes,
-                             absl::Span<const int32_t> device_block_ids = {},
+                             absl::Span<const int32_t> device_block_ids,
                              absl::Span<const RaidenBlockID> slices = {}) = 0;
 
   // Inserts key-block mappings into the backend.

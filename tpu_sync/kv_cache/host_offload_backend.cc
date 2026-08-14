@@ -962,8 +962,8 @@ tsl::Future<> HostOffloadBackend::Load(
     return tsl::Future<>(absl::OkStatus());
   }
 
-  if (!device_block_ids.empty() &&
-      device_block_ids.size() != block_hashes.size()) {
+  // Every hash needs a destination device block.
+  if (device_block_ids.size() != block_hashes.size()) {
     return tsl::Future<>(absl::InvalidArgumentError(absl::StrCat(
         "Mismatched device_block_ids count (", device_block_ids.size(),
         ") vs block_hashes count (", block_hashes.size(), ").")));
@@ -1029,12 +1029,6 @@ tsl::Future<> HostOffloadBackend::LoadRemoteBlocks(
                                     ? "Fetch RPC returned failed blocks"
                                     : response.error_message();
           load_promise.Set(absl::InternalError(err_msg));
-          return;
-        }
-
-        if (dev_ids_vec.empty()) {
-          (void)raiden_controller_->DeallocateBlockIds(dst_host_block_ids);
-          load_promise.Set(absl::OkStatus());
           return;
         }
 

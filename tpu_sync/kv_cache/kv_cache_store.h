@@ -253,24 +253,30 @@ class KVCacheStore {
   //   4. release(completed_block_hashes)
   absl::Status Save(const std::vector<std::string>& block_hashes);
 
-  // Loads blocks from host (DRAM) to device (HBM) asynchronously.
+  // Asynchronously loads KV cache blocks to device (HBM) from local host DRAM.
   //
-  // NOTE: The block_hashes must be pinned in the LRU cache (e.g., via Pin or
-  // InsertAndLock) before calling Load. Once the operation is complete (as
-  // reported by PollLoadStatus), the caller must manually release/unpin them
-  // via Release so they become eligible for eviction.
+  // `device_block_ids` is the destination and must name one device block per
+  // hash.
   //
-  // Recommended usage flow:
-  //   1. insert_and_lock(block_hashes) (or Pin if they already exist in store)
-  //   2. load(block_hashes, device_block_ids)
-  //   3. poll_load_status() -> wait for completion
-  //   4. release(completed_block_hashes)
+  // NOTE: The block_hashes must be pinned in the LRU cache before calling Load.
+  // Once the operation is complete (as reported by PollLoadStatus), the caller
+  // must manually release/unpin them via Release.
   absl::Status Load(absl::Span<const std::string> block_hashes,
                     absl::Span<const int> device_block_ids);
 
-  // Loads blocks using pre-looked up RaidenBlockID slices, avoiding internal
-  // index lookups.
-  // NOTE: Blocks in `slices` are assumed to be already pinned externally.
+  // Asynchronously loads KV cache blocks to device (HBM), either from local
+  // host DRAM or from a peer.
+  //
+  // ONE CALL IS ONE SOURCE. Every block in a batch must carry the same status,
+  // and remote blocks must all refer to the same peer.
+  //
+  // `device_block_ids` is the destination and must name one device block per
+  // hash.
+  //
+  // If `slices` is non-empty, the caller's pre-looked up RaidenBlockIDs are
+  // used directly. Note that blocks in `slices` must be already pinned
+  // externally (when Load from local host), and remote loads will re-resolve
+  // hashes at the peer, ignoring `slices`.
   absl::Status Load(absl::Span<const std::string> block_hashes,
                     absl::Span<const RaidenBlockID> slices,
                     absl::Span<const int> device_block_ids);
@@ -329,8 +335,12 @@ class KVCacheStore {
   PollSaveStatus();
 
   // Polls the status of all active/inflight Load operations.
-  // Iterates over pending futures, and updates cache metadata to HOST_AND_HBM
-  // upon successful H2D transfers.
+  // Updates cache metadata upon successful H2D transfers:
+  //   - Loaded from local host DRAM -> HOST_AND_HBM
+  //   - Loaded from a peer          -> HBM, with host_block_id -1.
+  //
+  // Note: HBM-only entries hold a slot in the LRU but own no host block, and
+  // Evict only reclaims HOST and HOST_AND_HBM entries. They must be explicitly deleted.
   //
   // Returns:
   //   A tuple of {done_block_hashes, failed_block_hashes, pending_block_hashes}

@@ -115,9 +115,12 @@ class HostOffloadBackend : public KVCacheStoreBackend {
   // KVCacheStore::EnsureStoreServerAndRegister's job.
   absl::Status StartServer(absl::string_view server_address);
 
+  // Loads KV cache blocks from local host DRAM (if `remote_id` is empty or
+  // matches this backend's id) or from the specified peer. See KVCacheStoreBackend
+  // for the argument contract.
   tsl::Future<> Load(const RaidenId& remote_id,
                      absl::Span<const std::string> block_hashes,
-                     absl::Span<const int32_t> device_block_ids = {},
+                     absl::Span<const int32_t> device_block_ids,
                      absl::Span<const RaidenBlockID> slices = {}) override;
 
   // --- Remote write (WriteRemote); see KVCacheStoreBackend for why each of
@@ -234,10 +237,16 @@ class HostOffloadBackend : public KVCacheStoreBackend {
   absl::StatusOr<std::shared_ptr<KVCacheStoreClient>> GetKVCacheStoreClient(
       const RaidenId& remote_id);
 
+  // Pulls blocks held by the peer `remote_id` into `device_block_ids`, in two
+  // hops: a Fetch RPC that lands the bytes in host blocks allocated here, then
+  // a DRAM->HBM copy chained off it.
   tsl::Future<> LoadRemoteBlocks(const RaidenId& remote_id,
                                  absl::Span<const std::string> block_hashes,
                                  absl::Span<const int32_t> device_block_ids);
 
+  // Copies blocks already resident in this node's host DRAM into
+  // `device_block_ids`, as a single TransferBuffers.
+  // `slices` is the caller's pre-resolved index entries.
   tsl::Future<> LoadLocalHostBlocks(absl::Span<const std::string> block_hashes,
                                     absl::Span<const int32_t> device_block_ids,
                                     absl::Span<const RaidenBlockID> slices);

@@ -3859,6 +3859,15 @@ TEST_F(StoreDiscoveryTest, TeardownDrainsAnInFlightPeerRpc) {
 // that a store configured with a registry is always registered by preventing
 // the un-registered state from being constructed.
 TEST_F(StoreDiscoveryTest, NoBackendIsAConstructionRuleViolation) {
+  // Required, not stylistic: this fixture has a running gRPC registry server,
+  // so the process is multithreaded by the time the test body runs. The
+  // default "fast" death test style forks, and fork clones only the calling
+  // thread -- any lock a gRPC thread happened to hold is inherited locked and
+  // never released, so the child wedges building its own registry channel and
+  // the parent waits forever for a child that cannot die. "threadsafe" re-execs
+  // the binary instead of forking, so it starts with no inherited locks.
+  GTEST_FLAG_SET(death_test_style, "threadsafe");
+
   RaidenId rid{"disco_job_nobackend", "0", "kv_cache", 0};
   EXPECT_DEATH(
       {
@@ -4005,7 +4014,9 @@ TEST_F(StoreDiscoveryTest, FailedLoadDropsTheCachedPeerClient) {
                   ->RegisterStore(peer_rid, "127.0.0.1:1",
                                   /*controller_address=*/"")
                   .ok());
-  auto first = backend->Load(peer_rid, {"h"}).Await();
+  // Load requires a destination for every hash. The device block is never written 
+  // as the loads below fail while resolving or querying the peer.
+  auto first = backend->Load(peer_rid, {"h"}, {0}).Await();
   ASSERT_FALSE(first.ok());
   ASSERT_TRUE(absl::IsUnavailable(first)) << first.ToString();
 
@@ -4017,7 +4028,7 @@ TEST_F(StoreDiscoveryTest, FailedLoadDropsTheCachedPeerClient) {
 
   ASSERT_FALSE(peer.store_server_address().empty());
 
-  auto second = backend->Load(peer_rid, {"h"}).Await();
+  auto second = backend->Load(peer_rid, {"h"}, {0}).Await();
   EXPECT_TRUE(absl::IsNotFound(second))
       << "expected the restarted peer to answer; got " << second.ToString()
       << " -- the cached client still points at the address it had";
@@ -4540,7 +4551,7 @@ class ErrorLookupBackend : public KVCacheStoreBackend {
   }
   tsl::Future<> Load(const RaidenId& remote_id,
                      absl::Span<const std::string> block_hashes,
-                     absl::Span<const int32_t> device_block_ids = {},
+                     absl::Span<const int32_t> device_block_ids,
                      absl::Span<const RaidenBlockID> slices = {}) override {
     return {};
   }

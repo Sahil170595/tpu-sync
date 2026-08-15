@@ -63,7 +63,7 @@ import jax.numpy as jnp
 import numpy as np
 
 # [MODIFIED] Use OSS import paths instead of 'google3.third_party...'
-from tpu_raiden.api.jax import kv_cache_manager
+from tpu_sync.api.jax import kv_cache_manager
 from tpu_sync.rpc import coordination_helper
 
 _ROLE = flags.DEFINE_string(

@@ -415,5 +415,370 @@ TEST(TilingUtilsTest, Standard4D) {
   }
 }
 
+TEST(TilingUtilsTest, UntiledLayout) {
+  // Test that untiled buffers pass through directly via std::memcpy.
+  const int64_t H = 16;
+  const int64_t W = 32;
+  xla::Shape shape =
+      xla::ShapeUtil::MakeShape(xla::PrimitiveType::F32, {H, W});
+  // Verify layout has no tiles
+  ASSERT_TRUE(shape.layout().tiles().empty());
+
+  const int64_t num_elements = H * W;
+  std::vector<float> src_linear(num_elements);
+  for (int i = 0; i < num_elements; ++i) {
+    src_linear[i] = static_cast<float>(i * 2 + 1);
+  }
+
+  std::vector<uint8_t> dst_tiled(num_elements * sizeof(float));
+  absl::Status tile_status =
+      TileBuffer(reinterpret_cast<const uint8_t*>(src_linear.data()),
+                 dst_tiled.data(), shape, shape.layout());
+  EXPECT_TRUE(tile_status.ok()) << tile_status.ToString();
+
+  std::vector<float> dst_linear(num_elements, 0.0f);
+  absl::Status detile_status = DetileBuffer(
+      dst_tiled.data(), reinterpret_cast<uint8_t*>(dst_linear.data()), shape,
+      shape.layout());
+  EXPECT_TRUE(detile_status.ok()) << detile_status.ToString();
+
+  for (int i = 0; i < num_elements; ++i) {
+    EXPECT_EQ(dst_linear[i], src_linear[i]) << "Mismatch at index " << i;
+  }
+}
+
+TEST(TilingUtilsTest, Standard1DContiguous) {
+  // 1D tensor with tile (1, 128) where W % 128 == 0 (identical contiguous
+  // layout).
+  const int64_t W = 4096;
+  xla::Shape shape = xla::ShapeUtil::MakeShapeWithDenseLayout(
+      xla::PrimitiveType::BF16, {W}, {0}, {xla::Tile({1, 128})});
+
+  std::vector<uint16_t> src_linear(W);
+  for (int i = 0; i < W; ++i) {
+    src_linear[i] = static_cast<uint16_t>(i);
+  }
+
+  std::vector<uint8_t> dst_tiled(W * sizeof(uint16_t));
+  absl::Status tile_status =
+      TileBuffer(reinterpret_cast<const uint8_t*>(src_linear.data()),
+                 dst_tiled.data(), shape, shape.layout());
+  EXPECT_TRUE(tile_status.ok()) << tile_status.ToString();
+
+  std::vector<uint16_t> dst_linear(W, 0);
+  absl::Status detile_status = DetileBuffer(
+      dst_tiled.data(), reinterpret_cast<uint8_t*>(dst_linear.data()), shape,
+      shape.layout());
+  EXPECT_TRUE(detile_status.ok()) << detile_status.ToString();
+
+  for (int i = 0; i < W; ++i) {
+    EXPECT_EQ(dst_linear[i], src_linear[i]) << "Mismatch at index " << i;
+  }
+}
+
+TEST(TilingUtilsTest, Standard1DWithTilePadding) {
+  // 1D tensor with tile (8, 128) where W = 300 (has horizontal and vertical
+  // tile padding).
+  const int64_t W = 300;
+  xla::Shape shape = xla::ShapeUtil::MakeShapeWithDenseLayout(
+      xla::PrimitiveType::BF16, {W}, {0}, {xla::Tile({8, 128})});
+
+  int64_t tiled_elements = GetTiledBufferElements(shape);
+  // Ceil(1/8)=1, Ceil(300/128)=3 => 1 * 3 * 8 * 128 = 3072 elements.
+  EXPECT_EQ(tiled_elements, 3072);
+
+  std::vector<uint16_t> src_linear(W);
+  for (int i = 0; i < W; ++i) {
+    src_linear[i] = static_cast<uint16_t>(i + 5);
+  }
+
+  std::vector<uint8_t> dst_tiled(tiled_elements * sizeof(uint16_t));
+  absl::Status tile_status =
+      TileBuffer(reinterpret_cast<const uint8_t*>(src_linear.data()),
+                 dst_tiled.data(), shape, shape.layout());
+  EXPECT_TRUE(tile_status.ok()) << tile_status.ToString();
+
+  std::vector<uint16_t> dst_linear(W, 0);
+  absl::Status detile_status = DetileBuffer(
+      dst_tiled.data(), reinterpret_cast<uint8_t*>(dst_linear.data()), shape,
+      shape.layout());
+  EXPECT_TRUE(detile_status.ok()) << detile_status.ToString();
+
+  for (int i = 0; i < W; ++i) {
+    EXPECT_EQ(dst_linear[i], src_linear[i]) << "Mismatch at index " << i;
+  }
+}
+
+TEST(TilingUtilsTest, SingleColumn2DContiguous) {
+  // 2D tensor where W == tile_W (128) and H % tile_H == 0 (256 % 8 == 0).
+  const int64_t H = 256;
+  const int64_t W = 128;
+  xla::Shape shape = xla::ShapeUtil::MakeShapeWithDenseLayout(
+      xla::PrimitiveType::BF16, {H, W}, {1, 0}, {xla::Tile({8, 128})});
+
+  const int64_t num_elements = H * W;
+  std::vector<uint16_t> src_linear(num_elements);
+  for (int i = 0; i < num_elements; ++i) {
+    src_linear[i] = static_cast<uint16_t>(i);
+  }
+
+  std::vector<uint8_t> dst_tiled(num_elements * sizeof(uint16_t));
+  absl::Status tile_status =
+      TileBuffer(reinterpret_cast<const uint8_t*>(src_linear.data()),
+                 dst_tiled.data(), shape, shape.layout());
+  EXPECT_TRUE(tile_status.ok()) << tile_status.ToString();
+
+  std::vector<uint16_t> dst_linear(num_elements, 0);
+  absl::Status detile_status = DetileBuffer(
+      dst_tiled.data(), reinterpret_cast<uint8_t*>(dst_linear.data()), shape,
+      shape.layout());
+  EXPECT_TRUE(detile_status.ok()) << detile_status.ToString();
+
+  for (int i = 0; i < num_elements; ++i) {
+    EXPECT_EQ(dst_linear[i], src_linear[i]) << "Mismatch at index " << i;
+  }
+}
+
+TEST(TilingUtilsTest, SpecializedRowBytes_Int8_StandardTile) {
+  // S8 dtype with tile (8, 128) => row_bytes = 128.
+  const int64_t H = 64;
+  const int64_t W = 256;
+  xla::Shape shape = xla::ShapeUtil::MakeShapeWithDenseLayout(
+      xla::PrimitiveType::S8, {H, W}, {1, 0}, {xla::Tile({8, 128})});
+
+  const int64_t num_elements = H * W;
+  std::vector<int8_t> src_linear(num_elements);
+  for (int i = 0; i < num_elements; ++i) {
+    src_linear[i] = static_cast<int8_t>(i % 127);
+  }
+
+  std::vector<uint8_t> dst_tiled(num_elements * sizeof(int8_t));
+  ASSERT_TRUE(TileBuffer(reinterpret_cast<const uint8_t*>(src_linear.data()),
+                         dst_tiled.data(), shape, shape.layout()).ok());
+
+  std::vector<int8_t> dst_linear(num_elements, 0);
+  ASSERT_TRUE(DetileBuffer(dst_tiled.data(),
+                           reinterpret_cast<uint8_t*>(dst_linear.data()),
+                           shape, shape.layout()).ok());
+
+  for (int i = 0; i < num_elements; ++i) {
+    EXPECT_EQ(dst_linear[i], src_linear[i]) << "Mismatch at index " << i;
+  }
+}
+
+TEST(TilingUtilsTest, SpecializedRowBytes_Int8_TransposedTile) {
+  // S8 dtype with tile (128, 8) => row_bytes = 8.
+  const int64_t H = 256;
+  const int64_t W = 64;
+  xla::Shape shape = xla::ShapeUtil::MakeShapeWithDenseLayout(
+      xla::PrimitiveType::S8, {H, W}, {1, 0}, {xla::Tile({128, 8})});
+
+  const int64_t num_elements = H * W;
+  std::vector<int8_t> src_linear(num_elements);
+  for (int i = 0; i < num_elements; ++i) {
+    src_linear[i] = static_cast<int8_t>(i % 127);
+  }
+
+  std::vector<uint8_t> dst_tiled(num_elements * sizeof(int8_t));
+  ASSERT_TRUE(TileBuffer(reinterpret_cast<const uint8_t*>(src_linear.data()),
+                         dst_tiled.data(), shape, shape.layout()).ok());
+
+  std::vector<int8_t> dst_linear(num_elements, 0);
+  ASSERT_TRUE(DetileBuffer(dst_tiled.data(),
+                           reinterpret_cast<uint8_t*>(dst_linear.data()),
+                           shape, shape.layout()).ok());
+
+  for (int i = 0; i < num_elements; ++i) {
+    EXPECT_EQ(dst_linear[i], src_linear[i]) << "Mismatch at index " << i;
+  }
+}
+
+TEST(TilingUtilsTest, SpecializedRowBytes_BF16_StandardAndTransposed) {
+  // BF16 dtype with tile (8, 128) => row_bytes = 256.
+  // BF16 dtype with tile (128, 8) => row_bytes = 16.
+  const int64_t H = 64;
+  const int64_t W = 256;
+
+  // Standard (8, 128) -> row_bytes = 256
+  {
+    xla::Shape shape = xla::ShapeUtil::MakeShapeWithDenseLayout(
+        xla::PrimitiveType::BF16, {H, W}, {1, 0}, {xla::Tile({8, 128})});
+    const int64_t num_elements = H * W;
+    std::vector<uint16_t> src_linear(num_elements);
+    for (int i = 0; i < num_elements; ++i) {
+      src_linear[i] = static_cast<uint16_t>(i * 3 + 1);
+    }
+    std::vector<uint8_t> dst_tiled(num_elements * sizeof(uint16_t));
+    ASSERT_TRUE(TileBuffer(reinterpret_cast<const uint8_t*>(src_linear.data()),
+                           dst_tiled.data(), shape, shape.layout()).ok());
+    std::vector<uint16_t> dst_linear(num_elements, 0);
+    ASSERT_TRUE(DetileBuffer(dst_tiled.data(),
+                             reinterpret_cast<uint8_t*>(dst_linear.data()),
+                             shape, shape.layout()).ok());
+    for (int i = 0; i < num_elements; ++i) {
+      EXPECT_EQ(dst_linear[i], src_linear[i]) << "Mismatch at index " << i;
+    }
+  }
+
+  // Transposed (128, 8) -> row_bytes = 16
+  {
+    xla::Shape shape = xla::ShapeUtil::MakeShapeWithDenseLayout(
+        xla::PrimitiveType::BF16, {256, 64}, {1, 0}, {xla::Tile({128, 8})});
+    const int64_t num_elements = 256 * 64;
+    std::vector<uint16_t> src_linear(num_elements);
+    for (int i = 0; i < num_elements; ++i) {
+      src_linear[i] = static_cast<uint16_t>(i * 3 + 1);
+    }
+    std::vector<uint8_t> dst_tiled(num_elements * sizeof(uint16_t));
+    ASSERT_TRUE(TileBuffer(reinterpret_cast<const uint8_t*>(src_linear.data()),
+                           dst_tiled.data(), shape, shape.layout()).ok());
+    std::vector<uint16_t> dst_linear(num_elements, 0);
+    ASSERT_TRUE(DetileBuffer(dst_tiled.data(),
+                             reinterpret_cast<uint8_t*>(dst_linear.data()),
+                             shape, shape.layout()).ok());
+    for (int i = 0; i < num_elements; ++i) {
+      EXPECT_EQ(dst_linear[i], src_linear[i]) << "Mismatch at index " << i;
+    }
+  }
+}
+
+TEST(TilingUtilsTest, SpecializedRowBytes_FP32_StandardAndTransposed) {
+  // F32 dtype with tile (8, 128) => row_bytes = 512.
+  // F32 dtype with tile (128, 8) => row_bytes = 32.
+  const int64_t H = 64;
+  const int64_t W = 256;
+
+  // Standard (8, 128) -> row_bytes = 512
+  {
+    xla::Shape shape = xla::ShapeUtil::MakeShapeWithDenseLayout(
+        xla::PrimitiveType::F32, {H, W}, {1, 0}, {xla::Tile({8, 128})});
+    const int64_t num_elements = H * W;
+    std::vector<float> src_linear(num_elements);
+    for (int i = 0; i < num_elements; ++i) {
+      src_linear[i] = static_cast<float>(i) * 1.5f;
+    }
+    std::vector<uint8_t> dst_tiled(num_elements * sizeof(float));
+    ASSERT_TRUE(TileBuffer(reinterpret_cast<const uint8_t*>(src_linear.data()),
+                           dst_tiled.data(), shape, shape.layout()).ok());
+    std::vector<float> dst_linear(num_elements, 0.0f);
+    ASSERT_TRUE(DetileBuffer(dst_tiled.data(),
+                             reinterpret_cast<uint8_t*>(dst_linear.data()),
+                             shape, shape.layout()).ok());
+    for (int i = 0; i < num_elements; ++i) {
+      EXPECT_EQ(dst_linear[i], src_linear[i]) << "Mismatch at index " << i;
+    }
+  }
+
+  // Transposed (128, 8) -> row_bytes = 32
+  {
+    xla::Shape shape = xla::ShapeUtil::MakeShapeWithDenseLayout(
+        xla::PrimitiveType::F32, {256, 64}, {1, 0}, {xla::Tile({128, 8})});
+    const int64_t num_elements = 256 * 64;
+    std::vector<float> src_linear(num_elements);
+    for (int i = 0; i < num_elements; ++i) {
+      src_linear[i] = static_cast<float>(i) * 1.5f;
+    }
+    std::vector<uint8_t> dst_tiled(num_elements * sizeof(float));
+    ASSERT_TRUE(TileBuffer(reinterpret_cast<const uint8_t*>(src_linear.data()),
+                           dst_tiled.data(), shape, shape.layout()).ok());
+    std::vector<float> dst_linear(num_elements, 0.0f);
+    ASSERT_TRUE(DetileBuffer(dst_tiled.data(),
+                             reinterpret_cast<uint8_t*>(dst_linear.data()),
+                             shape, shape.layout()).ok());
+    for (int i = 0; i < num_elements; ++i) {
+      EXPECT_EQ(dst_linear[i], src_linear[i]) << "Mismatch at index " << i;
+    }
+  }
+}
+
+TEST(TilingUtilsTest, SpecializedRowBytes_64ByteRow) {
+  // S8 with tile (8, 64) -> row_bytes = 64
+  const int64_t H = 32;
+  const int64_t W = 128;
+  xla::Shape shape = xla::ShapeUtil::MakeShapeWithDenseLayout(
+      xla::PrimitiveType::S8, {H, W}, {1, 0}, {xla::Tile({8, 64})});
+
+  const int64_t num_elements = H * W;
+  std::vector<int8_t> src_linear(num_elements);
+  for (int i = 0; i < num_elements; ++i) {
+    src_linear[i] = static_cast<int8_t>(i % 127);
+  }
+
+  std::vector<uint8_t> dst_tiled(num_elements * sizeof(int8_t));
+  ASSERT_TRUE(TileBuffer(reinterpret_cast<const uint8_t*>(src_linear.data()),
+                         dst_tiled.data(), shape, shape.layout()).ok());
+
+  std::vector<int8_t> dst_linear(num_elements, 0);
+  ASSERT_TRUE(DetileBuffer(dst_tiled.data(),
+                           reinterpret_cast<uint8_t*>(dst_linear.data()),
+                           shape, shape.layout()).ok());
+
+  for (int i = 0; i < num_elements; ++i) {
+    EXPECT_EQ(dst_linear[i], src_linear[i]) << "Mismatch at index " << i;
+  }
+}
+
+TEST(TilingUtilsTest, SpecializedRowBytes_MultiBatch_AllTypes) {
+  // Multi-batch 3D tensor: [4, 64, 256] with tile (8, 128)
+  const int64_t B = 4;
+  const int64_t H = 64;
+  const int64_t W = 256;
+  const int64_t total_elements = B * H * W;
+
+  // 1. S8 (row_bytes = 128)
+  {
+    xla::Shape shape = xla::ShapeUtil::MakeShapeWithDenseLayout(
+        xla::PrimitiveType::S8, {B, H, W}, {2, 1, 0}, {xla::Tile({8, 128})});
+    std::vector<int8_t> src_linear(total_elements);
+    for (int i = 0; i < total_elements; ++i) {
+      src_linear[i] = static_cast<int8_t>(i % 127);
+    }
+    std::vector<uint8_t> dst_tiled(total_elements * sizeof(int8_t));
+    ASSERT_TRUE(TileBuffer(reinterpret_cast<const uint8_t*>(src_linear.data()),
+                           dst_tiled.data(), shape, shape.layout()).ok());
+    std::vector<int8_t> dst_linear(total_elements, 0);
+    ASSERT_TRUE(DetileBuffer(dst_tiled.data(),
+                             reinterpret_cast<uint8_t*>(dst_linear.data()),
+                             shape, shape.layout()).ok());
+    EXPECT_EQ(dst_linear, src_linear);
+  }
+
+  // 2. BF16 (row_bytes = 256)
+  {
+    xla::Shape shape = xla::ShapeUtil::MakeShapeWithDenseLayout(
+        xla::PrimitiveType::BF16, {B, H, W}, {2, 1, 0}, {xla::Tile({8, 128})});
+    std::vector<uint16_t> src_linear(total_elements);
+    for (int i = 0; i < total_elements; ++i) {
+      src_linear[i] = static_cast<uint16_t>(i);
+    }
+    std::vector<uint8_t> dst_tiled(total_elements * sizeof(uint16_t));
+    ASSERT_TRUE(TileBuffer(reinterpret_cast<const uint8_t*>(src_linear.data()),
+                           dst_tiled.data(), shape, shape.layout()).ok());
+    std::vector<uint16_t> dst_linear(total_elements, 0);
+    ASSERT_TRUE(DetileBuffer(dst_tiled.data(),
+                             reinterpret_cast<uint8_t*>(dst_linear.data()),
+                             shape, shape.layout()).ok());
+    EXPECT_EQ(dst_linear, src_linear);
+  }
+
+  // 3. F32 (row_bytes = 512)
+  {
+    xla::Shape shape = xla::ShapeUtil::MakeShapeWithDenseLayout(
+        xla::PrimitiveType::F32, {B, H, W}, {2, 1, 0}, {xla::Tile({8, 128})});
+    std::vector<float> src_linear(total_elements);
+    for (int i = 0; i < total_elements; ++i) {
+      src_linear[i] = static_cast<float>(i) * 0.25f;
+    }
+    std::vector<uint8_t> dst_tiled(total_elements * sizeof(float));
+    ASSERT_TRUE(TileBuffer(reinterpret_cast<const uint8_t*>(src_linear.data()),
+                           dst_tiled.data(), shape, shape.layout()).ok());
+    std::vector<float> dst_linear(total_elements, 0.0f);
+    ASSERT_TRUE(DetileBuffer(dst_tiled.data(),
+                             reinterpret_cast<uint8_t*>(dst_linear.data()),
+                             shape, shape.layout()).ok());
+    EXPECT_EQ(dst_linear, src_linear);
+  }
+}
+
 }  // namespace
 }  // namespace tpu_raiden::weight_sync

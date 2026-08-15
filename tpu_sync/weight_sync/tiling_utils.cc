@@ -25,6 +25,7 @@
 #include "absl/status/status.h"
 #include "absl/synchronization/blocking_counter.h"
 #include "absl/types/span.h"
+#include "third_party/highway/hwy/highway.h"
 #include "xla/index_util.h"
 #include "xla/layout.h"
 #include "xla/layout_util.h"
@@ -111,6 +112,77 @@ void CopyTileNoPadding(const uint8_t* src_batch_ptr, uint8_t* dst_tile_ptr,
   }
 }
 
+namespace hn = hwy::HWY_NAMESPACE;
+
+// Copies valid_bytes from src to dst and zero-fills the rest of total_row_bytes
+// using portable Highway SIMD vector operations.
+inline void CopyRowWithPaddingHighway(const uint8_t* src, uint8_t* dst,
+                                      size_t valid_bytes,
+                                      size_t total_row_bytes) {
+  const hn::ScalableTag<uint8_t> d;
+  const size_t N = hn::Lanes(d);
+  size_t offset = 0;
+
+  for (; offset + N <= valid_bytes; offset += N) {
+    const auto v = hn::LoadU(d, src + offset);
+    hn::StoreU(v, d, dst + offset);
+  }
+
+  if (offset < valid_bytes) {
+    const size_t rem = valid_bytes - offset;
+    const auto mask = hn::FirstN(d, rem);
+    const auto v = hn::LoadU(d, src + offset);
+    const auto zeros = hn::Zero(d);
+    const auto blended = hn::IfThenElse(mask, v, zeros);
+    hn::StoreU(blended, d, dst + offset);
+    offset += N;
+  }
+
+  const auto zeros = hn::Zero(d);
+  for (; offset + N <= total_row_bytes; offset += N) {
+    hn::StoreU(zeros, d, dst + offset);
+  }
+
+  if (offset < total_row_bytes) {
+    const auto mask = hn::FirstN(d, total_row_bytes - offset);
+    hn::BlendedStore(zeros, mask, d, dst + offset);
+  }
+}
+
+// Detiles valid_bytes from src to dst using Highway SIMD vectors.
+inline void DetileRowWithPaddingHighway(const uint8_t* src, uint8_t* dst,
+                                        size_t valid_bytes) {
+  const hn::ScalableTag<uint8_t> d;
+  const size_t N = hn::Lanes(d);
+  size_t offset = 0;
+
+  for (; offset + N <= valid_bytes; offset += N) {
+    const auto v = hn::LoadU(d, src + offset);
+    hn::StoreU(v, d, dst + offset);
+  }
+
+  if (offset < valid_bytes) {
+    const auto mask = hn::FirstN(d, valid_bytes - offset);
+    const auto v = hn::LoadU(d, src + offset);
+    hn::BlendedStore(v, mask, d, dst + offset);
+  }
+}
+
+// Zeroes total_row_bytes using Highway SIMD vectors.
+inline void ZeroRowHighway(uint8_t* dst, size_t total_row_bytes) {
+  const hn::ScalableTag<uint8_t> d;
+  const size_t N = hn::Lanes(d);
+  const auto zeros = hn::Zero(d);
+  size_t offset = 0;
+  for (; offset + N <= total_row_bytes; offset += N) {
+    hn::StoreU(zeros, d, dst + offset);
+  }
+  if (offset < total_row_bytes) {
+    const auto mask = hn::FirstN(d, total_row_bytes - offset);
+    hn::BlendedStore(zeros, mask, d, dst + offset);
+  }
+}
+
 // Copies a single tile from the source batch pointer to the destination tile
 // pointer, handling padding if the tile is partially or fully out of bounds.
 // Out-of-bounds elements in the destination tile are zero-initialized.
@@ -121,25 +193,25 @@ void CopyTileWithPadding(const uint8_t* src_batch_ptr, uint8_t* dst_tile_ptr,
   int64_t logical_col_start = tile_col * tile_W;
   int64_t valid_elements = std::min(tile_W, W - logical_col_start);
   if (valid_elements <= 0) {
-    std::memset(dst_tile_ptr, 0, tile_size_bytes);
+    ZeroRowHighway(dst_tile_ptr, static_cast<size_t>(tile_size_bytes));
     return;
   }
 
+  size_t valid_bytes = static_cast<size_t>(valid_elements * itemsize);
+  size_t total_row_bytes = static_cast<size_t>(tile_W * itemsize);
+
   for (int64_t r = 0; r < tile_H; ++r) {
     int64_t logical_row = tile_row * tile_H + r;
-    uint8_t* dst_row_ptr = dst_tile_ptr + (r * tile_W) * itemsize;
+    uint8_t* dst_row_ptr = dst_tile_ptr + r * total_row_bytes;
     if (logical_row >= H) {
-      std::memset(dst_row_ptr, 0, tile_W * itemsize);
+      ZeroRowHighway(dst_row_ptr, total_row_bytes);
       continue;
     }
     const uint8_t* src_row_ptr =
         src_batch_ptr + (logical_row * W + logical_col_start) * itemsize;
 
-    std::memcpy(dst_row_ptr, src_row_ptr, valid_elements * itemsize);
-    if (valid_elements < tile_W) {
-      std::memset(dst_row_ptr + valid_elements * itemsize, 0,
-                  (tile_W - valid_elements) * itemsize);
-    }
+    CopyRowWithPaddingHighway(src_row_ptr, dst_row_ptr, valid_bytes,
+                              total_row_bytes);
   }
 }
 
@@ -175,6 +247,9 @@ void DetileSingleTileWithPadding(const uint8_t* src_tile_ptr,
     return;
   }
 
+  size_t valid_bytes = static_cast<size_t>(valid_elements * itemsize);
+  size_t total_row_bytes = static_cast<size_t>(tile_W * itemsize);
+
   for (int64_t r = 0; r < tile_H; ++r) {
     int64_t logical_row = tile_row * tile_H + r;
     if (logical_row >= H) {
@@ -182,9 +257,9 @@ void DetileSingleTileWithPadding(const uint8_t* src_tile_ptr,
     }
     uint8_t* dst_row_ptr =
         dst_batch_ptr + (logical_row * W + logical_col_start) * itemsize;
-    const uint8_t* src_row_ptr = src_tile_ptr + (r * tile_W) * itemsize;
+    const uint8_t* src_row_ptr = src_tile_ptr + r * total_row_bytes;
 
-    std::memcpy(dst_row_ptr, src_row_ptr, valid_elements * itemsize);
+    DetileRowWithPaddingHighway(src_row_ptr, dst_row_ptr, valid_bytes);
   }
 }
 
@@ -282,13 +357,21 @@ absl::Status TileBufferNDOptimized(const uint8_t* src_linear,
           const uint8_t* src_batch_ptr = src_linear + b * matrix_size_bytes;
           uint8_t* dst_batch_ptr = dst_tiled + b * tiled_matrix_size_bytes;
           for (int64_t tile_row = 0; tile_row < num_tiles_0; ++tile_row) {
+            bool is_row_interior = (tile_row * tile_H + tile_H <= H);
             for (int64_t tile_col = 0; tile_col < num_tiles_1; ++tile_col) {
               int64_t tile_index = tile_row * num_tiles_1 + tile_col;
               uint8_t* dst_tile_ptr =
                   dst_batch_ptr + tile_index * tile_size_bytes;
-              CopyTileWithPadding(src_batch_ptr, dst_tile_ptr, tile_row,
-                                  tile_col, tile_H, tile_W, H, W, itemsize,
-                                  tile_size_bytes);
+              bool is_col_interior = (tile_col * tile_W + tile_W <= W);
+              if (is_row_interior && is_col_interior) {
+                CopyTileNoPadding<kRowBytes>(src_batch_ptr, dst_tile_ptr,
+                                             tile_row, tile_col, tile_H, tile_W,
+                                             W, itemsize);
+              } else {
+                CopyTileWithPadding(src_batch_ptr, dst_tile_ptr, tile_row,
+                                    tile_col, tile_H, tile_W, H, W, itemsize,
+                                    tile_size_bytes);
+              }
             }
           }
         }
@@ -310,13 +393,21 @@ absl::Status TileBufferNDOptimized(const uint8_t* src_linear,
                                          tile_col, tile_H, tile_W, W, itemsize);
           }
         } else {
+          bool is_row_interior = (tile_row * tile_H + tile_H <= H);
           for (int64_t tile_col = 0; tile_col < num_tiles_1; ++tile_col) {
             int64_t tile_index = tile_row * num_tiles_1 + tile_col;
             uint8_t* dst_tile_ptr =
                 dst_batch_ptr + tile_index * tile_size_bytes;
-            CopyTileWithPadding(src_batch_ptr, dst_tile_ptr, tile_row, tile_col,
-                                tile_H, tile_W, H, W, itemsize,
-                                tile_size_bytes);
+            bool is_col_interior = (tile_col * tile_W + tile_W <= W);
+            if (is_row_interior && is_col_interior) {
+              CopyTileNoPadding<kRowBytes>(src_batch_ptr, dst_tile_ptr,
+                                           tile_row, tile_col, tile_H, tile_W,
+                                           W, itemsize);
+            } else {
+              CopyTileWithPadding(src_batch_ptr, dst_tile_ptr, tile_row,
+                                  tile_col, tile_H, tile_W, H, W, itemsize,
+                                  tile_size_bytes);
+            }
           }
         }
       };
@@ -430,13 +521,21 @@ absl::Status DetileBufferNDOptimized(const uint8_t* src_tiled,
               src_tiled + b * tiled_matrix_size_bytes;
           uint8_t* dst_batch_ptr = dst_linear + b * matrix_size_bytes;
           for (int64_t tile_row = 0; tile_row < num_tiles_0; ++tile_row) {
+            bool is_row_interior = (tile_row * tile_H + tile_H <= H);
             for (int64_t tile_col = 0; tile_col < num_tiles_1; ++tile_col) {
               int64_t tile_index = tile_row * num_tiles_1 + tile_col;
               const uint8_t* src_tile_ptr =
                   src_batch_ptr + tile_index * tile_size_bytes;
-              DetileSingleTileWithPadding(
-                  src_tile_ptr, dst_batch_ptr, tile_row, tile_col, tile_H,
-                  tile_W, H, W, itemsize);
+              bool is_col_interior = (tile_col * tile_W + tile_W <= W);
+              if (is_row_interior && is_col_interior) {
+                DetileSingleTileNoPadding<kRowBytes>(
+                    src_tile_ptr, dst_batch_ptr, tile_row, tile_col, tile_H,
+                    tile_W, W, itemsize);
+              } else {
+                DetileSingleTileWithPadding(src_tile_ptr, dst_batch_ptr,
+                                            tile_row, tile_col, tile_H, tile_W,
+                                            H, W, itemsize);
+              }
             }
           }
         }
@@ -459,13 +558,21 @@ absl::Status DetileBufferNDOptimized(const uint8_t* src_tiled,
                 tile_W, W, itemsize);
           }
         } else {
+          bool is_row_interior = (tile_row * tile_H + tile_H <= H);
           for (int64_t tile_col = 0; tile_col < num_tiles_1; ++tile_col) {
             int64_t tile_index = tile_row * num_tiles_1 + tile_col;
             const uint8_t* src_tile_ptr =
                 src_batch_ptr + tile_index * tile_size_bytes;
-            DetileSingleTileWithPadding(
-                src_tile_ptr, dst_batch_ptr, tile_row, tile_col, tile_H,
-                tile_W, H, W, itemsize);
+            bool is_col_interior = (tile_col * tile_W + tile_W <= W);
+            if (is_row_interior && is_col_interior) {
+              DetileSingleTileNoPadding<kRowBytes>(src_tile_ptr, dst_batch_ptr,
+                                                   tile_row, tile_col, tile_H,
+                                                   tile_W, W, itemsize);
+            } else {
+              DetileSingleTileWithPadding(src_tile_ptr, dst_batch_ptr, tile_row,
+                                          tile_col, tile_H, tile_W, H, W,
+                                          itemsize);
+            }
           }
         }
       };

@@ -26,6 +26,7 @@ cc_library(
     ],
     features = ["-use_header_modules"],
     deps = [
+        "//third_party/highway:hwy",
         "//tpu_sync/core:numa_thread_pool",
         "@com_google_absl//absl/base:no_destructor",
         "@com_google_absl//absl/status",

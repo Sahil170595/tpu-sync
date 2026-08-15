@@ -1777,9 +1777,11 @@ StageResult KVCacheManagerWithTransfer::IssueH2D(
     total_bytes += static_cast<int64_t>(span.nbytes);
   }
 
-  // Call H2d with slot_idx = std::nullopt to use actual host block IDs
-  auto fut_or = H2d(transfer_spec.src_offsets, transfer_spec.dst_offsets,
-                    transfer_spec.sizes, /*slot_idx=*/std::nullopt);
+  // Call H2dSyncDispatch with slot_idx = std::nullopt to use actual host block
+  // IDs
+  auto fut_or = H2dSyncDispatch(transfer_spec.src_offsets,
+                                transfer_spec.dst_offsets, transfer_spec.sizes,
+                                /*slot_idx=*/std::nullopt);
   if (!fut_or.ok()) {
     throw std::runtime_error("Failed to issue H2D transfer: " +
                              std::string(fut_or.status().message()));
@@ -2297,9 +2299,9 @@ void KVCacheManagerWithTransfer::StartPushInternal(
     LOG(INFO) << "StartPushInternal (D2H start) layer " << l
               << ": uuid=" << uuid
               << ", numa=" << assigned_numa_node().value_or(-1);
-    auto future_or =
-        D2h(d2h_copy.src_offsets, d2h_copy.dst_offsets, d2h_copy.sizes,
-            /*slot_idx=*/std::nullopt, /*layer_idx=*/l);
+    auto future_or = D2hSyncDispatch(d2h_copy.src_offsets, d2h_copy.dst_offsets,
+                                     d2h_copy.sizes, /*slot_idx=*/std::nullopt,
+                                     /*layer_idx=*/l);
     if (!future_or.ok()) {
       absl::MutexLock lock(mu_);
       auto it = send_entries_.find(uuid);
@@ -2800,9 +2802,9 @@ absl::Status KVCacheManagerWithTransfer::OnLayerReceived(size_t layer_idx,
             << ": req_id=" << req_id << ", uuid=" << uuid
             << ", numa=" << assigned_numa_node().value_or(-1);
 
-  auto future_or =
-      H2d(h2d_copy.src_offsets, h2d_copy.dst_offsets, h2d_copy.sizes,
-          /*slot_idx=*/std::nullopt, /*layer_idx=*/layer_idx);
+  auto future_or = H2dSyncDispatch(h2d_copy.src_offsets, h2d_copy.dst_offsets,
+                                   h2d_copy.sizes, /*slot_idx=*/std::nullopt,
+                                   /*layer_idx=*/layer_idx);
   if (!future_or.ok()) {
     absl::MutexLock lock(mu_);
     failed_recving_.insert(req_id);

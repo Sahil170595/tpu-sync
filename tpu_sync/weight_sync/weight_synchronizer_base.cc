@@ -519,7 +519,7 @@ absl::Status WeightSynchronizerBase::PushWeights(
 }
 
 absl::Status WeightSynchronizerBase::PushWeightsResharded(
-    const tpu_raiden::rpc::StartTransferRequest& request) {
+    const tpu_sync::rpc::StartTransferRequest& request) {
   StoreSkipTiling(request.uuid(), request);
   int fallback_layer_idx = -1;
   bool checked_fallback = false;
@@ -854,7 +854,7 @@ absl::Status WeightSynchronizerBase::OnDataReceived(uint64_t uuid) {
 }
 
 void WeightSynchronizerBase::StoreSkipTiling(
-    uint64_t uuid, const tpu_raiden::rpc::StartTransferRequest& request) {
+    uint64_t uuid, const tpu_sync::rpc::StartTransferRequest& request) {
   std::vector<bool> skip(num_layers_, false);
   for (const auto& [layer_idx, skip_val] : request.skip_tiling()) {
     if (layer_idx >= 0 && static_cast<size_t>(layer_idx) < num_layers_) {

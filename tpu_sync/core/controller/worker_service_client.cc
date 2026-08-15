@@ -30,13 +30,15 @@ namespace tpu_raiden {
 namespace controller {
 
 WorkerServiceClient::WorkerServiceClient(std::shared_ptr<grpc::Channel> channel)
-    : stub_(proto::WorkerService::NewStub(channel)) {}
+    : stub_(::tpu_sync::proto::WorkerService::NewStub(channel)) {}
 
-tsl::Future<proto::CreateBuffersResponse> WorkerServiceClient::CreateBuffers(
-    const proto::CreateBuffersRequest& request) {
-  auto [promise, future] = tsl::MakePromise<proto::CreateBuffersResponse>();
+tsl::Future<::tpu_sync::proto::CreateBuffersResponse>
+WorkerServiceClient::CreateBuffers(
+    const ::tpu_sync::proto::CreateBuffersRequest& request) {
+  auto [promise, future] =
+      tsl::MakePromise<::tpu_sync::proto::CreateBuffersResponse>();
   auto context = std::make_shared<grpc::ClientContext>();
-  auto response = std::make_shared<proto::CreateBuffersResponse>();
+  auto response = std::make_shared<::tpu_sync::proto::CreateBuffersResponse>();
 
   stub_->async()->CreateBuffers(
       context.get(), &request, response.get(),
@@ -52,11 +54,13 @@ tsl::Future<proto::CreateBuffersResponse> WorkerServiceClient::CreateBuffers(
   return future;
 }
 
-tsl::Future<proto::DeleteBuffersResponse> WorkerServiceClient::DeleteBuffers(
-    const proto::DeleteBuffersRequest& request) {
-  auto [promise, future] = tsl::MakePromise<proto::DeleteBuffersResponse>();
+tsl::Future<::tpu_sync::proto::DeleteBuffersResponse>
+WorkerServiceClient::DeleteBuffers(
+    const ::tpu_sync::proto::DeleteBuffersRequest& request) {
+  auto [promise, future] =
+      tsl::MakePromise<::tpu_sync::proto::DeleteBuffersResponse>();
   auto context = std::make_shared<grpc::ClientContext>();
-  auto response = std::make_shared<proto::DeleteBuffersResponse>();
+  auto response = std::make_shared<::tpu_sync::proto::DeleteBuffersResponse>();
 
   stub_->async()->DeleteBuffers(
       context.get(), &request, response.get(),
@@ -72,13 +76,14 @@ tsl::Future<proto::DeleteBuffersResponse> WorkerServiceClient::DeleteBuffers(
   return future;
 }
 
-tsl::Future<proto::TransferProgramResponse>
+tsl::Future<::tpu_sync::proto::TransferProgramResponse>
 WorkerServiceClient::SubmitTransferProgram(
-    const proto::TransferProgramRequest& request) {
+    const ::tpu_sync::proto::TransferProgramRequest& request) {
   auto [promise, future] =
-      tsl::MakePromise<proto::TransferProgramResponse>();
+      tsl::MakePromise<::tpu_sync::proto::TransferProgramResponse>();
   auto context = std::make_shared<grpc::ClientContext>();
-  auto response = std::make_shared<proto::TransferProgramResponse>();
+  auto response =
+      std::make_shared<::tpu_sync::proto::TransferProgramResponse>();
 
   stub_->async()->SubmitTransferProgram(
       context.get(), &request, response.get(),
@@ -95,10 +100,11 @@ WorkerServiceClient::SubmitTransferProgram(
 }
 
 tsl::Future<> WorkerServiceClient::TransferBuffers(
-    const proto::TransferBuffersRequest& request) {
+    const ::tpu_sync::proto::TransferBuffersRequest& request) {
   auto [promise, future] = tsl::MakePromise<>();
   auto context = std::make_shared<grpc::ClientContext>();
-  auto response = std::make_shared<proto::TransferBuffersResponse>();
+  auto response =
+      std::make_shared<::tpu_sync::proto::TransferBuffersResponse>();
 
   stub_->async()->TransferBuffers(
       context.get(), &request, response.get(),

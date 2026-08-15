@@ -65,7 +65,6 @@ ABSL_FLAG(bool, program_roundtrip, true,
 
 namespace {
 
-namespace rpcpb = tpu_raiden::rpc;
 using tpu_raiden::kv_cache::reshard::FramedTransport;
 using tpu_raiden::kv_cache::reshard::ReshardService;
 
@@ -140,7 +139,7 @@ std::string CanonicalBytes(const Message& message) {
 
 absl::StatusOr<std::string> CanonicalControlRequest(
     const std::string& payload) {
-  rpcpb::ControlRequest req;
+  tpu_sync::rpc::ControlRequest req;
   if (!req.ParseFromString(payload)) {
     return absl::InvalidArgumentError("unparseable ControlRequest payload");
   }
@@ -148,7 +147,7 @@ absl::StatusOr<std::string> CanonicalControlRequest(
 }
 
 int32_t ControlCommand(const std::string& payload) {
-  rpcpb::ControlRequest req;
+  tpu_sync::rpc::ControlRequest req;
   if (!req.ParseFromString(payload)) return -1;
   return req.command();
 }
@@ -166,7 +165,8 @@ class ReplayTransport final : public FramedTransport {
                                    absl::Duration /*timeout*/) override {
     const std::string addr(address);
     const std::string body(payload);
-    if (ControlCommand(body) == rpcpb::ControlRequest::COMMAND_GET_METADATA) {
+    if (ControlCommand(body) ==
+        tpu_sync::rpc::ControlRequest::COMMAND_GET_METADATA) {
       auto& fifo = metadata_fifo_[addr];
       if (fifo.empty()) {
         return absl::NotFoundError(
@@ -177,7 +177,7 @@ class ReplayTransport final : public FramedTransport {
       return response;
     }
     captured_[addr].push_back(body);
-    rpcpb::ControlResponse ok;
+    tpu_sync::rpc::ControlResponse ok;
     ok.set_success(true);
     ok.set_message("SUCCESS");
     return ok.SerializeAsString();
@@ -201,7 +201,7 @@ void ReportByteDiff(const std::string& expected, const std::string& actual) {
                "    canonical sizes: python=%zu cxx=%zu, first diff at "
                "byte %zu\n",
                expected.size(), actual.size(), offset);
-  rpcpb::ControlRequest expected_req, actual_req;
+  tpu_sync::rpc::ControlRequest expected_req, actual_req;
   if (expected_req.ParseFromString(expected) &&
       actual_req.ParseFromString(actual)) {
     std::string report;
@@ -240,8 +240,8 @@ int main(int argc, char** argv) {
       rpc_in.push_back(record);
     } else if (record.kind == "worker_out") {
       const int32_t command = ControlCommand(record.payload);
-      if (command == rpcpb::ControlRequest::COMMAND_GET_METADATA ||
-          command == rpcpb::ControlRequest::COMMAND_SHUTDOWN) {
+      if (command == tpu_sync::rpc::ControlRequest::COMMAND_GET_METADATA ||
+          command == tpu_sync::rpc::ControlRequest::COMMAND_SHUTDOWN) {
         continue;  // transport-internal or teardown; not plan output
       }
       recorded_out[record.addr].push_back(record.payload);
@@ -270,19 +270,19 @@ int main(int argc, char** argv) {
   int frames = 0;
   for (const Record& record : rpc_in) {
     const int32_t command = ControlCommand(record.payload);
-    if (command == rpcpb::ControlRequest::COMMAND_SHUTDOWN) {
+    if (command == tpu_sync::rpc::ControlRequest::COMMAND_SHUTDOWN) {
       ++skipped_shutdown;
       continue;
     }
     const std::string response = service.HandleFrame(record.payload);
     ++frames;
-    if (command == rpcpb::ControlRequest::COMMAND_GET_METADATA &&
+    if (command == tpu_sync::rpc::ControlRequest::COMMAND_GET_METADATA &&
         !peer_metadata_fifo.empty()) {
       // The peer recorded what the Python controller answered here.
       bool matched = false;
       for (auto& [addr, fifo] : peer_metadata_fifo) {
         if (fifo.empty()) continue;
-        rpcpb::ControlResponse expected_resp, actual_resp;
+        tpu_sync::rpc::ControlResponse expected_resp, actual_resp;
         if (!expected_resp.ParseFromString(fifo.front()) ||
             !actual_resp.ParseFromString(response)) {
           continue;
@@ -338,7 +338,7 @@ int main(int argc, char** argv) {
         ++failures;
       }
       if (absl::GetFlag(FLAGS_program_roundtrip)) {
-        rpcpb::ControlRequest req;
+        tpu_sync::rpc::ControlRequest req;
         if (req.ParseFromString(actual_list[i]) &&
             req.has_start_transfer_request()) {
           auto program =
@@ -358,7 +358,7 @@ int main(int argc, char** argv) {
                            lowered.status().ToString().c_str());
               ++failures;
             } else {
-              rpcpb::ControlRequest lowered_req;
+              tpu_sync::rpc::ControlRequest lowered_req;
               lowered_req.set_command(req.command());
               *lowered_req.mutable_peers() = req.peers();
               *lowered_req.mutable_start_transfer_request() = *lowered;

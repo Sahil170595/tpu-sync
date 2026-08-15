@@ -62,7 +62,7 @@ std::string PySortedIntSetRepr(const std::set<int64_t>& values) {
 
 // _pool_geometry_signature: the registration fields defining one pool's
 // byte geometry, as a canonical comparable string.
-std::string GeometrySignature(const tpu_raiden::rpc::PoolSpecProto& pool) {
+std::string GeometrySignature(const tpu_sync::rpc::PoolSpecProto& pool) {
   std::string sig =
       absl::StrCat(pool.tag(), "\x1f", pool.storage_index(), "\x1f",
                    pool.base_offset_bytes(), "\x1f", pool.block_stride_bytes(),
@@ -78,7 +78,7 @@ std::string GeometrySignature(const tpu_raiden::rpc::PoolSpecProto& pool) {
 
 // _pool_live_segments via the shared C++ leaf primitive.
 absl::StatusOr<std::vector<PoolLiveSegment>> LiveSegments(
-    const tpu_raiden::rpc::PoolSpecProto& pool_proto) {
+    const tpu_sync::rpc::PoolSpecProto& pool_proto) {
   auto pool = PoolSpecFromProto(pool_proto);
   if (!pool.ok()) return pool.status();
   return ExpandPoolLiveSegments(*pool);
@@ -86,15 +86,14 @@ absl::StatusOr<std::vector<PoolLiveSegment>> LiveSegments(
 
 // _metadata_by_unit: selects exact requested metadata, rejecting
 // duplicates and reporting the missing set in request order.
-absl::StatusOr<
-    std::map<RaidenId, const tpu_raiden::rpc::RegisterWorkUnitRequest*,
-             RequestBlockRegistry::RaidenIdLess>>
+absl::StatusOr<std::map<RaidenId, const tpu_sync::rpc::RegisterWorkUnitRequest*,
+                        RequestBlockRegistry::RaidenIdLess>>
 MetadataByUnit(
-    const std::vector<tpu_raiden::rpc::RegisterWorkUnitRequest>& metadata,
+    const std::vector<tpu_sync::rpc::RegisterWorkUnitRequest>& metadata,
     const std::vector<RaidenId>& units) {
   std::set<RaidenId, RequestBlockRegistry::RaidenIdLess> requested(
       units.begin(), units.end());
-  std::map<RaidenId, const tpu_raiden::rpc::RegisterWorkUnitRequest*,
+  std::map<RaidenId, const tpu_sync::rpc::RegisterWorkUnitRequest*,
            RequestBlockRegistry::RaidenIdLess>
       result;
   for (const auto& item : metadata) {
@@ -181,10 +180,10 @@ absl::StatusOr<PoolReshardPlan> BuildPoolReshardPlan(
   if (!dst_by_unit_or.ok()) return dst_by_unit_or.status();
   auto& dst_by_unit = *dst_by_unit_or;
   const RaidenId& dst_unit = request.dst_units[0];
-  const tpu_raiden::rpc::RegisterWorkUnitRequest& dst_meta =
+  const tpu_sync::rpc::RegisterWorkUnitRequest& dst_meta =
       *dst_by_unit.at(dst_unit);
 
-  std::vector<const tpu_raiden::rpc::RegisterWorkUnitRequest*> all_metadata;
+  std::vector<const tpu_sync::rpc::RegisterWorkUnitRequest*> all_metadata;
   all_metadata.reserve(request.src_units.size() + 1);
   for (const RaidenId& unit : request.src_units) {
     all_metadata.push_back(src_by_unit.at(unit));
@@ -248,7 +247,7 @@ absl::StatusOr<PoolReshardPlan> BuildPoolReshardPlan(
     }
   }
 
-  const tpu_raiden::rpc::RegisterWorkUnitRequest& reference_src =
+  const tpu_sync::rpc::RegisterWorkUnitRequest& reference_src =
       *src_by_unit.at(request.src_units[0]);
   {
     std::vector<std::string> reference_geometry;

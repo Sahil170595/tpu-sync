@@ -43,7 +43,7 @@ namespace reshard {
 // key 0; the receiver gets every source's schedule keyed by source
 // ordinal). Split out of EncodeStartTransfer so controller delivery compiles
 // the same proto object the framed wire would carry.
-tpu_raiden::rpc::StartTransferRequest BuildStartTransferForTarget(
+tpu_sync::rpc::StartTransferRequest BuildStartTransferForTarget(
     const PoolReshardPlan& plan, const RaidenId& target);
 
 // Wire encoder: the pool-path port of WorkerRpcClient._encode_start_transfer.
@@ -112,7 +112,7 @@ class ReshardCoordinator {
 
   // GET_METADATA against the destination controller (dst_controller_address
   // path), recorded shape-identical to Python's _query_remote_metadata.
-  absl::StatusOr<std::vector<tpu_raiden::rpc::RegisterWorkUnitRequest>>
+  absl::StatusOr<std::vector<tpu_sync::rpc::RegisterWorkUnitRequest>>
   QueryRemoteMetadata(const std::string& address);
 
   WorkUnitDirectory* directory_;

@@ -39,7 +39,7 @@ constexpr int64_t kMaxSpanCount = 1 << 20;
 
 // _pool_live_bytes over the shared C++ leaf primitive.
 absl::StatusOr<int64_t> PoolLiveBytes(
-    const tpu_raiden::rpc::PoolSpecProto& pool_proto) {
+    const tpu_sync::rpc::PoolSpecProto& pool_proto) {
   auto pool = PoolSpecFromProto(pool_proto);
   if (!pool.ok()) return pool.status();
   auto segments = ExpandPoolLiveSegments(*pool);
@@ -142,7 +142,7 @@ absl::Status RequestBlockRegistry::Register(
   std::vector<PoolSpanRegistration> normalized_pool_spans;
   if (!pool_spans.empty()) {
     // Python reads the manifest outside the lock; snapshot it briefly here.
-    std::vector<tpu_raiden::rpc::PoolSpecProto> manifest;
+    std::vector<tpu_sync::rpc::PoolSpecProto> manifest;
     {
       absl::MutexLock lock(*mu_);
       directory_->mu()->AssertHeld();

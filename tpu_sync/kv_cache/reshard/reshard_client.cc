@@ -33,15 +33,13 @@ namespace tpu_raiden {
 namespace kv_cache {
 namespace reshard {
 
-namespace ctrlpb = tpu_raiden::rpc;
-
 namespace {
 
 // Facade parity: connect_socket(address, timeout=300.0) per call.
 constexpr absl::Duration kCallTimeout = absl::Seconds(300);
 
-ctrlpb::RaidenIdProto RaidenIdProtoOf(const RaidenId& unit) {
-  ctrlpb::RaidenIdProto proto;
+tpu_sync::rpc::RaidenIdProto RaidenIdProtoOf(const RaidenId& unit) {
+  tpu_sync::rpc::RaidenIdProto proto;
   proto.set_job_name(unit.job_name);
   proto.set_job_replica_id(unit.job_replica_id);
   proto.set_data_name(unit.data_name);
@@ -61,11 +59,12 @@ ReshardClient::ReshardClient(std::string address, FramedTransport* transport)
   }
 }
 
-ctrlpb::ControlRequest ReshardClient::BuildRegisterWorkUnit(
+tpu_sync::rpc::ControlRequest ReshardClient::BuildRegisterWorkUnit(
     const RegisterWorkUnitArgs& args) {
-  ctrlpb::ControlRequest req;
-  req.set_command(ctrlpb::ControlRequest::COMMAND_REGISTER_WORK_UNIT);
-  ctrlpb::RegisterWorkUnitRequest* reg = req.mutable_register_work_unit_request();
+  tpu_sync::rpc::ControlRequest req;
+  req.set_command(tpu_sync::rpc::ControlRequest::COMMAND_REGISTER_WORK_UNIT);
+  tpu_sync::rpc::RegisterWorkUnitRequest* reg =
+      req.mutable_register_work_unit_request();
   *reg->mutable_unit() = RaidenIdProtoOf(args.unit);
   for (const std::string& shard : args.shards) reg->add_shards(shard);
   // Python assigns "" when None; proto3 implicit presence drops it either
@@ -79,7 +78,7 @@ ctrlpb::ControlRequest ReshardClient::BuildRegisterWorkUnit(
   if (args.itemsize != 0) reg->set_itemsize(args.itemsize);
   if (args.has_pool_manifest) {
     for (const ClientPoolSpec& pool : args.pool_manifest) {
-      ctrlpb::PoolSpecProto* pool_proto = reg->add_pools();
+      tpu_sync::rpc::PoolSpecProto* pool_proto = reg->add_pools();
       pool_proto->set_tag(pool.tag);
       pool_proto->set_storage_index(pool.storage_index);
       pool_proto->set_base_offset_bytes(pool.base_offset_bytes);
@@ -87,7 +86,8 @@ ctrlpb::ControlRequest ReshardClient::BuildRegisterWorkUnit(
       pool_proto->set_num_blocks(pool.num_blocks);
       pool_proto->set_dtype_tag(pool.dtype_tag);
       for (const ClientPoolRegion& region : pool.regions) {
-        ctrlpb::RegionSpecProto* region_proto = pool_proto->add_regions();
+        tpu_sync::rpc::RegionSpecProto* region_proto =
+            pool_proto->add_regions();
         region_proto->set_name(region.name);
         region_proto->set_offset_bytes(region.offset_bytes);
         region_proto->set_stride_bytes(region.stride_bytes);
@@ -116,13 +116,14 @@ ctrlpb::ControlRequest ReshardClient::BuildRegisterWorkUnit(
   return req;
 }
 
-ctrlpb::ControllerRequest ReshardClient::BuildRegisterRequestBlocks(
+tpu_sync::rpc::ControllerRequest ReshardClient::BuildRegisterRequestBlocks(
     const std::string& req_id, int64_t uuid, const RaidenId& unit,
     const std::vector<int64_t>& block_ids,
     const std::vector<ClientPoolSpans>& pool_spans) {
-  ctrlpb::ControllerRequest req;
-  req.set_command(ctrlpb::ControllerRequest::COMMAND_REGISTER_REQUEST_BLOCKS);
-  ctrlpb::RegisterRequestBlocksRequest* block_req =
+  tpu_sync::rpc::ControllerRequest req;
+  req.set_command(
+      tpu_sync::rpc::ControllerRequest::COMMAND_REGISTER_REQUEST_BLOCKS);
+  tpu_sync::rpc::RegisterRequestBlocksRequest* block_req =
       req.mutable_register_request_blocks_request();
   block_req->set_req_id(req_id);
   block_req->set_uuid(uuid);
@@ -151,10 +152,11 @@ ctrlpb::ControllerRequest ReshardClient::BuildRegisterRequestBlocks(
   return req;
 }
 
-ctrlpb::ControllerRequest ReshardClient::BuildReleaseRequestBlocks(
+tpu_sync::rpc::ControllerRequest ReshardClient::BuildReleaseRequestBlocks(
     const std::string& req_id, int64_t uuid) {
-  ctrlpb::ControllerRequest req;
-  req.set_command(ctrlpb::ControllerRequest::COMMAND_RELEASE_REQUEST_BLOCKS);
+  tpu_sync::rpc::ControllerRequest req;
+  req.set_command(
+      tpu_sync::rpc::ControllerRequest::COMMAND_RELEASE_REQUEST_BLOCKS);
   auto* release = req.mutable_release_request_blocks_request();
   release->set_req_id(req_id);
   release->set_uuid(uuid);
@@ -162,10 +164,11 @@ ctrlpb::ControllerRequest ReshardClient::BuildReleaseRequestBlocks(
   return req;
 }
 
-ctrlpb::ControllerRequest ReshardClient::BuildCompleteRequestBlocks(
+tpu_sync::rpc::ControllerRequest ReshardClient::BuildCompleteRequestBlocks(
     const std::string& req_id, int64_t uuid, const RaidenId& unit) {
-  ctrlpb::ControllerRequest req;
-  req.set_command(ctrlpb::ControllerRequest::COMMAND_COMPLETE_REQUEST_BLOCKS);
+  tpu_sync::rpc::ControllerRequest req;
+  req.set_command(
+      tpu_sync::rpc::ControllerRequest::COMMAND_COMPLETE_REQUEST_BLOCKS);
   auto* complete = req.mutable_complete_request_blocks_request();
   complete->set_req_id(req_id);
   complete->set_uuid(uuid);
@@ -173,22 +176,24 @@ ctrlpb::ControllerRequest ReshardClient::BuildCompleteRequestBlocks(
   return req;
 }
 
-ctrlpb::ControllerRequest ReshardClient::BuildCancelRequestBlocksIfUnclaimed(
-    const std::string& req_id, int64_t uuid) {
-  ctrlpb::ControllerRequest req;
-  req.set_command(
-      ctrlpb::ControllerRequest::COMMAND_CANCEL_REQUEST_BLOCKS_IF_UNCLAIMED);
+tpu_sync::rpc::ControllerRequest
+ReshardClient::BuildCancelRequestBlocksIfUnclaimed(const std::string& req_id,
+                                                   int64_t uuid) {
+  tpu_sync::rpc::ControllerRequest req;
+  req.set_command(tpu_sync::rpc::ControllerRequest::
+                      COMMAND_CANCEL_REQUEST_BLOCKS_IF_UNCLAIMED);
   auto* cancel = req.mutable_cancel_request_blocks_if_unclaimed_request();
   cancel->set_req_id(req_id);
   cancel->set_uuid(uuid);
   return req;
 }
 
-ctrlpb::ControllerRequest ReshardClient::BuildStartTransfer(
+tpu_sync::rpc::ControllerRequest ReshardClient::BuildStartTransfer(
     const StartTransferArgs& args) {
-  ctrlpb::ControllerRequest req;
-  req.set_command(ctrlpb::ControllerRequest::COMMAND_COORDINATE_TRANSFER);
-  ctrlpb::CoordinateTransferRequest* coord =
+  tpu_sync::rpc::ControllerRequest req;
+  req.set_command(
+      tpu_sync::rpc::ControllerRequest::COMMAND_COORDINATE_TRANSFER);
+  tpu_sync::rpc::CoordinateTransferRequest* coord =
       req.mutable_coordinate_transfer_request();
   for (const RaidenId& unit : args.src_units) {
     *coord->add_src_units() = RaidenIdProtoOf(unit);
@@ -204,7 +209,7 @@ ctrlpb::ControllerRequest ReshardClient::BuildStartTransfer(
   coord->set_dst_controller_address(args.dst_controller_address);
   coord->set_src_controller_address(args.src_controller_address);
   coord->set_dst_mem_type(
-      static_cast<ctrlpb::MemoryType>(args.dst_mem_type));
+      static_cast<tpu_sync::rpc::MemoryType>(args.dst_mem_type));
   if (args.has_dst_device_block_ids) {
     for (int64_t block : args.dst_device_block_ids) {
       coord->add_dst_device_block_ids(block);
@@ -224,34 +229,35 @@ ctrlpb::ControllerRequest ReshardClient::BuildStartTransfer(
   return req;
 }
 
-ctrlpb::ControllerRequest ReshardClient::BuildGetTransferStatus(
+tpu_sync::rpc::ControllerRequest ReshardClient::BuildGetTransferStatus(
     const std::string& req_id, int64_t uuid) {
-  ctrlpb::ControllerRequest req;
-  req.set_command(ctrlpb::ControllerRequest::COMMAND_GET_TRANSFER_STATUS);
+  tpu_sync::rpc::ControllerRequest req;
+  req.set_command(
+      tpu_sync::rpc::ControllerRequest::COMMAND_GET_TRANSFER_STATUS);
   auto* status = req.mutable_get_transfer_status_request();
   status->set_req_id(req_id);
   status->set_uuid(uuid);
   return req;
 }
 
-ctrlpb::ControlRequest ReshardClient::BuildGetMetadata() {
-  ctrlpb::ControlRequest req;
-  req.set_command(ctrlpb::ControlRequest::COMMAND_GET_METADATA);
+tpu_sync::rpc::ControlRequest ReshardClient::BuildGetMetadata() {
+  tpu_sync::rpc::ControlRequest req;
+  req.set_command(tpu_sync::rpc::ControlRequest::COMMAND_GET_METADATA);
   return req;
 }
 
-ctrlpb::ControlRequest ReshardClient::BuildShutdown() {
-  ctrlpb::ControlRequest req;
-  req.set_command(ctrlpb::ControlRequest::COMMAND_SHUTDOWN);
+tpu_sync::rpc::ControlRequest ReshardClient::BuildShutdown() {
+  tpu_sync::rpc::ControlRequest req;
+  req.set_command(tpu_sync::rpc::ControlRequest::COMMAND_SHUTDOWN);
   return req;
 }
 
-absl::StatusOr<ctrlpb::ControllerResponse> ReshardClient::CallController(
-    const ctrlpb::ControllerRequest& request) {
+absl::StatusOr<tpu_sync::rpc::ControllerResponse> ReshardClient::CallController(
+    const tpu_sync::rpc::ControllerRequest& request) {
   absl::StatusOr<std::string> body =
       transport_->Call(address_, request.SerializeAsString(), kCallTimeout);
   if (!body.ok()) return body.status();
-  ctrlpb::ControllerResponse response;
+  tpu_sync::rpc::ControllerResponse response;
   if (!response.ParseFromString(*body)) {
     return absl::InternalError("Failed to parse ControllerResponse");
   }
@@ -264,12 +270,12 @@ absl::StatusOr<ctrlpb::ControllerResponse> ReshardClient::CallController(
   return response;
 }
 
-absl::StatusOr<ctrlpb::ControlResponse> ReshardClient::CallRaiden(
-    const ctrlpb::ControlRequest& request) {
+absl::StatusOr<tpu_sync::rpc::ControlResponse> ReshardClient::CallRaiden(
+    const tpu_sync::rpc::ControlRequest& request) {
   absl::StatusOr<std::string> body =
       transport_->Call(address_, request.SerializeAsString(), kCallTimeout);
   if (!body.ok()) return body.status();
-  ctrlpb::ControlResponse response;
+  tpu_sync::rpc::ControlResponse response;
   if (!response.ParseFromString(*body)) {
     return absl::InternalError("Failed to parse ControlResponse");
   }
@@ -308,7 +314,7 @@ absl::Status ReshardClient::CompleteRequestBlocks(const std::string& req_id,
 
 absl::StatusOr<bool> ReshardClient::CancelRequestBlocksIfUnclaimed(
     const std::string& req_id, int64_t uuid) {
-  absl::StatusOr<ctrlpb::ControllerResponse> response =
+  absl::StatusOr<tpu_sync::rpc::ControllerResponse> response =
       CallController(BuildCancelRequestBlocksIfUnclaimed(req_id, uuid));
   if (!response.ok()) return response.status();
   if (response->response_data() == "true") return true;
@@ -327,7 +333,7 @@ absl::StatusOr<bool> ReshardClient::StartTransfer(
 
 absl::StatusOr<int32_t> ReshardClient::GetTransferStatus(
     const std::string& req_id, int64_t uuid) {
-  absl::StatusOr<ctrlpb::ControllerResponse> response =
+  absl::StatusOr<tpu_sync::rpc::ControllerResponse> response =
       CallController(BuildGetTransferStatus(req_id, uuid));
   if (!response.ok()) return response.status();
   return static_cast<int32_t>(
@@ -335,7 +341,7 @@ absl::StatusOr<int32_t> ReshardClient::GetTransferStatus(
 }
 
 absl::StatusOr<std::vector<std::string>> ReshardClient::GetMetadata() {
-  absl::StatusOr<ctrlpb::ControlResponse> response =
+  absl::StatusOr<tpu_sync::rpc::ControlResponse> response =
       CallRaiden(BuildGetMetadata());
   if (!response.ok()) return response.status();
   std::vector<std::string> serialized;

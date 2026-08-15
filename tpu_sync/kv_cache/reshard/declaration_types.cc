@@ -36,7 +36,7 @@ std::string PythonReprIntList(const std::vector<int64_t>& values) {
   return absl::StrCat("[", absl::StrJoin(values, ", "), "]");
 }
 
-RaidenId RaidenIdFromProto(const tpu_raiden::rpc::RaidenIdProto& proto) {
+RaidenId RaidenIdFromProto(const tpu_sync::rpc::RaidenIdProto& proto) {
   RaidenId id;
   id.job_name = proto.job_name();
   id.job_replica_id = proto.job_replica_id();
@@ -45,8 +45,8 @@ RaidenId RaidenIdFromProto(const tpu_raiden::rpc::RaidenIdProto& proto) {
   return id;
 }
 
-tpu_raiden::rpc::RaidenIdProto RaidenIdToProto(const RaidenId& id) {
-  tpu_raiden::rpc::RaidenIdProto proto;
+tpu_sync::rpc::RaidenIdProto RaidenIdToProto(const RaidenId& id) {
+  tpu_sync::rpc::RaidenIdProto proto;
   proto.set_job_name(id.job_name);
   proto.set_job_replica_id(id.job_replica_id);
   proto.set_data_name(id.data_name);

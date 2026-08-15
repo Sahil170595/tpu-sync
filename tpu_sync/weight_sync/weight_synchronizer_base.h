@@ -35,11 +35,13 @@
 #include "tpu_sync/core/raiden_manager_base.h"
 #include "tpu_sync/core/raw_transfer_core.h"
 
-namespace tpu_raiden {
+namespace tpu_sync {
 namespace rpc {
 class StartTransferRequest;
 }  // namespace rpc
+}  // namespace tpu_sync
 
+namespace tpu_raiden {
 namespace weight_sync {
 
 struct WeightSyncMetrics {
@@ -135,7 +137,7 @@ class WeightSynchronizerBase : public tpu_raiden::RaidenManagerBase {
    * delivery to all remote peers.
    */
   absl::Status PushWeightsResharded(
-      const tpu_raiden::rpc::StartTransferRequest& request);
+      const tpu_sync::rpc::StartTransferRequest& request);
 
   const uint8_t* GetHostBufferPtr(size_t layer_idx, size_t shard_idx) const {
     if (layer_idx >= num_layers_ || shard_idx >= num_shards_) {
@@ -170,7 +172,7 @@ class WeightSynchronizerBase : public tpu_raiden::RaidenManagerBase {
           layer_buffers);
 
   void StoreSkipTiling(uint64_t uuid,
-                       const tpu_raiden::rpc::StartTransferRequest& request);
+                       const tpu_sync::rpc::StartTransferRequest& request);
 
   void SetSkipTiling(const std::vector<bool>& skip_tiling) {
     absl::MutexLock lock(skip_tiling_mu_);

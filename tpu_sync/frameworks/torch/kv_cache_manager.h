@@ -228,9 +228,9 @@ class KVCacheManager {
     return torch_manager_->get_local_endpoints();
   }
 
-  absl::Status RegisterActivePlan(uint64_t uuid,
-                                  const rpc::StartTransferRequest& request,
-                                  bool is_sender) {
+  absl::Status RegisterActivePlan(
+      uint64_t uuid, const ::tpu_sync::rpc::StartTransferRequest& request,
+      bool is_sender) {
     return torch_manager_->RegisterActivePlan(uuid, request, is_sender);
   }
 

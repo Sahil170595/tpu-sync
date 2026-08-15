@@ -49,6 +49,7 @@
 #include "tpu_sync/kv_cache/raiden_id.h"
 namespace tpu_raiden {
 namespace kv_cache {
+
 namespace {
 
 using ::absl_testing::StatusIs;
@@ -142,7 +143,8 @@ class KVCacheStoreServiceTest : public ::testing::Test {
 
 TEST_F(KVCacheStoreServiceTest, FetchEmptyRequest) {
   std::vector<std::string> empty_hashes;
-  tsl::Future<proto::FetchResponse> future = client_->Fetch(empty_hashes);
+  tsl::Future<::tpu_raiden::kv_cache::proto::FetchResponse> future =
+      client_->Fetch(empty_hashes);
   auto response_or = future.Await();
   ASSERT_OK(response_or.status());
   EXPECT_EQ(response_or->done_block_hashes_size(), 0);
@@ -151,18 +153,19 @@ TEST_F(KVCacheStoreServiceTest, FetchEmptyRequest) {
 TEST_F(KVCacheStoreServiceTest, Fetch5StepWorkflowSuccess) {
   std::vector<std::string> hashes = {"block_hash_1", "block_hash_2"};
   std::vector<int32_t> host_block_ids = {100, 101};
-  rpc::RaidenIdProto client_id;
+  ::tpu_sync::rpc::RaidenIdProto client_id;
   client_id.set_job_name("client_job");
   client_id.set_job_replica_id("0");
 
-  ::tpu_raiden::proto::RaidenWorkerEndpointsProto client_ep;
+  ::tpu_sync::proto::RaidenWorkerEndpointsProto client_ep;
   client_ep.set_node_id(0);
   client_ep.set_worker_id("dst_worker_0");
   auto* ep = client_ep.add_endpoints();
   ep->set_endpoint(test_worker_server_->server_address);
 
-  tsl::Future<proto::FetchResponse> future = client_->Fetch(
-      hashes, /*device_block_ids=*/{}, host_block_ids, client_id, {client_ep});
+  tsl::Future<::tpu_raiden::kv_cache::proto::FetchResponse> future =
+      client_->Fetch(hashes, /*device_block_ids=*/{}, host_block_ids, client_id,
+                     {client_ep});
   auto response_or = future.Await();
   ASSERT_OK(response_or.status());
   EXPECT_THAT(response_or->done_block_hashes(),
@@ -173,12 +176,13 @@ TEST_F(KVCacheStoreServiceTest, Fetch5StepWorkflowSuccess) {
 TEST_F(KVCacheStoreServiceTest, FetchCrossNodeMissingEndpointsFails) {
   std::vector<std::string> hashes = {"block_hash_1"};
   std::vector<int32_t> host_block_ids = {100};
-  rpc::RaidenIdProto client_id;
+  ::tpu_sync::rpc::RaidenIdProto client_id;
   client_id.set_job_name("client_job");
   client_id.set_job_replica_id("0");
 
-  tsl::Future<proto::FetchResponse> future = client_->Fetch(
-      hashes, /*device_block_ids=*/{}, host_block_ids, client_id);
+  tsl::Future<::tpu_raiden::kv_cache::proto::FetchResponse> future =
+      client_->Fetch(hashes, /*device_block_ids=*/{}, host_block_ids,
+                     client_id);
   auto response_or = future.Await();
   EXPECT_FALSE(response_or.status().ok());
   EXPECT_EQ(response_or.status().code(), absl::StatusCode::kInvalidArgument);
@@ -188,7 +192,7 @@ TEST_F(KVCacheStoreServiceTest, FetchValidationFailsForMissingHash) {
   std::vector<std::string> hashes = {"non_existent_hash"};
   std::vector<int32_t> host_block_ids = {100};
 
-  tsl::Future<proto::FetchResponse> future =
+  tsl::Future<::tpu_raiden::kv_cache::proto::FetchResponse> future =
       client_->Fetch(hashes, /*device_block_ids=*/{}, host_block_ids);
   auto response_or = future.Await();
   EXPECT_THAT(response_or.status(), StatusIs(absl::StatusCode::kNotFound));
@@ -212,16 +216,16 @@ TEST_F(KVCacheStoreServiceTest, FetchRoundTripsNonUtf8Hash) {
       {binary_hash}, {RaidenBlockID(src_raiden_id, 20, BlockStatus::HOST)},
       /*on_host=*/true));
 
-  rpc::RaidenIdProto client_id;
+  ::tpu_sync::rpc::RaidenIdProto client_id;
   client_id.set_job_name("client_job");
   client_id.set_job_replica_id("0");
 
-  ::tpu_raiden::proto::RaidenWorkerEndpointsProto client_ep;
+  ::tpu_sync::proto::RaidenWorkerEndpointsProto client_ep;
   client_ep.set_node_id(0);
   client_ep.set_worker_id("dst_worker_0");
   client_ep.add_endpoints()->set_endpoint(test_worker_server_->server_address);
 
-  tsl::Future<proto::FetchResponse> future =
+  tsl::Future<::tpu_raiden::kv_cache::proto::FetchResponse> future =
       client_->Fetch({binary_hash}, /*device_block_ids=*/{},
                      /*host_block_ids=*/{102}, client_id, {client_ep});
   auto response_or = future.Await();
@@ -240,7 +244,7 @@ TEST_F(KVCacheStoreServiceTest, FetchValidationFailsForNonHostBlock) {
   ASSERT_TRUE(store_->InsertAndLock(hashes, slices, /*on_host=*/false));
 
   std::vector<int32_t> host_block_ids = {100};
-  tsl::Future<proto::FetchResponse> future =
+  tsl::Future<::tpu_raiden::kv_cache::proto::FetchResponse> future =
       client_->Fetch(hashes, /*device_block_ids=*/{}, host_block_ids);
   auto response_or = future.Await();
   EXPECT_THAT(response_or.status(),
@@ -251,7 +255,7 @@ TEST_F(KVCacheStoreServiceTest, FetchMismatchedHostBlockCount) {
   std::vector<std::string> hashes = {"block_hash_1", "block_hash_2"};
   std::vector<int32_t> host_block_ids = {100};  // Mismatched size!
 
-  tsl::Future<proto::FetchResponse> future =
+  tsl::Future<::tpu_raiden::kv_cache::proto::FetchResponse> future =
       client_->Fetch(hashes, /*device_block_ids=*/{}, host_block_ids);
   auto response_or = future.Await();
   EXPECT_THAT(response_or.status(),
@@ -274,7 +278,7 @@ TEST_F(KVCacheStoreServiceTest, FetchNullStoreHandling) {
 
   std::vector<std::string> hashes = {"block_hash_1"};
   std::vector<int32_t> host_block_ids = {100};
-  tsl::Future<proto::FetchResponse> future =
+  tsl::Future<::tpu_raiden::kv_cache::proto::FetchResponse> future =
       null_client->Fetch(hashes, /*device_block_ids=*/{}, host_block_ids);
   auto response_or = future.Await();
   EXPECT_THAT(response_or.status(),
@@ -301,7 +305,8 @@ TEST_F(KVCacheStoreServiceTest, ConcurrentFetchRPCs) {
   std::vector<std::thread> threads;
   threads.reserve(kNumThreads);
 
-  std::vector<absl::StatusOr<proto::FetchResponse>> results(kNumThreads);
+  std::vector<absl::StatusOr<::tpu_raiden::kv_cache::proto::FetchResponse>>
+      results(kNumThreads);
 
   for (int i = 0; i < kNumThreads; ++i) {
     threads.emplace_back([this, i, &results]() {
@@ -327,9 +332,9 @@ TEST_F(KVCacheStoreServiceTest, ConcurrentFetchRPCs) {
   }
 }
 
-::tpu_raiden::proto::RaidenWorkerEndpointsProto MakeGroup(
+::tpu_sync::proto::RaidenWorkerEndpointsProto MakeGroup(
     int64_t node_id, absl::string_view worker_id, absl::string_view endpoint) {
-  ::tpu_raiden::proto::RaidenWorkerEndpointsProto group;
+  ::tpu_sync::proto::RaidenWorkerEndpointsProto group;
   group.set_node_id(node_id);
   group.set_worker_id(std::string(worker_id));
   auto* ep = group.add_endpoints();
@@ -339,14 +344,14 @@ TEST_F(KVCacheStoreServiceTest, ConcurrentFetchRPCs) {
 }
 
 TEST_F(KVCacheStoreServiceTest, FetchRoutesToClientAdvertisedEndpoints) {
-  rpc::RaidenIdProto client_id;
+  ::tpu_sync::rpc::RaidenIdProto client_id;
   client_id.set_job_name("client_job");
   client_id.set_job_replica_id("0");
   client_id.set_data_name("client_data");
   client_id.set_data_replica_idx(0);
 
   // The fixture's source controller has one worker, registered with node_id 0.
-  std::vector<::tpu_raiden::proto::RaidenWorkerEndpointsProto> groups = {
+  std::vector<::tpu_sync::proto::RaidenWorkerEndpointsProto> groups = {
       MakeGroup(/*node_id=*/0, "client_worker_0", "10.0.0.9:44001")};
 
   std::vector<std::string> hashes = {"block_hash_1"};
@@ -363,7 +368,7 @@ TEST_F(KVCacheStoreServiceTest, FetchRoutesToClientAdvertisedEndpoints) {
 }
 
 TEST_F(KVCacheStoreServiceTest, CrossNodeFetchWithoutEndpointsIsRejected) {
-  rpc::RaidenIdProto client_id;
+  ::tpu_sync::rpc::RaidenIdProto client_id;
   client_id.set_job_name("client_job");
   client_id.set_job_replica_id("0");
   client_id.set_data_name("client_data");
@@ -441,11 +446,11 @@ TEST_F(KVCacheStoreServiceTest, FetchWithMultiWorkerEndpointsRoutesPerWorker) {
       ::grpc::CreateChannel("localhost:" + std::to_string(port),
                             ::grpc::InsecureChannelCredentials()));
 
-  rpc::RaidenIdProto client_id;
+  ::tpu_sync::rpc::RaidenIdProto client_id;
   client_id.set_job_name("client_job");
   client_id.set_job_replica_id("0");
 
-  std::vector<::tpu_raiden::proto::RaidenWorkerEndpointsProto> groups = {
+  std::vector<::tpu_sync::proto::RaidenWorkerEndpointsProto> groups = {
       MakeGroup(/*node_id=*/10, "client_w_a", "10.0.0.10:45001"),
       MakeGroup(/*node_id=*/20, "client_w_b", "10.0.0.20:45002")};
 
@@ -471,12 +476,12 @@ TEST_F(KVCacheStoreServiceTest, FetchWithMultiWorkerEndpointsRoutesPerWorker) {
 // so with several workers the error can arrive with an earlier write already
 // in flight.
 TEST_F(KVCacheStoreServiceTest, FetchWithUnmatchedNodeIdFails) {
-  rpc::RaidenIdProto client_id;
+  ::tpu_sync::rpc::RaidenIdProto client_id;
   client_id.set_job_name("client_job");
   client_id.set_job_replica_id("0");
 
   // The fixture's worker is registered with the default node_id 0.
-  std::vector<::tpu_raiden::proto::RaidenWorkerEndpointsProto> groups = {
+  std::vector<::tpu_sync::proto::RaidenWorkerEndpointsProto> groups = {
       MakeGroup(/*node_id=*/99, "client_worker_x", "10.0.0.99:46001")};
 
   auto res = client_
@@ -559,8 +564,8 @@ class WriteRemoteTest : public ::testing::Test {
     if (server_) server_->Shutdown();
   }
 
-  static rpc::RaidenIdProto SrcIdProto() {
-    rpc::RaidenIdProto id;
+  static ::tpu_sync::rpc::RaidenIdProto SrcIdProto() {
+    ::tpu_sync::rpc::RaidenIdProto id;
     id.set_job_name("src_job");
     id.set_job_replica_id("0");
     id.set_data_name("src_data");
@@ -568,16 +573,16 @@ class WriteRemoteTest : public ::testing::Test {
     return id;
   }
 
-  static std::vector<::tpu_raiden::proto::RaidenWorkerEndpointsProto>
+  static std::vector<::tpu_sync::proto::RaidenWorkerEndpointsProto>
   SrcEndpoints() {
-    ::tpu_raiden::proto::RaidenWorkerEndpointsProto group;
+    ::tpu_sync::proto::RaidenWorkerEndpointsProto group;
     group.set_node_id(0);
     group.set_worker_id("src_worker_0");
     group.add_endpoints()->set_endpoint("127.0.0.1:9999");
     return {group};
   }
 
-  absl::StatusOr<proto::WriteRemoteResponse> Offer(
+  absl::StatusOr<::tpu_raiden::kv_cache::proto::WriteRemoteResponse> Offer(
       const std::vector<std::string>& hashes, int64_t deadline_ms = 5000) {
     std::vector<int32_t> src_ids(hashes.size(), 0);
     for (size_t i = 0; i < src_ids.size(); ++i) src_ids[i] = 100 + i;
@@ -587,24 +592,27 @@ class WriteRemoteTest : public ::testing::Test {
         .Await();
   }
 
-  absl::StatusOr<proto::PollWriteRemoteResponse> Poll(uint64_t op_id) {
+  absl::StatusOr<::tpu_raiden::kv_cache::proto::PollWriteRemoteResponse> Poll(
+      uint64_t op_id) {
     return client_->PollWriteRemote(op_id).Await();
   }
 
   // Polls until the operation leaves PENDING, or gives up. The completion runs
   // on the transfer's callback thread, so a terminal state is not visible the
   // instant Release() returns.
-  proto::PollWriteRemoteResponse::State AwaitTerminal(uint64_t op_id) {
+  ::tpu_raiden::kv_cache::proto::PollWriteRemoteResponse::State AwaitTerminal(
+      uint64_t op_id) {
     for (int i = 0; i < 200; ++i) {
       auto poll = Poll(op_id);
       if (poll.ok() &&
-          poll->state() != proto::PollWriteRemoteResponse::PENDING) {
+          poll->state() !=
+              ::tpu_raiden::kv_cache::proto::PollWriteRemoteResponse::PENDING) {
         last_poll_ = *poll;
         return poll->state();
       }
       absl::SleepFor(absl::Milliseconds(10));
     }
-    return proto::PollWriteRemoteResponse::PENDING;
+    return ::tpu_raiden::kv_cache::proto::PollWriteRemoteResponse::PENDING;
   }
 
   RaidenId dst_id_;
@@ -613,7 +621,7 @@ class WriteRemoteTest : public ::testing::Test {
   std::unique_ptr<KVCacheStoreServiceImpl> service_;
   std::unique_ptr<::grpc::Server> server_;
   std::unique_ptr<KVCacheStoreClient> client_;
-  proto::PollWriteRemoteResponse last_poll_;
+  ::tpu_raiden::kv_cache::proto::PollWriteRemoteResponse last_poll_;
 };
 
 TEST_F(WriteRemoteTest, RejectsAnEmptyOffer) {
@@ -642,7 +650,8 @@ TEST_F(WriteRemoteTest, AllExistNeedsNoSourceEndpoints) {
   auto response =
       client_->WriteRemote(SrcIdProto(), {"a"}, src_ids, {}, 5000).Await();
   ASSERT_OK(response.status());
-  EXPECT_EQ(response->exist_state(), proto::WRITE_ALL_EXIST);
+  EXPECT_EQ(response->exist_state(),
+            ::tpu_raiden::kv_cache::proto::WRITE_ALL_EXIST);
 }
 
 // proto3 gives a scalar no presence, so an unset deadline arrives as 0. If 0
@@ -650,14 +659,14 @@ TEST_F(WriteRemoteTest, AllExistNeedsNoSourceEndpoints) {
 // message about deadlines, which is not what is wrong.
 TEST_F(WriteRemoteTest, RejectsAnUnsetDeadline) {
   std::vector<int32_t> src_ids = {100};
-  proto::WriteRemoteRequest request;
+  ::tpu_raiden::kv_cache::proto::WriteRemoteRequest request;
   *request.mutable_src_raiden_id() = SrcIdProto();
   request.add_block_hashes("a");
   request.add_src_host_block_ids(100);
   *request.add_src_worker_endpoints() = SrcEndpoints()[0];
   request.set_deadline_ms(0);
 
-  proto::WriteRemoteResponse response;
+  ::tpu_raiden::kv_cache::proto::WriteRemoteResponse response;
   ::grpc::ServerContext context;
   auto status = service_->WriteRemote(&context, &request, &response);
   EXPECT_EQ(status.error_code(), ::grpc::StatusCode::INVALID_ARGUMENT);
@@ -665,7 +674,7 @@ TEST_F(WriteRemoteTest, RejectsAnUnsetDeadline) {
 }
 
 TEST_F(WriteRemoteTest, RejectsAnOfferFromItself) {
-  rpc::RaidenIdProto self;
+  ::tpu_sync::rpc::RaidenIdProto self;
   self.set_job_name(dst_id_.job_name);
   self.set_job_replica_id(dst_id_.job_replica_id);
   self.set_data_name(dst_id_.data_name);
@@ -687,7 +696,8 @@ TEST_F(WriteRemoteTest, AllExistIsAnImmediateSuccess) {
   auto response = Offer({"a", "b"});
   ASSERT_OK(response.status());
   EXPECT_EQ(response->operation_id(), 0);
-  EXPECT_EQ(response->exist_state(), proto::WRITE_ALL_EXIST);
+  EXPECT_EQ(response->exist_state(),
+            ::tpu_raiden::kv_cache::proto::WRITE_ALL_EXIST);
   EXPECT_EQ(latch_.issued(), 0) << "nothing should have been transferred";
 }
 
@@ -700,7 +710,8 @@ TEST_F(WriteRemoteTest, PartialExistIsRefusedAndNamesWhatItHas) {
   auto response = Offer({"a", "b"});
   ASSERT_OK(response.status());
   EXPECT_EQ(response->operation_id(), 0);
-  EXPECT_EQ(response->exist_state(), proto::WRITE_PARTIAL_EXIST);
+  EXPECT_EQ(response->exist_state(),
+            ::tpu_raiden::kv_cache::proto::WRITE_PARTIAL_EXIST);
   EXPECT_THAT(response->existing_hashes(), UnorderedElementsAre("a"));
   EXPECT_EQ(latch_.issued(), 0);
   EXPECT_EQ(store_->backend()->GetSize(), 1) << "nothing should have landed";
@@ -710,17 +721,18 @@ TEST_F(WriteRemoteTest, AcceptsAndAnswersWithoutWaitingForBytes) {
   auto response = Offer({"a", "b"});
   ASSERT_OK(response.status());
   EXPECT_NE(response->operation_id(), 0);
-  EXPECT_EQ(response->exist_state(), proto::WRITE_EXIST_STATE_UNSPECIFIED);
+  EXPECT_EQ(response->exist_state(),
+            ::tpu_raiden::kv_cache::proto::WRITE_EXIST_STATE_UNSPECIFIED);
   EXPECT_GT(response->granted_deadline_ms(), 0);
   // The handler returned while the transfer is still outstanding. That is the
   // contract, and it is what stops a slow peer occupying a handler thread.
   EXPECT_EQ(latch_.issued(), 1);
   EXPECT_EQ(Poll(response->operation_id())->state(),
-            proto::PollWriteRemoteResponse::PENDING);
+            ::tpu_raiden::kv_cache::proto::PollWriteRemoteResponse::PENDING);
 
   latch_.Release(absl::OkStatus());
   EXPECT_EQ(AwaitTerminal(response->operation_id()),
-            proto::PollWriteRemoteResponse::COMMITTED);
+            ::tpu_raiden::kv_cache::proto::PollWriteRemoteResponse::COMMITTED);
 }
 
 // The cap bounds how long this node holds landing blocks for ANY source,
@@ -741,7 +753,7 @@ TEST_F(WriteRemoteTest, CommitInsertsTheBlocksAndReportsThem) {
   latch_.Release(absl::OkStatus());
 
   ASSERT_EQ(AwaitTerminal(response->operation_id()),
-            proto::PollWriteRemoteResponse::COMMITTED);
+            ::tpu_raiden::kv_cache::proto::PollWriteRemoteResponse::COMMITTED);
   EXPECT_THAT(last_poll_.committed_hashes(), UnorderedElementsAre("a", "b"));
   EXPECT_THAT(store_->backend()->AlreadyPresentHostResident({"a", "b"}),
               UnorderedElementsAre("a", "b"));
@@ -753,7 +765,7 @@ TEST_F(WriteRemoteTest, TransferFailureFreesTheLandingBlocks) {
   latch_.Release(absl::InternalError("pull failed"));
 
   ASSERT_EQ(AwaitTerminal(response->operation_id()),
-            proto::PollWriteRemoteResponse::FAILED);
+            ::tpu_raiden::kv_cache::proto::PollWriteRemoteResponse::FAILED);
   EXPECT_THAT(last_poll_.failed_hashes(), UnorderedElementsAre("a", "b"));
   EXPECT_TRUE(
       store_->backend()->AlreadyPresentHostResident({"a", "b"}).empty());
@@ -774,13 +786,15 @@ TEST_F(WriteRemoteTest, ATransferThatResolvesPastTheDeadlineNeverCommits) {
   absl::SleepFor(absl::Milliseconds(300));
   // The verdict is already FAILED, but the blocks are still held: only the
   // workers reporting may release them.
-  ASSERT_EQ(Poll(op_id)->state(), proto::PollWriteRemoteResponse::FAILED);
+  ASSERT_EQ(Poll(op_id)->state(),
+            ::tpu_raiden::kv_cache::proto::PollWriteRemoteResponse::FAILED);
 
   latch_.Release(absl::OkStatus());
   // Give the completion time to run and lose the claim.
   absl::SleepFor(absl::Milliseconds(200));
 
-  EXPECT_EQ(Poll(op_id)->state(), proto::PollWriteRemoteResponse::FAILED);
+  EXPECT_EQ(Poll(op_id)->state(),
+            ::tpu_raiden::kv_cache::proto::PollWriteRemoteResponse::FAILED);
   EXPECT_TRUE(store_->backend()->AlreadyPresentHostResident({"a", "b"}).empty())
       << "a post-deadline transfer inserted its bytes anyway";
   auto reallocated = store_->raiden_controller()->AllocateBlockIds(kCapacity);
@@ -801,10 +815,12 @@ TEST_F(WriteRemoteTest, TheClaimRefusesALateTransferEvenIfNoThreadFiredIt) {
 
   absl::SleepFor(absl::Milliseconds(300));
   // Nothing fired the deadline, so the operation still reads as PENDING.
-  ASSERT_EQ(Poll(op_id)->state(), proto::PollWriteRemoteResponse::PENDING);
+  ASSERT_EQ(Poll(op_id)->state(),
+            ::tpu_raiden::kv_cache::proto::PollWriteRemoteResponse::PENDING);
 
   latch_.Release(absl::OkStatus());
-  ASSERT_EQ(AwaitTerminal(op_id), proto::PollWriteRemoteResponse::FAILED)
+  ASSERT_EQ(AwaitTerminal(op_id),
+            ::tpu_raiden::kv_cache::proto::PollWriteRemoteResponse::FAILED)
       << "a transfer that resolved past its deadline was allowed to commit";
   EXPECT_TRUE(
       store_->backend()->AlreadyPresentHostResident({"a", "b"}).empty());
@@ -826,7 +842,7 @@ TEST_F(WriteRemoteTest, LosingTheRaceAtInsertTimeReportsAllExistAndFrees) {
 
   latch_.Release(absl::OkStatus());
   ASSERT_EQ(AwaitTerminal(response->operation_id()),
-            proto::PollWriteRemoteResponse::ALL_EXIST);
+            ::tpu_raiden::kv_cache::proto::PollWriteRemoteResponse::ALL_EXIST);
   auto reallocated = store_->raiden_controller()->AllocateBlockIds(kCapacity);
   EXPECT_TRUE(reallocated.ok()) << "the landing blocks were never returned: "
                                 << reallocated.status().ToString();
@@ -845,8 +861,9 @@ TEST_F(WriteRemoteTest, PartialExistDiscoveredAtInsertTimeReachesThePoll) {
       {"a"}, {RaidenBlockID(dst_id_, 6, BlockStatus::HOST)}));
 
   latch_.Release(absl::OkStatus());
-  ASSERT_EQ(AwaitTerminal(response->operation_id()),
-            proto::PollWriteRemoteResponse::PARTIAL_EXIST);
+  ASSERT_EQ(
+      AwaitTerminal(response->operation_id()),
+      ::tpu_raiden::kv_cache::proto::PollWriteRemoteResponse::PARTIAL_EXIST);
   EXPECT_THAT(last_poll_.existing_hashes(), UnorderedElementsAre("a"));
   // "b" was never inserted: this destination does not do partial writes.
   EXPECT_TRUE(store_->backend()->AlreadyPresentHostResident({"b"}).empty());
@@ -875,13 +892,14 @@ TEST_F(WriteRemoteTest, RefusesWhenThereAreNoFreeBlocksAndEvictsNothing) {
 TEST_F(WriteRemoteTest, PollOfAnUnknownOperationIsUnknown) {
   auto poll = Poll(999999);
   ASSERT_OK(poll.status());
-  EXPECT_EQ(poll->state(), proto::PollWriteRemoteResponse::UNKNOWN);
+  EXPECT_EQ(poll->state(),
+            ::tpu_raiden::kv_cache::proto::PollWriteRemoteResponse::UNKNOWN);
 }
 
 TEST_F(WriteRemoteTest, PollRejectsTheReservedOperationId) {
-  proto::PollWriteRemoteRequest request;
+  ::tpu_raiden::kv_cache::proto::PollWriteRemoteRequest request;
   request.set_operation_id(0);
-  proto::PollWriteRemoteResponse response;
+  ::tpu_raiden::kv_cache::proto::PollWriteRemoteResponse response;
   ::grpc::ServerContext context;
   auto status = service_->PollWriteRemote(&context, &request, &response);
   EXPECT_EQ(status.error_code(), ::grpc::StatusCode::INVALID_ARGUMENT);
@@ -925,11 +943,11 @@ TEST(WriteRemoteRegistryFailureTest, StoredButUnregisteredIsReportedAsSuch) {
       ::grpc::CreateChannel("localhost:" + std::to_string(port),
                             ::grpc::InsecureChannelCredentials()));
 
-  rpc::RaidenIdProto src_id;
+  ::tpu_sync::rpc::RaidenIdProto src_id;
   src_id.set_job_name("src_job_unreg");
   src_id.set_job_replica_id("0");
   src_id.set_data_name("src_data");
-  ::tpu_raiden::proto::RaidenWorkerEndpointsProto group;
+  ::tpu_sync::proto::RaidenWorkerEndpointsProto group;
   group.set_node_id(0);
   group.set_worker_id("src_worker_0");
   group.add_endpoints()->set_endpoint("127.0.0.1:9999");
@@ -946,18 +964,20 @@ TEST(WriteRemoteRegistryFailureTest, StoredButUnregisteredIsReportedAsSuch) {
   registry_server->server->Shutdown();
   latch.Release(absl::OkStatus());
 
-  proto::PollWriteRemoteResponse poll;
+  ::tpu_raiden::kv_cache::proto::PollWriteRemoteResponse poll;
   for (int i = 0; i < 300; ++i) {
     auto polled = client.PollWriteRemote(op_id).Await();
     ASSERT_OK(polled.status());
-    if (polled->state() != proto::PollWriteRemoteResponse::PENDING) {
+    if (polled->state() !=
+        ::tpu_raiden::kv_cache::proto::PollWriteRemoteResponse::PENDING) {
       poll = *polled;
       break;
     }
     absl::SleepFor(absl::Milliseconds(10));
   }
 
-  EXPECT_EQ(poll.state(), proto::PollWriteRemoteResponse::STORED_UNREGISTERED);
+  EXPECT_EQ(poll.state(), ::tpu_raiden::kv_cache::proto::
+                              PollWriteRemoteResponse::STORED_UNREGISTERED);
   EXPECT_THAT(poll.unregistered_hashes(),
               UnorderedElementsAre("unreg_a", "unreg_b"));
   EXPECT_TRUE(poll.committed_hashes().empty())

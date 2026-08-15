@@ -493,8 +493,8 @@ absl::StatusOr<std::pair<int64_t, int64_t>> PhysicalLiveRangeToLogical(
                    ") crosses padding or lies outside declared live regions"));
 }
 
-tpu_raiden::rpc::RegionSpecProto ToProto(const RegionSpec& region) {
-  tpu_raiden::rpc::RegionSpecProto proto;
+tpu_sync::rpc::RegionSpecProto ToProto(const RegionSpec& region) {
+  tpu_sync::rpc::RegionSpecProto proto;
   proto.set_name(region.name);
   proto.set_offset_bytes(region.offset_bytes);
   proto.set_stride_bytes(region.stride_bytes);
@@ -505,7 +505,7 @@ tpu_raiden::rpc::RegionSpecProto ToProto(const RegionSpec& region) {
 }
 
 absl::StatusOr<RegionSpec> RegionSpecFromProto(
-    const tpu_raiden::rpc::RegionSpecProto& proto) {
+    const tpu_sync::rpc::RegionSpecProto& proto) {
   return RegionSpec{
       .name = proto.name(),
       .offset_bytes = proto.offset_bytes(),
@@ -516,8 +516,8 @@ absl::StatusOr<RegionSpec> RegionSpecFromProto(
   };
 }
 
-tpu_raiden::rpc::PoolSpecProto ToProto(const PoolSpec& pool) {
-  tpu_raiden::rpc::PoolSpecProto proto;
+tpu_sync::rpc::PoolSpecProto ToProto(const PoolSpec& pool) {
+  tpu_sync::rpc::PoolSpecProto proto;
   proto.set_tag(pool.tag);
   proto.set_storage_index(static_cast<int64_t>(pool.storage_index));
   proto.set_base_offset_bytes(pool.base_offset_bytes);
@@ -531,7 +531,7 @@ tpu_raiden::rpc::PoolSpecProto ToProto(const PoolSpec& pool) {
 }
 
 absl::StatusOr<PoolSpec> PoolSpecFromProto(
-    const tpu_raiden::rpc::PoolSpecProto& proto) {
+    const tpu_sync::rpc::PoolSpecProto& proto) {
   if (proto.storage_index() < 0) {
     return absl::InvalidArgumentError("storage_index must be non-negative");
   }

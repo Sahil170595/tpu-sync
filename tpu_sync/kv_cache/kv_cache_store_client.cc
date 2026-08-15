@@ -35,38 +35,44 @@ namespace kv_cache {
 
 KVCacheStoreClient::KVCacheStoreClient(
     std::shared_ptr<::grpc::ChannelInterface> channel)
-    : stub_(proto::KVCacheStoreService::NewStub(channel)) {}
+    : stub_(::tpu_raiden::kv_cache::proto::KVCacheStoreService::NewStub(
+          channel)) {}
 
 KVCacheStoreClient::KVCacheStoreClient(
-    std::unique_ptr<proto::KVCacheStoreService::StubInterface> stub)
+    std::unique_ptr<
+        ::tpu_raiden::kv_cache::proto::KVCacheStoreService::StubInterface>
+        stub)
     : stub_(std::move(stub)) {}
 
-tsl::Future<proto::FetchResponse> KVCacheStoreClient::Fetch(
+tsl::Future<::tpu_raiden::kv_cache::proto::FetchResponse>
+KVCacheStoreClient::Fetch(
     absl::Span<const std::string> block_hashes,
     absl::Span<const int32_t> device_block_ids,
     absl::Span<const int32_t> host_block_ids,
-    const rpc::RaidenIdProto& client_raiden_id,
-    absl::Span<const ::tpu_raiden::proto::RaidenWorkerEndpointsProto>
+    const ::tpu_sync::rpc::RaidenIdProto& client_raiden_id,
+    absl::Span<const ::tpu_sync::proto::RaidenWorkerEndpointsProto>
         client_worker_endpoints) {
   if (block_hashes.empty()) {
-    return tsl::Future<proto::FetchResponse>(proto::FetchResponse{});
+    return tsl::Future<::tpu_raiden::kv_cache::proto::FetchResponse>(
+        ::tpu_raiden::kv_cache::proto::FetchResponse{});
   }
 
   if (!device_block_ids.empty() &&
       device_block_ids.size() != block_hashes.size()) {
-    return tsl::Future<proto::FetchResponse>(
+    return tsl::Future<::tpu_raiden::kv_cache::proto::FetchResponse>(
         absl::InvalidArgumentError(absl::StrCat(
             "Mismatched device_block_ids count (", device_block_ids.size(),
             ") vs block_hashes count (", block_hashes.size(), ").")));
   }
 
   if (!host_block_ids.empty() && host_block_ids.size() != block_hashes.size()) {
-    return tsl::Future<proto::FetchResponse>(absl::InvalidArgumentError(
-        absl::StrCat("Mismatched host_block_ids count (", host_block_ids.size(),
-                     ") vs block_hashes count (", block_hashes.size(), ").")));
+    return tsl::Future<::tpu_raiden::kv_cache::proto::FetchResponse>(
+        absl::InvalidArgumentError(absl::StrCat(
+            "Mismatched host_block_ids count (", host_block_ids.size(),
+            ") vs block_hashes count (", block_hashes.size(), ").")));
   }
 
-  proto::FetchRequest request;
+  ::tpu_raiden::kv_cache::proto::FetchRequest request;
   for (const auto& hash : block_hashes) {
     request.add_block_hashes(hash);
   }
@@ -83,9 +89,11 @@ tsl::Future<proto::FetchResponse> KVCacheStoreClient::Fetch(
     *request.add_client_worker_endpoints() = group;
   }
 
-  auto [promise, future] = tsl::MakePromise<proto::FetchResponse>();
+  auto [promise, future] =
+      tsl::MakePromise<::tpu_raiden::kv_cache::proto::FetchResponse>();
   auto context = std::make_shared<grpc::ClientContext>();
-  auto response = std::make_shared<proto::FetchResponse>();
+  auto response =
+      std::make_shared<::tpu_raiden::kv_cache::proto::FetchResponse>();
 
   stub_->async()->Fetch(
       context.get(), &request, response.get(),
@@ -102,30 +110,32 @@ tsl::Future<proto::FetchResponse> KVCacheStoreClient::Fetch(
   return future;
 }
 
-tsl::Future<proto::WriteRemoteResponse> KVCacheStoreClient::WriteRemote(
-    const rpc::RaidenIdProto& src_raiden_id,
+tsl::Future<::tpu_raiden::kv_cache::proto::WriteRemoteResponse>
+KVCacheStoreClient::WriteRemote(
+    const ::tpu_sync::rpc::RaidenIdProto& src_raiden_id,
     absl::Span<const std::string> block_hashes,
     absl::Span<const int32_t> src_host_block_ids,
-    absl::Span<const ::tpu_raiden::proto::RaidenWorkerEndpointsProto>
+    absl::Span<const ::tpu_sync::proto::RaidenWorkerEndpointsProto>
         src_worker_endpoints,
     int64_t deadline_ms) {
   if (block_hashes.empty()) {
-    return tsl::Future<proto::WriteRemoteResponse>(
+    return tsl::Future<::tpu_raiden::kv_cache::proto::WriteRemoteResponse>(
         absl::InvalidArgumentError("WriteRemote requires at least one hash."));
   }
   if (src_host_block_ids.size() != block_hashes.size()) {
-    return tsl::Future<proto::WriteRemoteResponse>(
+    return tsl::Future<::tpu_raiden::kv_cache::proto::WriteRemoteResponse>(
         absl::InvalidArgumentError(absl::StrCat(
             "Mismatched src_host_block_ids count (", src_host_block_ids.size(),
             ") vs block_hashes count (", block_hashes.size(), ").")));
   }
   if (deadline_ms <= 0) {
-    return tsl::Future<proto::WriteRemoteResponse>(absl::InvalidArgumentError(
-        absl::StrCat("WriteRemote requires a positive deadline_ms, got ",
-                     deadline_ms, ".")));
+    return tsl::Future<::tpu_raiden::kv_cache::proto::WriteRemoteResponse>(
+        absl::InvalidArgumentError(
+            absl::StrCat("WriteRemote requires a positive deadline_ms, got ",
+                         deadline_ms, ".")));
   }
 
-  proto::WriteRemoteRequest request;
+  ::tpu_raiden::kv_cache::proto::WriteRemoteRequest request;
   *request.mutable_src_raiden_id() = src_raiden_id;
   for (const auto& hash : block_hashes) {
     request.add_block_hashes(hash);
@@ -139,9 +149,11 @@ tsl::Future<proto::WriteRemoteResponse> KVCacheStoreClient::WriteRemote(
   }
   request.set_deadline_ms(deadline_ms);
 
-  auto [promise, future] = tsl::MakePromise<proto::WriteRemoteResponse>();
+  auto [promise, future] =
+      tsl::MakePromise<::tpu_raiden::kv_cache::proto::WriteRemoteResponse>();
   auto context = std::make_shared<grpc::ClientContext>();
-  auto response = std::make_shared<proto::WriteRemoteResponse>();
+  auto response =
+      std::make_shared<::tpu_raiden::kv_cache::proto::WriteRemoteResponse>();
 
   stub_->async()->WriteRemote(
       context.get(), &request, response.get(),
@@ -159,20 +171,22 @@ tsl::Future<proto::WriteRemoteResponse> KVCacheStoreClient::WriteRemote(
   return future;
 }
 
-tsl::Future<proto::PollWriteRemoteResponse> KVCacheStoreClient::PollWriteRemote(
-    uint64_t operation_id) {
+tsl::Future<::tpu_raiden::kv_cache::proto::PollWriteRemoteResponse>
+KVCacheStoreClient::PollWriteRemote(uint64_t operation_id) {
   if (operation_id == 0) {
-    return tsl::Future<proto::PollWriteRemoteResponse>(
+    return tsl::Future<::tpu_raiden::kv_cache::proto::PollWriteRemoteResponse>(
         absl::InvalidArgumentError(
             "operation_id 0 is reserved and never identifies an operation."));
   }
 
-  proto::PollWriteRemoteRequest request;
+  ::tpu_raiden::kv_cache::proto::PollWriteRemoteRequest request;
   request.set_operation_id(operation_id);
 
-  auto [promise, future] = tsl::MakePromise<proto::PollWriteRemoteResponse>();
+  auto [promise, future] = tsl::MakePromise<
+      ::tpu_raiden::kv_cache::proto::PollWriteRemoteResponse>();
   auto context = std::make_shared<grpc::ClientContext>();
-  auto response = std::make_shared<proto::PollWriteRemoteResponse>();
+  auto response = std::make_shared<
+      ::tpu_raiden::kv_cache::proto::PollWriteRemoteResponse>();
 
   stub_->async()->PollWriteRemote(
       context.get(), &request, response.get(),

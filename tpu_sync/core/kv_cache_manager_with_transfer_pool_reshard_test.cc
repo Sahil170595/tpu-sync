@@ -36,6 +36,10 @@
 namespace tpu_raiden {
 namespace {
 
+using ::tpu_sync::rpc::MEMORY_TYPE_HBM;
+using ::tpu_sync::rpc::ShardPushEntryProto;
+using ::tpu_sync::rpc::StartTransferRequest;
+
 class TestManager : public KVCacheManagerWithTransfer {
  public:
   explicit TestManager(double timeout_s = 30.0)
@@ -76,13 +80,13 @@ kv_cache::PoolSpec DensePool(std::string tag, int64_t block_stride = 128,
   };
 }
 
-rpc::StartTransferRequest ValidPlan(
+StartTransferRequest ValidPlan(
     int64_t uuid, const std::vector<std::string>& dtype_tags = {"bf16"},
     const std::vector<int32_t>& transferred_pools = {0}) {
-  rpc::StartTransferRequest plan;
+  StartTransferRequest plan;
   plan.set_uuid(uuid);
   plan.set_req_id("pool_reshard_req_" + std::to_string(uuid));
-  plan.set_dst_mem_type(rpc::MEMORY_TYPE_HBM);
+  plan.set_dst_mem_type(MEMORY_TYPE_HBM);
   plan.set_use_block_chunks(true);
   plan.set_parallelism(1);
   for (int32_t pool_idx : transferred_pools) {
@@ -122,7 +126,7 @@ void ExpectInvalid(const absl::Status& status, const std::string& fragment) {
 TEST(PoolReshardValidationTest, AcceptsCanonicalPlanOnExplicitPools) {
   TestManager manager;
   ASSERT_TRUE(manager.RegisterPools({DensePool("fa")}).ok());
-  rpc::StartTransferRequest plan = ValidPlan(/*uuid=*/1001);
+  StartTransferRequest plan = ValidPlan(/*uuid=*/1001);
 
   EXPECT_TRUE(manager
                   .ValidatePoolReshardPlan(plan, std::vector<int64_t>{0},
@@ -139,8 +143,7 @@ TEST(PoolReshardValidationTest, AcceptsImplicitPools) {
   // opaque pool per storage (dtype_tag ""); a legacy whole-manager transfer
   // is expressible against it (N5).
   TestManager manager;
-  rpc::StartTransferRequest plan =
-      ValidPlan(/*uuid=*/1002, /*dtype_tags=*/{""});
+  StartTransferRequest plan = ValidPlan(/*uuid=*/1002, /*dtype_tags=*/{""});
 
   EXPECT_TRUE(manager
                   .ValidatePoolReshardPlan(plan, std::vector<int64_t>{0},
@@ -154,7 +157,7 @@ TEST(PoolReshardValidationTest, HasNoTagPolicy) {
   // declares; no tag value is special-cased.
   TestManager manager;
   ASSERT_TRUE(manager.RegisterPools({DensePool("gdn.conv")}).ok());
-  rpc::StartTransferRequest plan = ValidPlan(/*uuid=*/1003);
+  StartTransferRequest plan = ValidPlan(/*uuid=*/1003);
 
   EXPECT_TRUE(manager
                   .ValidatePoolReshardPlan(plan, std::vector<int64_t>{0},
@@ -165,7 +168,7 @@ TEST(PoolReshardValidationTest, HasNoTagPolicy) {
 TEST(PoolReshardValidationTest, DeviceOnlyRejectionAtPublicEntryPoints) {
   TestManager manager;
   ASSERT_TRUE(manager.RegisterPools({DensePool("fa")}).ok());
-  rpc::StartTransferRequest plan = ValidPlan(/*uuid=*/1004);
+  StartTransferRequest plan = ValidPlan(/*uuid=*/1004);
 
   const absl::Status recv_status =
       manager.PoolReshardRegisterRecv(plan, std::vector<int64_t>{0});
@@ -184,7 +187,7 @@ TEST(PoolReshardValidationTest, RejectsMissingIdentityAndPoolFields) {
   TestManager manager;
   ASSERT_TRUE(manager.RegisterPools({DensePool("fa")}).ok());
 
-  rpc::StartTransferRequest plan = ValidPlan(/*uuid=*/1005);
+  StartTransferRequest plan = ValidPlan(/*uuid=*/1005);
   plan.clear_req_id();
   ExpectInvalid(manager.ValidatePoolReshardPlan(plan, std::vector<int64_t>{0},
                                                 /*is_sender=*/false),
@@ -218,9 +221,8 @@ TEST(PoolReshardValidationTest, RejectsOutOfRangeDuplicateAndDtypeMismatch) {
   TestManager manager;
   ASSERT_TRUE(manager.RegisterPools({DensePool("fa")}).ok());
 
-  rpc::StartTransferRequest plan =
-      ValidPlan(/*uuid=*/1009, /*dtype_tags=*/{"bf16"},
-                /*transferred_pools=*/{1});
+  StartTransferRequest plan = ValidPlan(/*uuid=*/1009, /*dtype_tags=*/{"bf16"},
+                                        /*transferred_pools=*/{1});
   ExpectInvalid(manager.ValidatePoolReshardPlan(plan, std::vector<int64_t>{0},
                                                 /*is_sender=*/false),
                 "out of range");
@@ -246,7 +248,7 @@ TEST(PoolReshardValidationTest, ChecksEveryPoolSpanAndDestinationZeroCover) {
   TestManager manager;
   ASSERT_TRUE(
       manager.RegisterPools({DensePool("fa", 128), DensePool("fa", 64)}).ok());
-  rpc::StartTransferRequest plan =
+  StartTransferRequest plan =
       ValidPlan(/*uuid=*/1013, /*dtype_tags=*/{"bf16", "bf16"},
                 /*transferred_pools=*/{0, 1});
   auto* entry = plan.mutable_shard_push_schedules()->at(0).mutable_entries(0);
@@ -275,7 +277,7 @@ TEST(PoolReshardValidationTest, ChecksEveryPoolSpanAndDestinationZeroCover) {
 TEST(PoolReshardValidationTest, RejectsOverflowingSenderSpan) {
   TestManager manager;
   ASSERT_TRUE(manager.RegisterPools({DensePool("fa")}).ok());
-  rpc::StartTransferRequest plan = ValidPlan(/*uuid=*/1016);
+  StartTransferRequest plan = ValidPlan(/*uuid=*/1016);
   auto* entry = plan.mutable_shard_push_schedules()->at(0).mutable_entries(0);
   entry->set_src_offset_bytes(96);
   entry->set_src_stride_bytes(std::numeric_limits<int64_t>::max());
@@ -311,7 +313,7 @@ TEST(PoolReshardValidationTest,
       },
   };
   ASSERT_TRUE(manager.RegisterPools({pool}).ok());
-  rpc::StartTransferRequest plan = ValidPlan(/*uuid=*/1019);
+  StartTransferRequest plan = ValidPlan(/*uuid=*/1019);
   EXPECT_TRUE(manager
                   .ValidatePoolReshardPlan(plan, std::vector<int64_t>{0},
                                            /*is_sender=*/true)
@@ -325,10 +327,9 @@ TEST(PoolReshardValidationTest,
                 "source span exceeds declared pool 0 live regions");
 }
 
-rpc::ShardPushEntryProto* AddEntry(rpc::StartTransferRequest& plan,
-                                   int32_t schedule_key, int64_t dst_block_id,
-                                   int64_t dst_offset, int64_t size,
-                                   int32_t group_idx = 0) {
+ShardPushEntryProto* AddEntry(StartTransferRequest& plan, int32_t schedule_key,
+                              int64_t dst_block_id, int64_t dst_offset,
+                              int64_t size, int32_t group_idx = 0) {
   auto* entry =
       (*plan.mutable_shard_push_schedules())[schedule_key].add_entries();
   entry->set_dst_peer("127.0.0.1:1");
@@ -348,7 +349,7 @@ rpc::ShardPushEntryProto* AddEntry(rpc::StartTransferRequest& plan,
 TEST(PoolReshardReceiverCoverageTest, RejectsCoverageGap) {
   TestManager manager;
   ASSERT_TRUE(manager.RegisterPools({DensePool("fa")}).ok());
-  rpc::StartTransferRequest plan = ValidPlan(/*uuid=*/1101);
+  StartTransferRequest plan = ValidPlan(/*uuid=*/1101);
   plan.mutable_pool_groups(0)->clear_dst_expected_extent_bytes();
   plan.mutable_pool_groups(0)->add_dst_expected_extent_bytes(48);
   AddEntry(plan, 0, /*dst_block_id=*/0, /*dst_offset=*/32, /*size=*/16);
@@ -365,7 +366,7 @@ TEST(PoolReshardReceiverCoverageTest, RejectsCoverageGap) {
 TEST(PoolReshardReceiverCoverageTest, RejectsCoverageOverlap) {
   TestManager manager;
   ASSERT_TRUE(manager.RegisterPools({DensePool("fa")}).ok());
-  rpc::StartTransferRequest plan = ValidPlan(/*uuid=*/1102);
+  StartTransferRequest plan = ValidPlan(/*uuid=*/1102);
   plan.mutable_pool_groups(0)->clear_dst_expected_extent_bytes();
   plan.mutable_pool_groups(0)->add_dst_expected_extent_bytes(24);
   AddEntry(plan, 0, /*dst_block_id=*/0, /*dst_offset=*/8, /*size=*/16);
@@ -378,7 +379,7 @@ TEST(PoolReshardReceiverCoverageTest, RejectsCoverageOverlap) {
 TEST(PoolReshardReceiverCoverageTest, RejectsShortCoverage) {
   TestManager manager;
   ASSERT_TRUE(manager.RegisterPools({DensePool("fa")}).ok());
-  rpc::StartTransferRequest plan = ValidPlan(/*uuid=*/1103);
+  StartTransferRequest plan = ValidPlan(/*uuid=*/1103);
   plan.mutable_pool_groups(0)->clear_dst_expected_extent_bytes();
   plan.mutable_pool_groups(0)->add_dst_expected_extent_bytes(24);
 
@@ -390,7 +391,7 @@ TEST(PoolReshardReceiverCoverageTest, RejectsShortCoverage) {
 TEST(PoolReshardReceiverCoverageTest, RejectsNonPrefixExtents) {
   TestManager manager;
   ASSERT_TRUE(manager.RegisterPools({DensePool("fa")}).ok());
-  rpc::StartTransferRequest plan = ValidPlan(/*uuid=*/1104);
+  StartTransferRequest plan = ValidPlan(/*uuid=*/1104);
   auto* group = plan.mutable_pool_groups(0);
   group->add_dst_device_block_ids(1);
   group->clear_dst_expected_extent_bytes();
@@ -407,7 +408,7 @@ TEST(PoolReshardReceiverCoverageTest, RejectsNonPrefixExtents) {
 TEST(PoolReshardReceiverCoverageTest, RejectsMissingExtents) {
   TestManager manager;
   ASSERT_TRUE(manager.RegisterPools({DensePool("fa")}).ok());
-  rpc::StartTransferRequest plan = ValidPlan(/*uuid=*/1105);
+  StartTransferRequest plan = ValidPlan(/*uuid=*/1105);
   plan.mutable_pool_groups(0)->clear_dst_expected_extent_bytes();
 
   ExpectInvalid(manager.ValidatePoolReshardPlan(plan, std::vector<int64_t>{0},
@@ -418,7 +419,7 @@ TEST(PoolReshardReceiverCoverageTest, RejectsMissingExtents) {
 TEST(PoolReshardReceiverCoverageTest, RejectsMissingParallelism) {
   TestManager manager;
   ASSERT_TRUE(manager.RegisterPools({DensePool("fa")}).ok());
-  rpc::StartTransferRequest plan = ValidPlan(/*uuid=*/1106);
+  StartTransferRequest plan = ValidPlan(/*uuid=*/1106);
   plan.set_parallelism(0);
 
   ExpectInvalid(manager.ValidatePoolReshardPlan(plan, std::vector<int64_t>{0},
@@ -429,7 +430,7 @@ TEST(PoolReshardReceiverCoverageTest, RejectsMissingParallelism) {
 TEST(PoolReshardReceiverCoverageTest, RejectsExpectedPushMismatch) {
   TestManager manager;
   ASSERT_TRUE(manager.RegisterPools({DensePool("fa")}).ok());
-  rpc::StartTransferRequest plan = ValidPlan(/*uuid=*/1107);
+  StartTransferRequest plan = ValidPlan(/*uuid=*/1107);
   plan.mutable_pool_groups(0)->set_expected_pushes(2);
 
   ExpectInvalid(manager.ValidatePoolReshardPlan(plan, std::vector<int64_t>{0},
@@ -462,7 +463,7 @@ TEST(PoolReshardReceiverCoverageTest, RejectsWriteBeyondDeclaredLiveTail) {
       },
   };
   ASSERT_TRUE(manager.RegisterPools({pool}).ok());
-  rpc::StartTransferRequest plan = ValidPlan(/*uuid=*/1108);
+  StartTransferRequest plan = ValidPlan(/*uuid=*/1108);
   plan.mutable_pool_groups(0)->clear_dst_expected_extent_bytes();
   plan.mutable_pool_groups(0)->add_dst_expected_extent_bytes(40);
   plan.mutable_shard_push_schedules()->at(0).clear_entries();
@@ -487,7 +488,7 @@ TEST(PoolReshardReceiverCoverageTest, GroupScopesDestinationBlocks) {
   TestManager manager;
   ASSERT_TRUE(
       manager.RegisterPools({DensePool("fa", 128), DensePool("gdn", 64)}).ok());
-  rpc::StartTransferRequest plan = ValidPlan(
+  StartTransferRequest plan = ValidPlan(
       /*uuid=*/1109, /*dtype_tags=*/{"bf16", "bf16"},
       /*transferred_pools=*/{0, 1});
   plan.clear_pool_groups();
@@ -526,7 +527,7 @@ TEST(PoolReshardReceiverCoverageTest, GroupScopesDestinationBlocks) {
 TEST(PoolReshardValidationTest, RejectsBlockIdsOutsideDeclaredPool) {
   TestManager manager;
   ASSERT_TRUE(manager.RegisterPools({DensePool("fa")}).ok());
-  rpc::StartTransferRequest plan = ValidPlan(/*uuid=*/1017);
+  StartTransferRequest plan = ValidPlan(/*uuid=*/1017);
   plan.mutable_pool_groups(0)->set_dst_device_block_ids(0, 9);
   ExpectInvalid(manager.ValidatePoolReshardPlan(plan, std::vector<int64_t>{9},
                                                 /*is_sender=*/false),
@@ -547,10 +548,9 @@ TEST(PoolReshardValidationTest, RejectsBlockIdsOutsideDeclaredPool) {
 
 // Extends ValidPlan's single-group shape with a second group holding pool 1;
 // the base plan's only schedule entry stays in group 0.
-rpc::StartTransferRequest TwoGroupPlan(int64_t uuid) {
-  rpc::StartTransferRequest plan =
-      ValidPlan(uuid, /*dtype_tags=*/{"bf16", "bf16"},
-                /*transferred_pools=*/{0});
+StartTransferRequest TwoGroupPlan(int64_t uuid) {
+  StartTransferRequest plan = ValidPlan(uuid, /*dtype_tags=*/{"bf16", "bf16"},
+                                        /*transferred_pools=*/{0});
   auto* group = plan.add_pool_groups();
   group->add_pool_indices(1);
   group->add_dst_device_block_ids(0);
@@ -570,7 +570,7 @@ TEST(PoolReshardSendTest, SenderWithNoBytesForAnyTransferredPoolCompletes) {
   // any transferred pool. Such a sender must finish as done_sending with no
   // device work; failing the plan here is the regression that turned a
   // short-prefix transfer into a plan-wide INVALID_ARGUMENT.
-  rpc::StartTransferRequest plan = TwoGroupPlan(/*uuid=*/2004);
+  StartTransferRequest plan = TwoGroupPlan(/*uuid=*/2004);
   (*plan.mutable_shard_push_schedules())[0].mutable_entries(0)->set_pool_group(
       1);
 

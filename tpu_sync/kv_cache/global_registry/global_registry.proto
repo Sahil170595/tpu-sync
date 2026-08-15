@@ -94,7 +94,7 @@ service GlobalRegistryService {
 
 message KVBlockMetadata {
   // Logical owner identity.
-  tpu_raiden.rpc.RaidenIdProto raiden_id = 1;
+  tpu_sync.rpc.RaidenIdProto raiden_id = 1;
   // Identifier for the cache block on the host. Must be non-negative (>= 0),
   // representing the logical index in the host's physical block allocation
   // pool.
@@ -166,7 +166,7 @@ message LookupResponse {
 message UnregisterRequest {
   // `bytes` for the reason given on RegisterEntry.prefix_hash.
   repeated bytes prefix_hashes = 1;
-  tpu_raiden.rpc.RaidenIdProto raiden_id = 2;
+  tpu_sync.rpc.RaidenIdProto raiden_id = 2;
 }
 
 message UnregisterResponse {
@@ -176,7 +176,7 @@ message UnregisterResponse {
 
 message PullOwnedRequest {
   // Owner whose active registrations should be returned.
-  tpu_raiden.rpc.RaidenIdProto raiden_id = 1;
+  tpu_sync.rpc.RaidenIdProto raiden_id = 1;
 }
 
 // A single active registration owned by the requested RaidenId.
@@ -203,7 +203,7 @@ message StoreInfo {
   // Identity of the store. Required; acts as the registration key, so a second
   // RegisterStore with the same RaidenId REPLACES the first (which is how a
   // restarted store on a new port heals its own entry).
-  tpu_raiden.rpc.RaidenIdProto raiden_id = 1;
+  tpu_sync.rpc.RaidenIdProto raiden_id = 1;
 
   // "host:port" of this store's KVCacheStoreService, as peers should dial it.
   // Required.
@@ -261,7 +261,7 @@ message RegisterStoreResponse {
 }
 
 message ResolveStoreRequest {
-  tpu_raiden.rpc.RaidenIdProto raiden_id = 1;
+  tpu_sync.rpc.RaidenIdProto raiden_id = 1;
 }
 
 message ResolveStoreResponse {
@@ -322,7 +322,7 @@ message GetKVTransferSpecResponse {
 }
 
 message UnregisterStoreRequest {
-  tpu_raiden.rpc.RaidenIdProto raiden_id = 1;
+  tpu_sync.rpc.RaidenIdProto raiden_id = 1;
 }
 
 message UnregisterStoreResponse {
@@ -332,7 +332,7 @@ message UnregisterStoreResponse {
 }
 
 message HeartbeatRequest {
-  tpu_raiden.rpc.RaidenIdProto raiden_id = 1;
+  tpu_sync.rpc.RaidenIdProto raiden_id = 1;
   StoreStatus status = 2;
 }
 
@@ -346,7 +346,7 @@ message HeartbeatResponse {
 
 message GetPlacementTargetsRequest {
   // The calling store.
-  tpu_raiden.rpc.RaidenIdProto raiden_id = 1;
+  tpu_sync.rpc.RaidenIdProto raiden_id = 1;
 
   // Upper bound on returned targets. 0 or negative means the server default.
   int32 max_targets = 2;

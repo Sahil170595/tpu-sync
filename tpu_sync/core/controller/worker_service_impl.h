@@ -39,7 +39,8 @@ using BufferHandle = uint64_t;
 // Implementation of the WorkerService gRPC service running on transfer workers.
 // Manages allocation and deallocation of sharded host memory buffers, and
 // executes D2H and H2D transfers via KVManagerHolder.
-class WorkerServiceImpl final : public proto::WorkerService::Service {
+class WorkerServiceImpl final
+    : public ::tpu_sync::proto::WorkerService::Service {
  public:
   // Constructs a WorkerServiceImpl with the given host memory allocator and
   // transfer manager. If allocator is nullptr, defaults to
@@ -53,21 +54,23 @@ class WorkerServiceImpl final : public proto::WorkerService::Service {
     transfer_manager_ = std::move(transfer_manager);
   }
 
-  grpc::Status CreateBuffers(grpc::ServerContext* context,
-                             const proto::CreateBuffersRequest* request,
-                             proto::CreateBuffersResponse* response) override;
+  grpc::Status CreateBuffers(
+      grpc::ServerContext* context,
+      const ::tpu_sync::proto::CreateBuffersRequest* request,
+      ::tpu_sync::proto::CreateBuffersResponse* response) override;
 
-  grpc::Status DeleteBuffers(grpc::ServerContext* context,
-                             const proto::DeleteBuffersRequest* request,
-                             proto::DeleteBuffersResponse* response) override;
+  grpc::Status DeleteBuffers(
+      grpc::ServerContext* context,
+      const ::tpu_sync::proto::DeleteBuffersRequest* request,
+      ::tpu_sync::proto::DeleteBuffersResponse* response) override;
 
   // Transfers (copies) disjoint memory regions across memory spaces on the
   // worker. The transfer specification applies uniformly across all buffers,
   // i.e., all shards and major dimensions (layers or blocks).
   grpc::Status TransferBuffers(
       grpc::ServerContext* context,
-      const proto::TransferBuffersRequest* request,
-      proto::TransferBuffersResponse* response) override;
+      const ::tpu_sync::proto::TransferBuffersRequest* request,
+      ::tpu_sync::proto::TransferBuffersResponse* response) override;
 
   // Normalizes a pool-reshard transfer program, lowers it to the
   // byte-identical StartTransferRequest the framed entry would deliver, and
@@ -77,17 +80,19 @@ class WorkerServiceImpl final : public proto::WorkerService::Service {
   // the framed entry's success/message semantics.
   grpc::Status SubmitTransferProgram(
       grpc::ServerContext* context,
-      const proto::TransferProgramRequest* request,
-      proto::TransferProgramResponse* response) override;
+      const ::tpu_sync::proto::TransferProgramRequest* request,
+      ::tpu_sync::proto::TransferProgramResponse* response) override;
 
   // Transfer-program completion remains on the connector's existing polling
   // path. These lifecycle RPCs fail closed until they have implementations.
-  grpc::Status PollTransfer(grpc::ServerContext* context,
-                            const proto::PollTransferRequest* request,
-                            proto::PollTransferResponse* response) override;
-  grpc::Status AbortTransfer(grpc::ServerContext* context,
-                             const proto::AbortTransferRequest* request,
-                             proto::AbortTransferResponse* response) override;
+  grpc::Status PollTransfer(
+      grpc::ServerContext* context,
+      const ::tpu_sync::proto::PollTransferRequest* request,
+      ::tpu_sync::proto::PollTransferResponse* response) override;
+  grpc::Status AbortTransfer(
+      grpc::ServerContext* context,
+      const ::tpu_sync::proto::AbortTransferRequest* request,
+      ::tpu_sync::proto::AbortTransferResponse* response) override;
 
   // Retrieves an allocated buffer shard for inspection or transfer operations.
   // Returns NotFoundError if the buffer handle is invalid.
@@ -95,7 +100,7 @@ class WorkerServiceImpl final : public proto::WorkerService::Service {
 
   // Overload accepting BufferHandleProto for convenience.
   absl::StatusOr<HostBufferAllocation> GetBuffer(
-      const proto::BufferHandleProto& handle_proto) const {
+      const ::tpu_sync::proto::BufferHandleProto& handle_proto) const {
     return GetBuffer(BufferHandle(handle_proto.handle()));
   }
 

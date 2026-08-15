@@ -36,13 +36,12 @@
 namespace tpu_raiden {
 namespace kv_cache {
 
-using ::tpu_raiden::rpc::ControlRequest;
-using ::tpu_raiden::rpc::ControlResponse;
+using ::tpu_sync::rpc::ControlRequest;
+using ::tpu_sync::rpc::ControlResponse;
 
 namespace {
 
-bool HasPoolReshardFields(
-    const tpu_raiden::rpc::StartTransferRequest& request) {
+bool HasPoolReshardFields(const tpu_sync::rpc::StartTransferRequest& request) {
   // Treat either field as opting into the pool executor. This intentionally
   // sends partially populated pool plans to PoolReshardPush /
   // PoolReshardRegisterRecv so their validation fails closed instead of

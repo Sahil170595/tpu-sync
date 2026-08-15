@@ -25,7 +25,7 @@
 #include "grpcpp/support/status.h"
 #include "tpu_sync/rpc/coordination.grpc.pb.h"
 
-namespace tpu_raiden {
+namespace tpu_sync {
 namespace rpc {
 
 CoordinationClient::CoordinationClient(std::shared_ptr<grpc::Channel> channel)
@@ -62,4 +62,4 @@ CoordinationClient::CollectReplicaInfo(int32_t device_id,
 }
 
 }  // namespace rpc
-}  // namespace tpu_raiden
+}  // namespace tpu_sync

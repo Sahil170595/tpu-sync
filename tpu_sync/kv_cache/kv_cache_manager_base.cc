@@ -1979,7 +1979,7 @@ void KVCacheManagerBase::RegisterBlockReadinessCallback(
 }
 
 absl::Status KVCacheManagerBase::PushKVCacheResharded(
-    const tpu_raiden::rpc::StartTransferRequest& request) {
+    const ::tpu_sync::rpc::StartTransferRequest& request) {
   // 1. Register the active plan so GetBlockChunks can use it
   TF_RETURN_IF_ERROR(
       RegisterActivePlan(request.uuid(), request, /*is_sender=*/true));
@@ -2058,7 +2058,7 @@ absl::Status KVCacheManagerBase::PushKVCacheResharded(
 }
 
 absl::Status KVCacheManagerBase::RegisterActivePlan(
-    uint64_t uuid, const tpu_raiden::rpc::StartTransferRequest& request,
+    uint64_t uuid, const ::tpu_sync::rpc::StartTransferRequest& request,
     bool is_sender) {
   // Structural contract for pool-addressed plans. Pool selection is request
   // data resolved by the controller; raiden validates consistency (indices

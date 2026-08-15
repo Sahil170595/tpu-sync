@@ -228,7 +228,7 @@ NB_MODULE(_tpu_raiden_host, m) {
           "register_active_plan",
           [](HostKVCacheManager& self, uint64_t uuid,
              const nb::bytes& request_bytes, bool is_sender) {
-            tpu_raiden::rpc::StartTransferRequest request;
+            tpu_sync::rpc::StartTransferRequest request;
             if (!request.ParseFromArray(request_bytes.c_str(),
                                         request_bytes.size())) {
               throw std::runtime_error(

@@ -58,16 +58,16 @@ namespace kv_cache {
 
 namespace {
 
-std::vector<::tpu_raiden::proto::RaidenWorkerEndpointsProto>
+std::vector<::tpu_sync::proto::RaidenWorkerEndpointsProto>
 BuildLocalWorkerEndpoints(controller::RaidenController* ctrl) {
-  std::vector<::tpu_raiden::proto::RaidenWorkerEndpointsProto> result;
+  std::vector<::tpu_sync::proto::RaidenWorkerEndpointsProto> result;
   if (ctrl->worker_registry() == nullptr) {
     return result;
   }
   const auto& registered_workers = ctrl->worker_registry()->GetRegisteredWorkers();
   result.reserve(registered_workers.size());
   for (const auto& reg : registered_workers) {
-    ::tpu_raiden::proto::RaidenWorkerEndpointsProto group;
+    ::tpu_sync::proto::RaidenWorkerEndpointsProto group;
     group.set_node_id(reg.node_id);
     group.set_worker_id(reg.worker_id);
     group.mutable_endpoints()->Reserve(reg.raiden_transfer_endpoints.size());
@@ -767,10 +767,10 @@ HostOffloadBackend::BeginWriteRemote(
   ack.operation_id = response_or->operation_id();
   ack.granted_deadline = absl::Milliseconds(response_or->granted_deadline_ms());
   switch (response_or->exist_state()) {
-    case proto::WRITE_ALL_EXIST:
+    case ::tpu_raiden::kv_cache::proto::WRITE_ALL_EXIST:
       ack.all_exist = true;
       return ack;
-    case proto::WRITE_PARTIAL_EXIST:
+    case ::tpu_raiden::kv_cache::proto::WRITE_PARTIAL_EXIST:
       ack.existing_hashes.assign(response_or->existing_hashes().begin(),
                                  response_or->existing_hashes().end());
       return ack;
@@ -801,22 +801,23 @@ HostOffloadBackend::PollWriteRemote(const RaidenId& dst_raiden_id,
 
   RemoteWriteStatus status;
   switch (response_or->state()) {
-    case proto::PollWriteRemoteResponse::PENDING:
+    case ::tpu_raiden::kv_cache::proto::PollWriteRemoteResponse::PENDING:
       status.state = RemoteWriteState::kPending;
       break;
-    case proto::PollWriteRemoteResponse::COMMITTED:
+    case ::tpu_raiden::kv_cache::proto::PollWriteRemoteResponse::COMMITTED:
       status.state = RemoteWriteState::kCommitted;
       break;
-    case proto::PollWriteRemoteResponse::ALL_EXIST:
+    case ::tpu_raiden::kv_cache::proto::PollWriteRemoteResponse::ALL_EXIST:
       status.state = RemoteWriteState::kAllExist;
       break;
-    case proto::PollWriteRemoteResponse::PARTIAL_EXIST:
+    case ::tpu_raiden::kv_cache::proto::PollWriteRemoteResponse::PARTIAL_EXIST:
       status.state = RemoteWriteState::kPartialExist;
       break;
-    case proto::PollWriteRemoteResponse::FAILED:
+    case ::tpu_raiden::kv_cache::proto::PollWriteRemoteResponse::FAILED:
       status.state = RemoteWriteState::kFailed;
       break;
-    case proto::PollWriteRemoteResponse::STORED_UNREGISTERED:
+    case ::tpu_raiden::kv_cache::proto::PollWriteRemoteResponse::
+        STORED_UNREGISTERED:
       status.state = RemoteWriteState::kStoredUnregistered;
       break;
     default:
@@ -1000,10 +1001,10 @@ tsl::Future<> HostOffloadBackend::LoadRemoteBlocks(
 
   auto [load_promise, load_future] = tsl::MakePromise<>();
 
-  tpu_raiden::rpc::RaidenIdProto client_raiden_id = raiden_controller_->unit();
-  std::vector<::tpu_raiden::proto::RaidenWorkerEndpointsProto>
+  ::tpu_sync::rpc::RaidenIdProto client_raiden_id = raiden_controller_->unit();
+  std::vector<::tpu_sync::proto::RaidenWorkerEndpointsProto>
       client_worker_endpoints = BuildLocalWorkerEndpoints(raiden_controller_);
-  tsl::Future<proto::FetchResponse> fetch_future =
+  tsl::Future<::tpu_raiden::kv_cache::proto::FetchResponse> fetch_future =
       client->Fetch(block_hashes, device_block_ids, dst_host_block_ids,
                     client_raiden_id, client_worker_endpoints);
 
@@ -1012,7 +1013,8 @@ tsl::Future<> HostOffloadBackend::LoadRemoteBlocks(
        dev_ids_vec = std::vector<int32_t>(device_block_ids.begin(),
                                           device_block_ids.end()),
        load_promise = std::move(load_promise)](
-          const absl::StatusOr<proto::FetchResponse>& response_or) mutable {
+          const absl::StatusOr<::tpu_raiden::kv_cache::proto::FetchResponse>&
+              response_or) mutable {
         if (!response_or.ok()) {
           (void)raiden_controller_->DeallocateBlockIds(dst_host_block_ids);
           // The peer may have restarted on a new port; drop the cached client
@@ -1036,14 +1038,14 @@ tsl::Future<> HostOffloadBackend::LoadRemoteBlocks(
         src_buffers.reserve(dst_host_block_ids.size());
         for (int id : dst_host_block_ids) {
           src_buffers.emplace_back(id, std::vector<BufferShard>{}, std::nullopt,
-                                   rpc::MEMORY_TYPE_DRAM);
+                                   ::tpu_sync::rpc::MEMORY_TYPE_DRAM);
         }
 
         std::vector<Buffer> dst_buffers;
         dst_buffers.reserve(dev_ids_vec.size());
         for (int id : dev_ids_vec) {
           dst_buffers.emplace_back(id, std::vector<BufferShard>{}, std::nullopt,
-                                   rpc::MEMORY_TYPE_HBM);
+                                   ::tpu_sync::rpc::MEMORY_TYPE_HBM);
         }
 
         tsl::Future<> h2d_future =
@@ -1103,14 +1105,14 @@ tsl::Future<> HostOffloadBackend::LoadLocalHostBlocks(
   src_buffers.reserve(src_host_block_ids.size());
   for (int64_t id : src_host_block_ids) {
     src_buffers.emplace_back(id, std::vector<BufferShard>{}, std::nullopt,
-                             rpc::MEMORY_TYPE_DRAM);
+                             ::tpu_sync::rpc::MEMORY_TYPE_DRAM);
   }
 
   std::vector<Buffer> dst_buffers;
   dst_buffers.reserve(device_block_ids.size());
   for (int id : device_block_ids) {
     dst_buffers.emplace_back(id, std::vector<BufferShard>{}, std::nullopt,
-                             rpc::MEMORY_TYPE_HBM);
+                             ::tpu_sync::rpc::MEMORY_TYPE_HBM);
   }
 
   return raiden_controller_->TransferBuffers(src_buffers, dst_buffers);

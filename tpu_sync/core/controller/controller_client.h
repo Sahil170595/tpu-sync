@@ -64,9 +64,7 @@ class RaidenControllerClient {
   }
 
  private:
-  std::unique_ptr<
-      ::tpu_raiden::proto::RaidenControllerService::Stub>
-      stub_;
+  std::unique_ptr<::tpu_sync::proto::RaidenControllerService::Stub> stub_;
 };
 
 }  // namespace controller

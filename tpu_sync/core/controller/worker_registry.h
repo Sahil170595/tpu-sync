@@ -43,7 +43,7 @@ struct WorkerRegistration {
   std::vector<::tpu_raiden::RaidenTransferEndpoint> raiden_transfer_endpoints;
   std::shared_ptr<::tpu_raiden::controller::WorkerServiceClient>
       worker_service_client;
-  std::vector<::tpu_raiden::proto::BufferProto> buffers;
+  std::vector<::tpu_sync::proto::BufferProto> buffers;
   // Unique mesh node identifier of this worker. Used to match source workers to
   // their destination peer worker during ReadRemote. Must be unique per
   // controller (enforced at registration).

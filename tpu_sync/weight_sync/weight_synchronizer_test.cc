@@ -204,7 +204,7 @@ TEST_F(WeightSynchronizerTest, PushWeightsReshardedExactBoundary) {
   std::memset(src_host_ptr, 0xAB, slice_byte_size);
   std::memset(dest_host_ptr, 0x00, slice_byte_size);
 
-  tpu_raiden::rpc::StartTransferRequest request;
+  tpu_sync::rpc::StartTransferRequest request;
   request.set_skip_d2h(true);
   request.set_uuid(12345);
 
@@ -249,7 +249,7 @@ TEST_F(WeightSynchronizerTest, PushWeightsReshardedZeroBytes) {
   std::memset(src_host_ptr, 0xAB, slice_byte_size);
   std::memset(dest_host_ptr, 0x00, slice_byte_size);
 
-  tpu_raiden::rpc::StartTransferRequest request;
+  tpu_sync::rpc::StartTransferRequest request;
   request.set_skip_d2h(true);
   request.set_uuid(12345);
 
@@ -287,7 +287,7 @@ TEST_F(WeightSynchronizerTest, PushWeightsReshardedOutOfBoundsError) {
   ASSERT_TRUE(ws_dest->local_port().has_value());
   std::string dest_peer = "localhost:" + std::to_string(*ws_dest->local_port());
 
-  tpu_raiden::rpc::StartTransferRequest request;
+  tpu_sync::rpc::StartTransferRequest request;
   request.set_skip_d2h(true);
   request.set_uuid(12345);
 
@@ -322,7 +322,7 @@ TEST_F(WeightSynchronizerTest, PushWeightsReshardedInvalidLayerIndexError) {
   ASSERT_TRUE(ws_dest->local_port().has_value());
   std::string dest_peer = "localhost:" + std::to_string(*ws_dest->local_port());
 
-  tpu_raiden::rpc::StartTransferRequest request;
+  tpu_sync::rpc::StartTransferRequest request;
   request.set_skip_d2h(true);
   request.set_uuid(12345);
 
@@ -350,7 +350,7 @@ TEST_F(WeightSynchronizerTest, PushWeightsReshardedEmptySchedule) {
       num_layers, num_shards, slice_byte_size,
       /*local_port=*/0, /*host_blocks_to_allocate=*/1);
 
-  tpu_raiden::rpc::StartTransferRequest request;
+  tpu_sync::rpc::StartTransferRequest request;
   request.set_skip_d2h(true);
   request.set_uuid(12345);
   // No schedules added
@@ -390,7 +390,7 @@ TEST_F(WeightSynchronizerTest, PushWeightsReshardedFallbackByNameSuccess) {
   ASSERT_NE(dest_l1_ptr, nullptr);
   std::memset(dest_l1_ptr, 0x00, slice_byte_sizes[1]);
 
-  tpu_raiden::rpc::StartTransferRequest request;
+  tpu_sync::rpc::StartTransferRequest request;
   request.set_skip_d2h(true);
   request.set_uuid(12345);
 
@@ -437,7 +437,7 @@ TEST_F(WeightSynchronizerTest,
   ASSERT_TRUE(ws_dest->local_port().has_value());
   std::string dest_peer = "localhost:" + std::to_string(*ws_dest->local_port());
 
-  tpu_raiden::rpc::StartTransferRequest request;
+  tpu_sync::rpc::StartTransferRequest request;
   request.set_skip_d2h(true);
   request.set_uuid(12345);
 
@@ -523,7 +523,7 @@ TEST_F(WeightSynchronizerTest, PushWeightsReshardedSkipD2h) {
   ASSERT_NE(dest_host_ptr, nullptr);
   std::memset(dest_host_ptr, 0x00, slice_byte_size);
 
-  tpu_raiden::rpc::StartTransferRequest request;
+  tpu_sync::rpc::StartTransferRequest request;
   request.set_skip_d2h(true);
   request.set_uuid(12345);
 
@@ -656,7 +656,7 @@ TEST_F(WeightSynchronizerTest, BindWeights) {
   ASSERT_TRUE(status.ok()) << status.message();
 
   // 5. Sync
-  tpu_raiden::rpc::StartTransferRequest request;
+  tpu_sync::rpc::StartTransferRequest request;
   request.set_skip_d2h(false);
   request.set_uuid(12345);
 
@@ -769,7 +769,7 @@ TEST_F(WeightSynchronizerTest, TilingSkipScenarios) {
     }
 
     // Test with skip = true
-    tpu_raiden::rpc::StartTransferRequest req_true;
+    tpu_sync::rpc::StartTransferRequest req_true;
     (*req_true.mutable_skip_tiling())[0] = true;
     src_ws.ws->StoreSkipTiling(123, req_true);
     absl::StatusOr<raiden::PjRtCopyFuture> h2d_fut = src_ws.ws->H2d(123);
@@ -791,7 +791,7 @@ TEST_F(WeightSynchronizerTest, TilingSkipScenarios) {
     }
 
     // Now test with skip = false (tiling should occur)
-    tpu_raiden::rpc::StartTransferRequest req_false;
+    tpu_sync::rpc::StartTransferRequest req_false;
     (*req_false.mutable_skip_tiling())[0] = false;
     src_ws.ws->StoreSkipTiling(456, req_false);
     h2d_fut = src_ws.ws->H2d(456);

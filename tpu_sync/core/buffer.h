@@ -40,11 +40,13 @@ struct BufferShard {
 // to locate the buffer in the worker or controller.
 class Buffer {
  public:
-  Buffer() : index_(-1), memory_type_(rpc::MEMORY_TYPE_UNSPECIFIED) {}
+  Buffer()
+      : index_(-1), memory_type_(::tpu_sync::rpc::MEMORY_TYPE_UNSPECIFIED) {}
 
   Buffer(int index, std::vector<BufferShard> shards,
          std::optional<std::string> remote_address = std::nullopt,
-         rpc::MemoryType memory_type = rpc::MEMORY_TYPE_UNSPECIFIED,
+         ::tpu_sync::rpc::MemoryType memory_type =
+             ::tpu_sync::rpc::MEMORY_TYPE_UNSPECIFIED,
          std::vector<RaidenTransferEndpoint> remote_descriptors = {})
       : index_(index),
         shards_(std::move(shards)),
@@ -63,8 +65,8 @@ class Buffer {
   absl::Span<const BufferShard> shards() const { return shards_; }
 
   // Returns the memory type of this buffer.
-  rpc::MemoryType memory_type() const { return memory_type_; }
-  void set_memory_type(rpc::MemoryType memory_type) {
+  ::tpu_sync::rpc::MemoryType memory_type() const { return memory_type_; }
+  void set_memory_type(::tpu_sync::rpc::MemoryType memory_type) {
     memory_type_ = memory_type;
   }
 
@@ -106,18 +108,19 @@ class Buffer {
   }
 
   // Converts this Buffer into a proto::BufferProto.
-  proto::BufferProto ToProto() const;
+  ::tpu_sync::proto::BufferProto ToProto() const;
 
   // Converts a proto::BufferProto to a Buffer.
   static Buffer FromProto(
-      const proto::BufferProto& proto,
+      const ::tpu_sync::proto::BufferProto& proto,
       std::optional<std::string> remote_address = std::nullopt);
 
  private:
   int index_;
   std::vector<BufferShard> shards_;
   std::optional<std::string> remote_address_;
-  rpc::MemoryType memory_type_ = rpc::MEMORY_TYPE_UNSPECIFIED;
+  ::tpu_sync::rpc::MemoryType memory_type_ =
+      ::tpu_sync::rpc::MEMORY_TYPE_UNSPECIFIED;
   std::vector<RaidenTransferEndpoint> remote_descriptors_;
   std::vector<RaidenWorkerEndpoints> remote_worker_endpoints_;
 };

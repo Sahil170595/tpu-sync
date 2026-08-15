@@ -14,7 +14,7 @@
 
 syntax = "proto3";
 
-package tpu_raiden.rpc;
+package tpu_sync.rpc;
 
 import "tpu_sync/rpc/raiden_service.proto";
 

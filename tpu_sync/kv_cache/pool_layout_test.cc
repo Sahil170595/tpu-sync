@@ -124,7 +124,7 @@ TEST(PoolSpecTest, AdmitsGdnSsmWhenLastLiveByteFitsSharedRawStorage) {
 
 TEST(PoolSpecTest, ProtoRoundTrip) {
   PoolSpec pool = ValidPool();
-  tpu_raiden::rpc::PoolSpecProto proto = ToProto(pool);
+  tpu_sync::rpc::PoolSpecProto proto = ToProto(pool);
   auto roundtrip = PoolSpecFromProto(proto);
   ABSL_ASSERT_OK(roundtrip);
   EXPECT_EQ(roundtrip->tag, pool.tag);

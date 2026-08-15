@@ -140,25 +140,24 @@ class ReshardClient {
                          FramedTransport* transport = nullptr);
 
   // --- request builders (encoding ownership) ----------------------------
-  static tpu_raiden::rpc::ControlRequest BuildRegisterWorkUnit(
+  static tpu_sync::rpc::ControlRequest BuildRegisterWorkUnit(
       const RegisterWorkUnitArgs& args);
-  static tpu_raiden::rpc::ControllerRequest BuildRegisterRequestBlocks(
+  static tpu_sync::rpc::ControllerRequest BuildRegisterRequestBlocks(
       const std::string& req_id, int64_t uuid, const RaidenId& unit,
       const std::vector<int64_t>& block_ids,
       const std::vector<ClientPoolSpans>& pool_spans);
-  static tpu_raiden::rpc::ControllerRequest BuildReleaseRequestBlocks(
+  static tpu_sync::rpc::ControllerRequest BuildReleaseRequestBlocks(
       const std::string& req_id, int64_t uuid);
-  static tpu_raiden::rpc::ControllerRequest BuildCompleteRequestBlocks(
+  static tpu_sync::rpc::ControllerRequest BuildCompleteRequestBlocks(
       const std::string& req_id, int64_t uuid, const RaidenId& unit);
-  static tpu_raiden::rpc::ControllerRequest
-  BuildCancelRequestBlocksIfUnclaimed(const std::string& req_id,
-                                      int64_t uuid);
-  static tpu_raiden::rpc::ControllerRequest BuildStartTransfer(
-      const StartTransferArgs& args);
-  static tpu_raiden::rpc::ControllerRequest BuildGetTransferStatus(
+  static tpu_sync::rpc::ControllerRequest BuildCancelRequestBlocksIfUnclaimed(
       const std::string& req_id, int64_t uuid);
-  static tpu_raiden::rpc::ControlRequest BuildGetMetadata();
-  static tpu_raiden::rpc::ControlRequest BuildShutdown();
+  static tpu_sync::rpc::ControllerRequest BuildStartTransfer(
+      const StartTransferArgs& args);
+  static tpu_sync::rpc::ControllerRequest BuildGetTransferStatus(
+      const std::string& req_id, int64_t uuid);
+  static tpu_sync::rpc::ControlRequest BuildGetMetadata();
+  static tpu_sync::rpc::ControlRequest BuildShutdown();
 
   // --- transport wrappers (facade-identical semantics) -------------------
   absl::Status RegisterWorkUnit(const RegisterWorkUnitArgs& args);
@@ -182,10 +181,10 @@ class ReshardClient {
   const std::string& address() const { return address_; }
 
  private:
-  absl::StatusOr<tpu_raiden::rpc::ControllerResponse> CallController(
-      const tpu_raiden::rpc::ControllerRequest& request);
-  absl::StatusOr<tpu_raiden::rpc::ControlResponse> CallRaiden(
-      const tpu_raiden::rpc::ControlRequest& request);
+  absl::StatusOr<tpu_sync::rpc::ControllerResponse> CallController(
+      const tpu_sync::rpc::ControllerRequest& request);
+  absl::StatusOr<tpu_sync::rpc::ControlResponse> CallRaiden(
+      const tpu_sync::rpc::ControlRequest& request);
 
   std::string address_;
   std::unique_ptr<SocketFramedTransport> owned_transport_;

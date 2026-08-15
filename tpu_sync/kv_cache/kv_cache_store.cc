@@ -60,6 +60,7 @@
 
 namespace tpu_raiden {
 namespace kv_cache {
+
 namespace {
 
 // Registration TTL, in heartbeat periods: the registration survives two
@@ -140,7 +141,7 @@ MakeRaidenController(const RaidenId& raiden_id, size_t capacity, int num_shards,
                      int raiden_controller_port,
                      int expected_worker_count = 0) {
   if (num_shards <= 0) return nullptr;
-  ::tpu_raiden::rpc::RaidenIdProto unit_proto;
+  ::tpu_sync::rpc::RaidenIdProto unit_proto;
   unit_proto.set_job_name(raiden_id.job_name);
   unit_proto.set_job_replica_id(raiden_id.job_replica_id);
   unit_proto.set_data_name(raiden_id.data_name);
@@ -1008,13 +1009,13 @@ absl::Status KVCacheStore::Save(const std::vector<std::string>& block_hashes) {
   src_buffers.reserve(src_device_block_ids.size());
   for (int64_t id : src_device_block_ids) {
     src_buffers.emplace_back(id, std::vector<BufferShard>{}, std::nullopt,
-                             rpc::MEMORY_TYPE_HBM);
+                             ::tpu_sync::rpc::MEMORY_TYPE_HBM);
   }
   std::vector<Buffer> dst_buffers;
   dst_buffers.reserve(host_block_ids.size());
   for (int id : host_block_ids) {
     dst_buffers.emplace_back(id, std::vector<BufferShard>{}, std::nullopt,
-                             rpc::MEMORY_TYPE_DRAM);
+                             ::tpu_sync::rpc::MEMORY_TYPE_DRAM);
   }
 
   tsl::Future<> future = raiden_controller_->TransferBuffers(

@@ -221,21 +221,21 @@ class KVCacheManagerBase : public tpu_raiden::RaidenManagerBase {
   // Executes a distributed resharding push transfer based on precise
   // centralized Controller schedules.
   absl::Status PushKVCacheResharded(
-      const tpu_raiden::rpc::StartTransferRequest& request);
+      const ::tpu_sync::rpc::StartTransferRequest& request);
 
   // Pool-plan executor hooks used by KVCacheListener. Designed as the
   // successor of PushKVCacheResharded/RegisterActivePlan for pool-addressed
   // plans; managers without transfer support fail closed instead of falling
   // back to the legacy whole-layer reshard path.
   virtual absl::Status PoolReshardPush(
-      const tpu_raiden::rpc::StartTransferRequest&, absl::Span<const int64_t>,
+      const ::tpu_sync::rpc::StartTransferRequest&, absl::Span<const int64_t>,
       int = 8) {
     return absl::UnimplementedError(
         "pool reshard push is not supported by this manager");
   }
 
   virtual absl::Status PoolReshardRegisterRecv(
-      const tpu_raiden::rpc::StartTransferRequest&, absl::Span<const int64_t>) {
+      const ::tpu_sync::rpc::StartTransferRequest&, absl::Span<const int64_t>) {
     return absl::UnimplementedError(
         "pool reshard receive is not supported by this manager");
   }
@@ -352,7 +352,7 @@ class KVCacheManagerBase : public tpu_raiden::RaidenManagerBase {
   GetPoolPushProgressSpec(size_t pool_idx, uint64_t uuid) const override;
 
   virtual absl::Status RegisterActivePlan(
-      uint64_t uuid, const tpu_raiden::rpc::StartTransferRequest& request,
+      uint64_t uuid, const ::tpu_sync::rpc::StartTransferRequest& request,
       bool is_sender);
 
   virtual absl::Status UnregisterActivePlan(uint64_t uuid);
@@ -483,7 +483,7 @@ class KVCacheManagerBase : public tpu_raiden::RaidenManagerBase {
 
   mutable absl::Mutex plans_mu_;
   struct RegisteredPlan {
-    tpu_raiden::rpc::StartTransferRequest request;
+    ::tpu_sync::rpc::StartTransferRequest request;
     bool is_sender = false;
   };
   // Plans are stored behind shared_ptr so the per-push readers

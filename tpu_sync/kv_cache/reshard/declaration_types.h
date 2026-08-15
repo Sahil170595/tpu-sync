@@ -90,8 +90,8 @@ std::string PythonRepr(const RaidenId& id);
 // Python str() of a list of Python-repr'd values, e.g. "[1, 2, 3]".
 std::string PythonReprIntList(const std::vector<int64_t>& values);
 
-RaidenId RaidenIdFromProto(const tpu_raiden::rpc::RaidenIdProto& proto);
-tpu_raiden::rpc::RaidenIdProto RaidenIdToProto(const RaidenId& id);
+RaidenId RaidenIdFromProto(const tpu_sync::rpc::RaidenIdProto& proto);
+tpu_sync::rpc::RaidenIdProto RaidenIdToProto(const RaidenId& id);
 
 }  // namespace reshard
 }  // namespace kv_cache

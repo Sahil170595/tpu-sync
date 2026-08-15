@@ -27,14 +27,14 @@
 #include "absl/strings/str_cat.h"
 #include "xla/tsl/platform/statusor.h"
 #include "xla/tsl/platform/test.h"
-// clang-format off
+#include "tpu_sync/core/buffer.h"
+#include "tpu_sync/core/controller/controller_service.h"
+#include "tpu_sync/core/controller/raiden_controller.h"
+#include "tpu_sync/core/controller/test_util.h"
 #include "tpu_sync/core/kv_cache_manager_with_transfer.h"
 #include "tpu_sync/core/raiden_transfer_endpoint.h"
 #include "tpu_sync/core/raw_transfer_core.h"
 #include "tpu_sync/frameworks/jax/kv_cache_manager.h"
-#include "tpu_sync/core/controller/controller_service.h"
-#include "tpu_sync/core/controller/test_util.h"
-#include "tpu_sync/core/controller/raiden_controller.h"  // clang-format on
 #include "tpu_sync/rpc/raiden_service.pb.h"
 
 namespace tpu_raiden {
@@ -526,7 +526,7 @@ TEST(KVCacheManagerWrapperTest, RaidenControllerTransferBuffersIntegration) {
   int port = mgr.GetRaidenWorkerPort();
   ASSERT_GT(port, 0);
 
-  rpc::RaidenIdProto unit;
+  ::tpu_sync::rpc::RaidenIdProto unit;
   unit.set_job_name("test_job");
   unit.set_job_replica_id("0");
   unit.set_data_name("test_data");
@@ -543,10 +543,10 @@ TEST(KVCacheManagerWrapperTest, RaidenControllerTransferBuffersIntegration) {
   std::vector<int64_t> dst_offsets = {20, 40};
   std::vector<int64_t> copy_sizes = {1, 2};
 
-  Buffer src_d2h_1(10, {}, std::nullopt, rpc::MEMORY_TYPE_HBM);
-  Buffer src_d2h_2(30, {}, std::nullopt, rpc::MEMORY_TYPE_HBM);
-  Buffer dst_d2h_1(20, {}, std::nullopt, rpc::MEMORY_TYPE_DRAM);
-  Buffer dst_d2h_2(40, {}, std::nullopt, rpc::MEMORY_TYPE_DRAM);
+  Buffer src_d2h_1(10, {}, std::nullopt, ::tpu_sync::rpc::MEMORY_TYPE_HBM);
+  Buffer src_d2h_2(30, {}, std::nullopt, ::tpu_sync::rpc::MEMORY_TYPE_HBM);
+  Buffer dst_d2h_1(20, {}, std::nullopt, ::tpu_sync::rpc::MEMORY_TYPE_DRAM);
+  Buffer dst_d2h_2(40, {}, std::nullopt, ::tpu_sync::rpc::MEMORY_TYPE_DRAM);
 
   auto status_d2h =
       controller
@@ -561,10 +561,10 @@ TEST(KVCacheManagerWrapperTest, RaidenControllerTransferBuffersIntegration) {
   EXPECT_EQ(ptr0->last_d2h_dst_offsets, dst_offsets);
   EXPECT_EQ(ptr0->last_d2h_copy_sizes, copy_sizes);
 
-  Buffer src_h2d_1(10, {}, std::nullopt, rpc::MEMORY_TYPE_DRAM);
-  Buffer src_h2d_2(30, {}, std::nullopt, rpc::MEMORY_TYPE_DRAM);
-  Buffer dst_h2d_1(20, {}, std::nullopt, rpc::MEMORY_TYPE_HBM);
-  Buffer dst_h2d_2(40, {}, std::nullopt, rpc::MEMORY_TYPE_HBM);
+  Buffer src_h2d_1(10, {}, std::nullopt, ::tpu_sync::rpc::MEMORY_TYPE_DRAM);
+  Buffer src_h2d_2(30, {}, std::nullopt, ::tpu_sync::rpc::MEMORY_TYPE_DRAM);
+  Buffer dst_h2d_1(20, {}, std::nullopt, ::tpu_sync::rpc::MEMORY_TYPE_HBM);
+  Buffer dst_h2d_2(40, {}, std::nullopt, ::tpu_sync::rpc::MEMORY_TYPE_HBM);
 
   auto status_h2d =
       controller

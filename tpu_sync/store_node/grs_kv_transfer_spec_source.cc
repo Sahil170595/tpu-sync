@@ -35,8 +35,9 @@ GrsKVTransferSpecSource::GrsKVTransferSpecSource(
       kv_pool_group_(kv_pool_group) {}
 
 absl::StatusOr<KVTransferSpec> GrsKVTransferSpecSource::Get() {
-  ASSIGN_OR_RETURN(const kv_cache::global_registry::KVTransferSpec proto,
-                   client_.GetKVTransferSpec(kv_pool_group_));
+  ASSIGN_OR_RETURN(
+      const ::tpu_raiden::kv_cache::global_registry::KVTransferSpec proto,
+      client_.GetKVTransferSpec(kv_pool_group_));
   KVTransferSpec spec;
   spec.block_array_bytes.reserve(proto.block_arrays_size());
   for (const auto& array : proto.block_arrays()) {

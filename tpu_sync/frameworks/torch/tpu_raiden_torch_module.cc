@@ -72,7 +72,6 @@ std::vector<std::string> ToStdStringVector(
 namespace reshardpb2 {
 
 namespace nb = nanobind;
-namespace reshard = tpu_raiden::kv_cache::reshard;
 
 using UnitTuple = std::tuple<std::string, std::string, std::string, int32_t>;
 
@@ -170,7 +169,6 @@ struct ClientHandle {
 }  // namespace kv_cache
 }  // namespace tpu_raiden
 
-namespace reshardpb2 = ::tpu_raiden::kv_cache::reshardpb2;
 using ::tpu_raiden::kv_cache::ToStdStringVector;
 
 NB_MODULE(_tpu_raiden_torch, m) {
@@ -253,7 +251,7 @@ NB_MODULE(_tpu_raiden_torch, m) {
           "register_active_plan",
           [](KVCacheManager& self, uint64_t uuid,
              const nb::bytes& request_bytes, bool is_sender) {
-            tpu_raiden::rpc::StartTransferRequest request;
+            tpu_sync::rpc::StartTransferRequest request;
             if (!request.ParseFromArray(request_bytes.c_str(),
                                         request_bytes.size())) {
               throw std::runtime_error(
@@ -920,107 +918,121 @@ NB_MODULE(_tpu_raiden_torch, m) {
 
   // C++-owned reshard client. The facade-compatible surface is provided by
   // tpu_raiden/api/torch/reshard_client.py on top of this binding.
-  nb::class_<reshardpb2::ClientHandle>(m, "ReshardClient")
-      .def("__init__",
-           [](reshardpb2::ClientHandle* self, const std::string& address) {
-             new (self) reshardpb2::ClientHandle();
-             self->client = std::make_unique<
-                 tpu_raiden::kv_cache::reshard::ReshardClient>(address);
-           },
-           nb::arg("controller_address"))
-      .def("register_work_unit",
-           [](reshardpb2::ClientHandle& self,
-              const reshardpb2::UnitTuple& unit,
-              const std::vector<std::string>& shards,
-              const std::string& control_plane_rpc_address,
-              const std::vector<int64_t>& mesh_shape,
-              const std::vector<int32_t>& layout,
-              const std::vector<int64_t>& global_shape, int32_t itemsize,
-              bool has_pool_manifest, nb::object pool_manifest,
-              std::optional<std::string> layout_fingerprint,
-              std::optional<int64_t> page_tokens,
-              std::optional<int32_t> transfer_parallelism,
-              std::optional<int32_t> transfer_rank, bool has_variables,
-              const std::vector<nb::bytes>& variables) {
-             tpu_raiden::kv_cache::reshard::RegisterWorkUnitArgs args;
-             args.unit = reshardpb2::UnitOf(unit);
-             args.shards = shards;
-             args.control_plane_rpc_address = control_plane_rpc_address;
-             args.mesh_shape = mesh_shape;
-             args.layout = layout;
-             args.global_shape = global_shape;
-             args.itemsize = itemsize;
-             args.has_pool_manifest = has_pool_manifest;
-             if (has_pool_manifest) {
-               args.pool_manifest = reshardpb2::ManifestOf(pool_manifest);
-             }
-             args.layout_fingerprint = std::move(layout_fingerprint);
-             args.page_tokens = page_tokens;
-             args.transfer_parallelism = transfer_parallelism;
-             args.transfer_rank = transfer_rank;
-             args.has_variables = has_variables;
-             for (const nb::bytes& payload : variables) {
-               args.variables.emplace_back(payload.c_str(), payload.size());
-             }
-             nb::gil_scoped_release release;
-             reshardpb2::ThrowIfError(self.client->RegisterWorkUnit(args));
-           })
+  nb::class_<::tpu_raiden::kv_cache::reshardpb2::ClientHandle>(m,
+                                                               "ReshardClient")
+      .def(
+          "__init__",
+          [](::tpu_raiden::kv_cache::reshardpb2::ClientHandle* self,
+             const std::string& address) {
+            new (self)::tpu_raiden::kv_cache::reshardpb2::ClientHandle();
+            self->client =
+                std::make_unique<tpu_raiden::kv_cache::reshard::ReshardClient>(
+                    address);
+          },
+          nb::arg("controller_address"))
+      .def(
+          "register_work_unit",
+          [](::tpu_raiden::kv_cache::reshardpb2::ClientHandle& self,
+             const ::tpu_raiden::kv_cache::reshardpb2::UnitTuple& unit,
+             const std::vector<std::string>& shards,
+             const std::string& control_plane_rpc_address,
+             const std::vector<int64_t>& mesh_shape,
+             const std::vector<int32_t>& layout,
+             const std::vector<int64_t>& global_shape, int32_t itemsize,
+             bool has_pool_manifest, nb::object pool_manifest,
+             std::optional<std::string> layout_fingerprint,
+             std::optional<int64_t> page_tokens,
+             std::optional<int32_t> transfer_parallelism,
+             std::optional<int32_t> transfer_rank, bool has_variables,
+             const std::vector<nb::bytes>& variables) {
+            tpu_raiden::kv_cache::reshard::RegisterWorkUnitArgs args;
+            args.unit = ::tpu_raiden::kv_cache::reshardpb2::UnitOf(unit);
+            args.shards = shards;
+            args.control_plane_rpc_address = control_plane_rpc_address;
+            args.mesh_shape = mesh_shape;
+            args.layout = layout;
+            args.global_shape = global_shape;
+            args.itemsize = itemsize;
+            args.has_pool_manifest = has_pool_manifest;
+            if (has_pool_manifest) {
+              args.pool_manifest =
+                  ::tpu_raiden::kv_cache::reshardpb2::ManifestOf(pool_manifest);
+            }
+            args.layout_fingerprint = std::move(layout_fingerprint);
+            args.page_tokens = page_tokens;
+            args.transfer_parallelism = transfer_parallelism;
+            args.transfer_rank = transfer_rank;
+            args.has_variables = has_variables;
+            for (const nb::bytes& payload : variables) {
+              args.variables.emplace_back(payload.c_str(), payload.size());
+            }
+            nb::gil_scoped_release release;
+            ::tpu_raiden::kv_cache::reshardpb2::ThrowIfError(
+                self.client->RegisterWorkUnit(args));
+          })
       .def("register_request_blocks",
-           [](reshardpb2::ClientHandle& self, const std::string& req_id,
-              int64_t uuid, const reshardpb2::UnitTuple& unit,
+           [](::tpu_raiden::kv_cache::reshardpb2::ClientHandle& self,
+              const std::string& req_id, int64_t uuid,
+              const ::tpu_raiden::kv_cache::reshardpb2::UnitTuple& unit,
               const std::vector<int64_t>& block_ids, nb::object pool_spans) {
              tpu_raiden::kv_cache::RaidenId unit_id =
-                 reshardpb2::UnitOf(unit);
-             std::vector<tpu_raiden::kv_cache::reshard::ClientPoolSpans>
-                 spans = reshardpb2::SpansOf(pool_spans);
+                 ::tpu_raiden::kv_cache::reshardpb2::UnitOf(unit);
+             std::vector<tpu_raiden::kv_cache::reshard::ClientPoolSpans> spans =
+                 ::tpu_raiden::kv_cache::reshardpb2::SpansOf(pool_spans);
              nb::gil_scoped_release release;
-             reshardpb2::ThrowIfError(self.client->RegisterRequestBlocks(
-                 req_id, uuid, unit_id, block_ids, spans));
+             ::tpu_raiden::kv_cache::reshardpb2::ThrowIfError(
+                 self.client->RegisterRequestBlocks(req_id, uuid, unit_id,
+                                                    block_ids, spans));
            })
       .def("release_request_blocks",
-           [](reshardpb2::ClientHandle& self, const std::string& req_id,
-              int64_t uuid) {
+           [](::tpu_raiden::kv_cache::reshardpb2::ClientHandle& self,
+              const std::string& req_id, int64_t uuid) {
              nb::gil_scoped_release release;
-             reshardpb2::ThrowIfError(
+             ::tpu_raiden::kv_cache::reshardpb2::ThrowIfError(
                  self.client->ReleaseRequestBlocks(req_id, uuid));
            })
       .def("complete_request_blocks",
-           [](reshardpb2::ClientHandle& self, const std::string& req_id,
-              int64_t uuid, const reshardpb2::UnitTuple& unit) {
+           [](::tpu_raiden::kv_cache::reshardpb2::ClientHandle& self,
+              const std::string& req_id, int64_t uuid,
+              const ::tpu_raiden::kv_cache::reshardpb2::UnitTuple& unit) {
              tpu_raiden::kv_cache::RaidenId unit_id =
-                 reshardpb2::UnitOf(unit);
+                 ::tpu_raiden::kv_cache::reshardpb2::UnitOf(unit);
              nb::gil_scoped_release release;
-             reshardpb2::ThrowIfError(
+             ::tpu_raiden::kv_cache::reshardpb2::ThrowIfError(
                  self.client->CompleteRequestBlocks(req_id, uuid, unit_id));
            })
       .def("cancel_request_blocks_if_unclaimed",
-           [](reshardpb2::ClientHandle& self, const std::string& req_id,
-              int64_t uuid) {
+           [](::tpu_raiden::kv_cache::reshardpb2::ClientHandle& self,
+              const std::string& req_id, int64_t uuid) {
              nb::gil_scoped_release release;
              absl::StatusOr<bool> result =
                  self.client->CancelRequestBlocksIfUnclaimed(req_id, uuid);
-             reshardpb2::ThrowIfError(result.status());
+             ::tpu_raiden::kv_cache::reshardpb2::ThrowIfError(result.status());
              return *result;
            })
       .def("start_transfer",
-           [](reshardpb2::ClientHandle& self,
-              const std::vector<reshardpb2::UnitTuple>& src_units,
-              const std::vector<reshardpb2::UnitTuple>& dst_units,
-              const std::string& req_id, bool use_block_chunks,
-              bool is_sender, int64_t expected_block_count, int64_t uuid,
+           [](::tpu_raiden::kv_cache::reshardpb2::ClientHandle& self,
+              const std::vector<::tpu_raiden::kv_cache::reshardpb2::UnitTuple>&
+                  src_units,
+              const std::vector<::tpu_raiden::kv_cache::reshardpb2::UnitTuple>&
+                  dst_units,
+              const std::string& req_id, bool use_block_chunks, bool is_sender,
+              int64_t expected_block_count, int64_t uuid,
               const std::string& dst_controller_address,
-              const std::string& src_controller_address,
-              int32_t dst_mem_type, bool has_dst_device_block_ids,
+              const std::string& src_controller_address, int32_t dst_mem_type,
+              bool has_dst_device_block_ids,
               const std::vector<int64_t>& dst_device_block_ids,
               bool has_transfer_pool_tags,
               const std::vector<std::string>& transfer_pool_tags,
               const std::vector<int64_t>& dst_block_counts) {
              tpu_raiden::kv_cache::reshard::StartTransferArgs args;
              for (const auto& unit : src_units) {
-               args.src_units.push_back(reshardpb2::UnitOf(unit));
+               args.src_units.push_back(
+                   ::tpu_raiden::kv_cache::reshardpb2::UnitOf(unit));
              }
              for (const auto& unit : dst_units) {
-               args.dst_units.push_back(reshardpb2::UnitOf(unit));
+               args.dst_units.push_back(
+                   ::tpu_raiden::kv_cache::reshardpb2::UnitOf(unit));
              }
              args.req_id = req_id;
              args.use_block_chunks = use_block_chunks;
@@ -1037,26 +1049,27 @@ NB_MODULE(_tpu_raiden_torch, m) {
              args.dst_block_counts = dst_block_counts;
              nb::gil_scoped_release release;
              absl::StatusOr<bool> result = self.client->StartTransfer(args);
-             reshardpb2::ThrowIfError(result.status());
+             ::tpu_raiden::kv_cache::reshardpb2::ThrowIfError(result.status());
              return *result;
            })
       .def("get_transfer_status",
-           [](reshardpb2::ClientHandle& self, const std::string& req_id,
-              int64_t uuid) {
+           [](::tpu_raiden::kv_cache::reshardpb2::ClientHandle& self,
+              const std::string& req_id, int64_t uuid) {
              nb::gil_scoped_release release;
              absl::StatusOr<int32_t> result =
                  self.client->GetTransferStatus(req_id, uuid);
-             reshardpb2::ThrowIfError(result.status());
+             ::tpu_raiden::kv_cache::reshardpb2::ThrowIfError(result.status());
              return *result;
            })
       .def("get_metadata",
-           [](reshardpb2::ClientHandle& self) {
+           [](::tpu_raiden::kv_cache::reshardpb2::ClientHandle& self) {
              std::vector<std::string> serialized;
              {
                nb::gil_scoped_release release;
                absl::StatusOr<std::vector<std::string>> result =
                    self.client->GetMetadata();
-               reshardpb2::ThrowIfError(result.status());
+               ::tpu_raiden::kv_cache::reshardpb2::ThrowIfError(
+                   result.status());
                serialized = *std::move(result);
              }
              nb::list out;
@@ -1065,12 +1078,13 @@ NB_MODULE(_tpu_raiden_torch, m) {
              }
              return out;
            })
-      .def("shutdown", [](reshardpb2::ClientHandle& self) {
-        nb::gil_scoped_release release;
-        absl::StatusOr<bool> result = self.client->Shutdown();
-        reshardpb2::ThrowIfError(result.status());
-        return *result;
-      });
+      .def("shutdown",
+           [](::tpu_raiden::kv_cache::reshardpb2::ClientHandle& self) {
+             nb::gil_scoped_release release;
+             absl::StatusOr<bool> result = self.client->Shutdown();
+             ::tpu_raiden::kv_cache::reshardpb2::ThrowIfError(result.status());
+             return *result;
+           });
 
   // NOTE: KVCacheStoreWrapper is already bound above as "KVCacheStore";
   // nanobind keys class bindings by C++ type, so a second nb::class_ for the

@@ -37,11 +37,10 @@ namespace controller {
 
 RaidenControllerClient::RaidenControllerClient(
     std::shared_ptr<grpc::Channel> channel)
-    : stub_(::tpu_raiden::proto::RaidenControllerService::NewStub(
-          channel)) {}
+    : stub_(::tpu_sync::proto::RaidenControllerService::NewStub(channel)) {}
 
 RaidenControllerClient::RaidenControllerClient(absl::string_view endpoint)
-    : stub_(::tpu_raiden::proto::RaidenControllerService::NewStub(
+    : stub_(::tpu_sync::proto::RaidenControllerService::NewStub(
           grpc::CreateChannel(std::string(endpoint),
                               grpc::InsecureChannelCredentials()))) {}
 
@@ -51,7 +50,7 @@ absl::Status RaidenControllerClient::RegisterWorker(
         raiden_transfer_endpoints,
     int64_t node_id, const std::vector<uint64_t>& block_array_bytes,
     int32_t num_kv_shards) {
-  ::tpu_raiden::proto::RegisterWorkerRequest request;
+  ::tpu_sync::proto::RegisterWorkerRequest request;
   request.set_worker_id(std::string(worker_id));
   request.set_raiden_worker_endpoint(std::string(raiden_worker_endpoint));
   request.set_node_id(node_id);
@@ -67,7 +66,7 @@ absl::Status RaidenControllerClient::RegisterWorker(
   }
   request.set_num_kv_shards(num_kv_shards);
 
-  ::tpu_raiden::proto::RegisterWorkerResponse response;
+  ::tpu_sync::proto::RegisterWorkerResponse response;
   grpc::ClientContext context;
   grpc::Status status = stub_->RegisterWorker(&context, request, &response);
 

@@ -215,7 +215,7 @@ TEST(KVCacheManagerTest, RegisterPoolsGrowsDeviceBackedHostMirror) {
 TEST(KVCacheManagerTest, RegisterPoolsFailsAfterActivePlanRegistered) {
   TestKVCacheManager manager(/*num_layers=*/1, /*num_shards=*/1,
                              /*slice_byte_size=*/128, /*host_blocks=*/1);
-  tpu_raiden::rpc::StartTransferRequest request;
+  tpu_sync::rpc::StartTransferRequest request;
   request.set_uuid(445566);
   request.set_is_sender(true);
 
@@ -259,7 +259,7 @@ TEST(KVCacheManagerTest, RegisterActivePlanChecksPoolDtypeTags) {
                   })
                   .ok());
 
-  tpu_raiden::rpc::StartTransferRequest request;
+  tpu_sync::rpc::StartTransferRequest request;
   request.set_uuid(777);
   request.add_pool_dtype_tags("dtype_a");
   request.add_pool_dtype_tags("dtype_b");
@@ -338,7 +338,7 @@ TEST(KVCacheManagerTest,
 
   const std::optional<int> receiver_port = receiver.local_port();
   ASSERT_TRUE(receiver_port.has_value());
-  tpu_raiden::rpc::StartTransferRequest dummy_plan;
+  tpu_sync::rpc::StartTransferRequest dummy_plan;
   ASSERT_TRUE(
       receiver.RegisterActivePlan(0, dummy_plan, /*is_sender=*/false).ok());
   auto pushed = sender.H2hWriteDirect(
@@ -405,7 +405,7 @@ TEST(KVCacheManagerTest,
 
   const std::optional<int> receiver_port = receiver.local_port();
   ASSERT_TRUE(receiver_port.has_value());
-  tpu_raiden::rpc::StartTransferRequest dummy_plan;
+  tpu_sync::rpc::StartTransferRequest dummy_plan;
   ASSERT_TRUE(
       receiver.RegisterActivePlan(0, dummy_plan, /*is_sender=*/false).ok());
   auto pushed = sender.H2hWriteDirect(
@@ -448,7 +448,7 @@ TEST(KVCacheManagerTest, ExplicitPoolTransportEnumeratesAllPools) {
 
   const std::optional<int> receiver_port = receiver.local_port();
   ASSERT_TRUE(receiver_port.has_value());
-  tpu_raiden::rpc::StartTransferRequest dummy_plan;
+  tpu_sync::rpc::StartTransferRequest dummy_plan;
   ASSERT_TRUE(
       receiver.RegisterActivePlan(0, dummy_plan, /*is_sender=*/false).ok());
   auto pushed = sender.H2hWriteDirect(
@@ -544,7 +544,7 @@ TEST(KVCacheManagerTest, ImplicitPoolsMirrorStorages) {
 TEST(KVCacheManagerTest, UnregisterActivePlanAllowsUuidReuse) {
   TestKVCacheManager manager(/*num_layers=*/1, /*num_shards=*/1,
                              /*slice_byte_size=*/128);
-  tpu_raiden::rpc::StartTransferRequest request;
+  tpu_sync::rpc::StartTransferRequest request;
   request.set_uuid(112233);
   request.set_is_sender(true);
 
@@ -653,7 +653,7 @@ TEST(KVCacheManagerTest, AsymmetricBlockSizesGetBlockChunks) {
   receiver.SetExternalHostPointers(receiver_ptrs, receiver_sizes);
 
   // Set up StartTransferRequest with schedules
-  tpu_raiden::rpc::StartTransferRequest request;
+  tpu_sync::rpc::StartTransferRequest request;
   request.set_uuid(112233);
   request.set_is_sender(true);
 

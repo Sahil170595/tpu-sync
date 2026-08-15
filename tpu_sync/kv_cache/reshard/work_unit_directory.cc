@@ -132,7 +132,7 @@ void WorkUnitDirectory::RegisterLocked(const WorkUnitRegistration& reg) {
   record.control_plane_rpc_address = reg.control_plane_rpc_address.value_or("");
 }
 
-absl::StatusOr<tpu_raiden::rpc::RegisterWorkUnitRequest>
+absl::StatusOr<tpu_sync::rpc::RegisterWorkUnitRequest>
 WorkUnitDirectory::MetadataProtoLocked(const RaidenId& unit) const {
   int idx = FindLocked(unit);
   if (idx < 0) {
@@ -140,7 +140,7 @@ WorkUnitDirectory::MetadataProtoLocked(const RaidenId& unit) const {
         absl::StrCat("Work unit is not registered: ", PythonRepr(unit)));
   }
   const Record& record = records_[idx];
-  tpu_raiden::rpc::RegisterWorkUnitRequest reg_req;
+  tpu_sync::rpc::RegisterWorkUnitRequest reg_req;
   *reg_req.mutable_unit() = RaidenIdToProto(unit);
   for (const std::string& shard : record.shards) {
     reg_req.add_shards(shard);
@@ -173,10 +173,10 @@ WorkUnitDirectory::MetadataProtoLocked(const RaidenId& unit) const {
   return reg_req;
 }
 
-std::vector<tpu_raiden::rpc::RegisterWorkUnitRequest>
+std::vector<tpu_sync::rpc::RegisterWorkUnitRequest>
 WorkUnitDirectory::AllMetadata() const {
   absl::MutexLock lock(*mu_);
-  std::vector<tpu_raiden::rpc::RegisterWorkUnitRequest> result;
+  std::vector<tpu_sync::rpc::RegisterWorkUnitRequest> result;
   result.reserve(order_.size());
   for (const RaidenId& unit : order_) {
     auto proto = MetadataProtoLocked(unit);
@@ -185,7 +185,7 @@ WorkUnitDirectory::AllMetadata() const {
   return result;
 }
 
-absl::StatusOr<std::vector<tpu_raiden::rpc::RegisterWorkUnitRequest>>
+absl::StatusOr<std::vector<tpu_sync::rpc::RegisterWorkUnitRequest>>
 WorkUnitDirectory::LocalMetadata(const std::vector<RaidenId>& units) const {
   absl::MutexLock lock(*mu_);
   std::vector<std::string> missing;
@@ -196,7 +196,7 @@ WorkUnitDirectory::LocalMetadata(const std::vector<RaidenId>& units) const {
     return absl::InvalidArgumentError(absl::StrCat(
         "Work units are not registered: [", absl::StrJoin(missing, ", "), "]"));
   }
-  std::vector<tpu_raiden::rpc::RegisterWorkUnitRequest> result;
+  std::vector<tpu_sync::rpc::RegisterWorkUnitRequest> result;
   result.reserve(units.size());
   for (const RaidenId& unit : units) {
     auto proto = MetadataProtoLocked(unit);
@@ -210,8 +210,8 @@ bool WorkUnitDirectory::IsRegisteredLocked(const RaidenId& unit) const {
   return FindLocked(unit) >= 0;
 }
 
-std::vector<tpu_raiden::rpc::PoolSpecProto>
-WorkUnitDirectory::PoolManifestLocked(const RaidenId& unit) const {
+std::vector<tpu_sync::rpc::PoolSpecProto> WorkUnitDirectory::PoolManifestLocked(
+    const RaidenId& unit) const {
   int idx = FindLocked(unit);
   if (idx < 0 || !records_[idx].pools.has_value()) return {};
   return *records_[idx].pools;

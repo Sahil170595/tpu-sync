@@ -32,11 +32,11 @@
 namespace tpu_raiden {
 namespace weight_sync {
 
-using ::tpu_raiden::rpc::ControlRequest;
-using ::tpu_raiden::rpc::ControlResponse;
-using ::tpu_raiden::rpc::ShardPushEntryProto;
-using ::tpu_raiden::rpc::ShardPushScheduleProto;
-using ::tpu_raiden::rpc::StartTransferRequest;
+using ::tpu_sync::rpc::ControlRequest;
+using ::tpu_sync::rpc::ControlResponse;
+using ::tpu_sync::rpc::ShardPushEntryProto;
+using ::tpu_sync::rpc::ShardPushScheduleProto;
+using ::tpu_sync::rpc::StartTransferRequest;
 
 namespace {
 

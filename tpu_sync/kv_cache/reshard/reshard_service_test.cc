@@ -40,7 +40,6 @@ namespace kv_cache {
 namespace reshard {
 namespace {
 
-namespace rpcpb = tpu_raiden::rpc;
 using ::testing::HasSubstr;
 
 RaidenId Unit(int rank) {
@@ -62,9 +61,9 @@ RaidenId DstUnit() {
 }
 
 // One pool, one region covering [0, live) of each block.
-rpcpb::PoolSpecProto MakePool(const std::string& tag, int64_t live,
-                              int64_t stride, int64_t num_blocks) {
-  rpcpb::PoolSpecProto pool;
+tpu_sync::rpc::PoolSpecProto MakePool(const std::string& tag, int64_t live,
+                                      int64_t stride, int64_t num_blocks) {
+  tpu_sync::rpc::PoolSpecProto pool;
   pool.set_tag(tag);
   pool.set_storage_index(0);
   pool.set_base_offset_bytes(0);
@@ -92,12 +91,12 @@ class FakeTransport final : public FramedTransport {
       calls_.emplace_back(std::string(address), std::string(payload));
     }
     if (fail_addr_ == address) {
-      rpcpb::ControlResponse failed;
+      tpu_sync::rpc::ControlResponse failed;
       failed.set_success(false);
       failed.set_message("injected arm refusal");
       return failed.SerializeAsString();
     }
-    rpcpb::ControlResponse ok;
+    tpu_sync::rpc::ControlResponse ok;
     ok.set_success(true);
     return ok.SerializeAsString();
   }
@@ -124,8 +123,9 @@ class ReshardStackTest : public ::testing::Test {
   void RegisterAllUnits(int num_src, int64_t live, int64_t stride,
                         int64_t num_blocks) {
     for (int rank = 0; rank < num_src; ++rank) {
-      rpcpb::ControlRequest req;
-      req.set_command(rpcpb::ControlRequest::COMMAND_REGISTER_WORK_UNIT);
+      tpu_sync::rpc::ControlRequest req;
+      req.set_command(
+          tpu_sync::rpc::ControlRequest::COMMAND_REGISTER_WORK_UNIT);
       auto* reg = req.mutable_register_work_unit_request();
       *reg->mutable_unit() = RaidenIdToProto(Unit(rank));
       reg->add_shards(absl::StrCat("10.0.0.1:", 9000 + rank));
@@ -136,11 +136,11 @@ class ReshardStackTest : public ::testing::Test {
       reg->set_page_tokens(512);
       reg->set_transfer_parallelism(num_src);
       reg->set_transfer_rank(rank);
-      rpcpb::ControlResponse resp = Handle(req.SerializeAsString());
+      tpu_sync::rpc::ControlResponse resp = Handle(req.SerializeAsString());
       ASSERT_TRUE(resp.success()) << resp.message();
     }
-    rpcpb::ControlRequest req;
-    req.set_command(rpcpb::ControlRequest::COMMAND_REGISTER_WORK_UNIT);
+    tpu_sync::rpc::ControlRequest req;
+    req.set_command(tpu_sync::rpc::ControlRequest::COMMAND_REGISTER_WORK_UNIT);
     auto* reg = req.mutable_register_work_unit_request();
     *reg->mutable_unit() = RaidenIdToProto(DstUnit());
     reg->add_shards("10.0.0.2:9400");
@@ -150,7 +150,7 @@ class ReshardStackTest : public ::testing::Test {
     reg->set_page_tokens(4096);
     reg->set_transfer_parallelism(num_src);
     reg->set_transfer_rank(0);
-    rpcpb::ControlResponse resp = Handle(req.SerializeAsString());
+    tpu_sync::rpc::ControlResponse resp = Handle(req.SerializeAsString());
     ASSERT_TRUE(resp.success()) << resp.message();
   }
 
@@ -158,8 +158,9 @@ class ReshardStackTest : public ::testing::Test {
                      int64_t live, int64_t src_block, int64_t dst_index,
                      int64_t dst_offset, int64_t size,
                      int32_t dst_space_version = 0) {
-    rpcpb::ControllerRequest req;
-    req.set_command(rpcpb::ControllerRequest::COMMAND_REGISTER_REQUEST_BLOCKS);
+    tpu_sync::rpc::ControllerRequest req;
+    req.set_command(
+        tpu_sync::rpc::ControllerRequest::COMMAND_REGISTER_REQUEST_BLOCKS);
     auto* block_req = req.mutable_register_request_blocks_request();
     block_req->set_req_id(req_id);
     block_req->set_uuid(uuid);
@@ -177,28 +178,29 @@ class ReshardStackTest : public ::testing::Test {
     span->set_count(1);
     entry->set_declared_bytes(size);
     entry->set_dst_space_version(dst_space_version);
-    rpcpb::ControllerResponse resp;
+    tpu_sync::rpc::ControllerResponse resp;
     resp.ParseFromString(service_->HandleFrame(req.SerializeAsString()));
     ASSERT_TRUE(resp.success()) << resp.message();
   }
 
-  rpcpb::ControlResponse Handle(const std::string& bytes) {
-    rpcpb::ControlResponse resp;
+  tpu_sync::rpc::ControlResponse Handle(const std::string& bytes) {
+    tpu_sync::rpc::ControlResponse resp;
     resp.ParseFromString(service_->HandleFrame(bytes));
     return resp;
   }
 
-  rpcpb::ControllerResponse HandleController(const std::string& bytes) {
-    rpcpb::ControllerResponse resp;
+  tpu_sync::rpc::ControllerResponse HandleController(const std::string& bytes) {
+    tpu_sync::rpc::ControllerResponse resp;
     resp.ParseFromString(service_->HandleFrame(bytes));
     return resp;
   }
 
-  rpcpb::ControllerResponse Coordinate(const std::string& req_id, int64_t uuid,
-                                       int num_src,
-                                       std::vector<int64_t> dst_blocks) {
-    rpcpb::ControllerRequest req;
-    req.set_command(rpcpb::ControllerRequest::COMMAND_COORDINATE_TRANSFER);
+  tpu_sync::rpc::ControllerResponse Coordinate(
+      const std::string& req_id, int64_t uuid, int num_src,
+      std::vector<int64_t> dst_blocks) {
+    tpu_sync::rpc::ControllerRequest req;
+    req.set_command(
+        tpu_sync::rpc::ControllerRequest::COMMAND_COORDINATE_TRANSFER);
     auto* coord = req.mutable_coordinate_transfer_request();
     for (int rank = 0; rank < num_src; ++rank) {
       *coord->add_src_units() = RaidenIdToProto(Unit(rank));
@@ -206,7 +208,7 @@ class ReshardStackTest : public ::testing::Test {
     *coord->add_dst_units() = RaidenIdToProto(DstUnit());
     coord->set_uuid(uuid);
     coord->set_is_sender(true);
-    coord->set_dst_mem_type(rpcpb::MEMORY_TYPE_HBM);
+    coord->set_dst_mem_type(tpu_sync::rpc::MEMORY_TYPE_HBM);
     coord->set_use_block_chunks(true);
     coord->set_req_id(req_id);
     for (int64_t block : dst_blocks) {
@@ -243,14 +245,14 @@ TEST_F(ReshardStackTest, FullPoolReshardFlowEmitsArmThenDispatch) {
                 /*dst_offset=*/0, /*size=*/1024);
   RegisterSpans(1, "req-1", 42, 1024, /*src_block=*/5, /*dst_index=*/1,
                 /*dst_offset=*/0, /*size=*/512);
-  rpcpb::ControllerResponse resp = Coordinate("req-1", 42, 2, {7, 9});
+  tpu_sync::rpc::ControllerResponse resp = Coordinate("req-1", 42, 2, {7, 9});
   ASSERT_TRUE(resp.success()) << resp.message();
 
   // Exactly 3 worker calls: 1 arm (decode control addr), 2 sender
   // dispatches; the arm strictly precedes both dispatches.
   ASSERT_EQ(transport_.calls_.size(), 3u);
   EXPECT_EQ(transport_.calls_[0].first, "10.0.0.2:9600");
-  rpcpb::ControlRequest arm;
+  tpu_sync::rpc::ControlRequest arm;
   ASSERT_TRUE(arm.ParseFromString(transport_.calls_[0].second));
   EXPECT_FALSE(arm.start_transfer_request().is_sender());
   ASSERT_EQ(arm.start_transfer_request().pool_groups_size(), 1);
@@ -263,7 +265,7 @@ TEST_F(ReshardStackTest, FullPoolReshardFlowEmitsArmThenDispatch) {
   EXPECT_EQ(arm.start_transfer_request().shard_push_schedules_size(), 2);
 
   for (int i = 1; i <= 2; ++i) {
-    rpcpb::ControlRequest dispatch;
+    tpu_sync::rpc::ControlRequest dispatch;
     ASSERT_TRUE(dispatch.ParseFromString(transport_.calls_[i].second));
     EXPECT_TRUE(dispatch.start_transfer_request().is_sender());
     EXPECT_EQ(dispatch.start_transfer_request().shard_push_schedules_size(), 1);
@@ -275,14 +277,15 @@ TEST_F(ReshardStackTest, FullPoolReshardFlowEmitsArmThenDispatch) {
   }
 
   // Status is COMPLETED once the synchronous coordination returns.
-  rpcpb::ControllerRequest status_req;
-  status_req.set_command(rpcpb::ControllerRequest::COMMAND_GET_TRANSFER_STATUS);
+  tpu_sync::rpc::ControllerRequest status_req;
+  status_req.set_command(
+      tpu_sync::rpc::ControllerRequest::COMMAND_GET_TRANSFER_STATUS);
   status_req.mutable_get_transfer_status_request()->set_req_id("req-1");
-  rpcpb::ControllerResponse status_resp =
+  tpu_sync::rpc::ControllerResponse status_resp =
       HandleController(status_req.SerializeAsString());
   ASSERT_TRUE(status_resp.success());
   EXPECT_EQ(status_resp.get_transfer_status_response().status(),
-            rpcpb::GetTransferStatusResponse::STATUS_COMPLETED);
+            tpu_sync::rpc::GetTransferStatusResponse::STATUS_COMPLETED);
 }
 
 TEST_F(ReshardStackTest, GlobalSpaceSpansSplitAtPageBoundaries) {
@@ -296,10 +299,10 @@ TEST_F(ReshardStackTest, GlobalSpaceSpansSplitAtPageBoundaries) {
                 /*dst_offset=*/512, /*size=*/1024, /*dst_space_version=*/1);
   RegisterSpans(1, "req-2", 43, 1024, /*src_block=*/5, /*dst_index=*/0,
                 /*dst_offset=*/0, /*size=*/512);
-  rpcpb::ControllerResponse resp = Coordinate("req-2", 43, 2, {7, 9});
+  tpu_sync::rpc::ControllerResponse resp = Coordinate("req-2", 43, 2, {7, 9});
   ASSERT_TRUE(resp.success()) << resp.message();
   ASSERT_EQ(transport_.calls_.size(), 3u);
-  rpcpb::ControlRequest arm;
+  tpu_sync::rpc::ControlRequest arm;
   ASSERT_TRUE(arm.ParseFromString(transport_.calls_[0].second));
   const auto& group = arm.start_transfer_request().pool_groups(0);
   ASSERT_EQ(group.dst_expected_extent_bytes_size(), 2);
@@ -308,7 +311,7 @@ TEST_F(ReshardStackTest, GlobalSpaceSpansSplitAtPageBoundaries) {
   // Rank 0's dispatch carries the two split entries (page 0 tail, page 1
   // prefix), in (dst_block_index, dst_offset) order. Sender dispatch is
   // parallel, so select rank 0's payload by its control address.
-  rpcpb::ControlRequest rank0;
+  tpu_sync::rpc::ControlRequest rank0;
   bool found_rank0 = false;
   for (size_t i = 1; i < transport_.calls_.size(); ++i) {
     if (transport_.calls_[i].first == "10.0.0.1:9100") {
@@ -331,7 +334,7 @@ TEST_F(ReshardStackTest, GlobalSpaceSpansSplitAtPageBoundaries) {
 TEST_F(ReshardStackTest, MissingRegistrationKeepsContractString) {
   RegisterAllUnits(/*num_src=*/1, /*live=*/1024, /*stride=*/1024,
                    /*num_blocks=*/16);
-  rpcpb::ControllerResponse resp = Coordinate("req-3", 44, 1, {7});
+  tpu_sync::rpc::ControllerResponse resp = Coordinate("req-3", 44, 1, {7});
   ASSERT_FALSE(resp.success());
   EXPECT_THAT(resp.message(),
               HasSubstr("Missing producer block registration for "
@@ -345,7 +348,7 @@ TEST_F(ReshardStackTest, ArmFailureAbandonsClaimAndSkipsSenders) {
                    /*num_blocks=*/16);
   RegisterSpans(0, "req-4", 45, 1024, 3, 0, 0, 1024);
   transport_.FailFor("10.0.0.2:9600");
-  rpcpb::ControllerResponse resp = Coordinate("req-4", 45, 1, {7});
+  tpu_sync::rpc::ControllerResponse resp = Coordinate("req-4", 45, 1, {7});
   ASSERT_FALSE(resp.success());
   EXPECT_THAT(resp.message(), HasSubstr("injected arm refusal"));
   // Only the arm call went out; no sender was contacted.
@@ -353,7 +356,7 @@ TEST_F(ReshardStackTest, ArmFailureAbandonsClaimAndSkipsSenders) {
   // The claim was abandoned: a fresh coordination succeeds end-to-end.
   transport_.FailFor("");
   transport_.calls_.clear();
-  rpcpb::ControllerResponse retry = Coordinate("req-4", 45, 1, {7});
+  tpu_sync::rpc::ControllerResponse retry = Coordinate("req-4", 45, 1, {7});
   ASSERT_TRUE(retry.success()) << retry.message();
   EXPECT_EQ(transport_.calls_.size(), 2u);
 }
@@ -361,25 +364,27 @@ TEST_F(ReshardStackTest, ArmFailureAbandonsClaimAndSkipsSenders) {
 TEST_F(ReshardStackTest, CancelTombstoneBlocksLateRegistration) {
   RegisterAllUnits(/*num_src=*/1, /*live=*/1024, /*stride=*/1024,
                    /*num_blocks=*/16);
-  rpcpb::ControllerRequest cancel_req;
-  cancel_req.set_command(
-      rpcpb::ControllerRequest::COMMAND_CANCEL_REQUEST_BLOCKS_IF_UNCLAIMED);
+  tpu_sync::rpc::ControllerRequest cancel_req;
+  cancel_req.set_command(tpu_sync::rpc::ControllerRequest::
+                             COMMAND_CANCEL_REQUEST_BLOCKS_IF_UNCLAIMED);
   cancel_req.mutable_cancel_request_blocks_if_unclaimed_request()->set_req_id(
       "req-5");
   cancel_req.mutable_cancel_request_blocks_if_unclaimed_request()->set_uuid(46);
-  rpcpb::ControllerResponse cancel_resp =
+  tpu_sync::rpc::ControllerResponse cancel_resp =
       HandleController(cancel_req.SerializeAsString());
   ASSERT_TRUE(cancel_resp.success());
   EXPECT_EQ(cancel_resp.response_data(), "true");
 
-  rpcpb::ControllerRequest req;
-  req.set_command(rpcpb::ControllerRequest::COMMAND_REGISTER_REQUEST_BLOCKS);
+  tpu_sync::rpc::ControllerRequest req;
+  req.set_command(
+      tpu_sync::rpc::ControllerRequest::COMMAND_REGISTER_REQUEST_BLOCKS);
   auto* block_req = req.mutable_register_request_blocks_request();
   block_req->set_req_id("req-5");
   block_req->set_uuid(46);
   *block_req->mutable_unit() = RaidenIdToProto(Unit(0));
   block_req->add_block_ids(3);
-  rpcpb::ControllerResponse resp = HandleController(req.SerializeAsString());
+  tpu_sync::rpc::ControllerResponse resp =
+      HandleController(req.SerializeAsString());
   ASSERT_FALSE(resp.success());
   EXPECT_THAT(resp.message(),
               HasSubstr("Request block registration was cancelled for "
@@ -394,18 +399,19 @@ TEST_F(ReshardStackTest, CompletionVotesRetireAfterClaim) {
   ASSERT_TRUE(Coordinate("req-6", 47, 2, {7, 9}).success());
 
   auto complete = [&](int rank) {
-    rpcpb::ControllerRequest req;
-    req.set_command(rpcpb::ControllerRequest::COMMAND_COMPLETE_REQUEST_BLOCKS);
+    tpu_sync::rpc::ControllerRequest req;
+    req.set_command(
+        tpu_sync::rpc::ControllerRequest::COMMAND_COMPLETE_REQUEST_BLOCKS);
     auto* complete_req = req.mutable_complete_request_blocks_request();
     complete_req->set_req_id("req-6");
     complete_req->set_uuid(47);
     *complete_req->mutable_unit() = RaidenIdToProto(Unit(rank));
     return HandleController(req.SerializeAsString());
   };
-  rpcpb::ControllerResponse first = complete(0);
+  tpu_sync::rpc::ControllerResponse first = complete(0);
   ASSERT_TRUE(first.success());
   EXPECT_EQ(first.response_data(), "0");
-  rpcpb::ControllerResponse second = complete(1);
+  tpu_sync::rpc::ControllerResponse second = complete(1);
   ASSERT_TRUE(second.success());
   EXPECT_EQ(second.response_data(), "2");  // both rank rows retired
 }
@@ -415,17 +421,18 @@ TEST_F(ReshardStackTest, TtlPurgesExpiredRegistrations) {
                    /*num_blocks=*/16);
   RegisterSpans(0, "req-7", 48, 1024, 3, 0, 0, 1024);
   now_ += 601.0;  // past the 600 s TTL
-  rpcpb::ControllerResponse resp = Coordinate("req-7", 48, 1, {7});
+  tpu_sync::rpc::ControllerResponse resp = Coordinate("req-7", 48, 1, {7});
   ASSERT_FALSE(resp.success());
   EXPECT_THAT(resp.message(), HasSubstr("Missing producer block registration"));
 }
 
 TEST_F(ReshardStackTest, LegacyCommandsFailClosed) {
-  rpcpb::ControlRequest req;
-  req.set_command(rpcpb::ControlRequest::COMMAND_REGISTER_TRANSFER_SCHEDULE);
+  tpu_sync::rpc::ControlRequest req;
+  req.set_command(
+      tpu_sync::rpc::ControlRequest::COMMAND_REGISTER_TRANSFER_SCHEDULE);
   auto* start_req = req.mutable_start_transfer_request();
   start_req->add_transfer_pool_indices(0);
-  rpcpb::ControlResponse resp = Handle(req.SerializeAsString());
+  tpu_sync::rpc::ControlResponse resp = Handle(req.SerializeAsString());
   ASSERT_FALSE(resp.success());
   EXPECT_THAT(resp.message(),
               HasSubstr("Inter-controller reshard schedule registration is "

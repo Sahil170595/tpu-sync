@@ -25,8 +25,8 @@
 
 namespace tpu_raiden {
 
-proto::BufferProto Buffer::ToProto() const {
-  proto::BufferProto proto;
+::tpu_sync::proto::BufferProto Buffer::ToProto() const {
+  ::tpu_sync::proto::BufferProto proto;
   if (index_ >= 0) {
     proto.set_index(index_);
   }
@@ -59,7 +59,7 @@ proto::BufferProto Buffer::ToProto() const {
   return proto;
 }
 
-Buffer Buffer::FromProto(const proto::BufferProto& proto,
+Buffer Buffer::FromProto(const ::tpu_sync::proto::BufferProto& proto,
                          std::optional<std::string> remote_address) {
   int index = proto.has_index() ? proto.index() : -1;
   std::vector<BufferShard> shards;
@@ -71,7 +71,7 @@ Buffer Buffer::FromProto(const proto::BufferProto& proto,
         .size = 0,
     });
   }
-  rpc::MemoryType memory_type = proto.memory_type();
+  ::tpu_sync::rpc::MemoryType memory_type = proto.memory_type();
   std::optional<std::string> addr = remote_address;
   if (!addr.has_value() && !proto.remote_address().empty()) {
     addr = proto.remote_address();

@@ -28,6 +28,7 @@
 
 namespace tpu_raiden {
 namespace controller {
+
 namespace {
 
 using ::absl_testing::StatusIs;
@@ -44,7 +45,7 @@ TEST(WorkerServiceServerTest, StartServerAndGetPortWorks) {
       grpc::CreateChannel(server_address, grpc::InsecureChannelCredentials());
   WorkerServiceClient client(channel);
 
-  proto::CreateBuffersRequest create_req;
+  ::tpu_sync::proto::CreateBuffersRequest create_req;
   create_req.mutable_unit()->set_job_name("test_job");
   create_req.mutable_unit()->set_job_replica_id("0");
   create_req.mutable_unit()->set_data_name("test_data");

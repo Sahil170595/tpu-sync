@@ -73,11 +73,11 @@ message FetchRequest {
 
   // Target destination info: Unique RaidenId of the client node initiating the
   // fetch.
-  tpu_raiden.rpc.RaidenIdProto client_raiden_id = 4;
+  tpu_sync.rpc.RaidenIdProto client_raiden_id = 4;
 
   // Data-plane transfer endpoints of the CLIENT (the node the bytes are
   // written into), one group per worker, tagged with node_id.
-  repeated tpu_raiden.proto.RaidenWorkerEndpointsProto client_worker_endpoints =
+  repeated tpu_sync.proto.RaidenWorkerEndpointsProto client_worker_endpoints =
       5;
 }
 
@@ -114,7 +114,7 @@ enum WriteExistState {
 // The source offers blocks it owns; the destination decides and pulls.
 message WriteRemoteRequest {
   // Identifies the offering node. The destination pulls FROM it.
-  tpu_raiden.rpc.RaidenIdProto src_raiden_id = 1;
+  tpu_sync.rpc.RaidenIdProto src_raiden_id = 1;
 
   // MUST be non-empty; an empty list is INVALID_ARGUMENT.
   repeated bytes block_hashes = 2;
@@ -127,7 +127,7 @@ message WriteRemoteRequest {
   // The source's worker endpoint groups, tagged with node_id so each
   // destination worker pairs with the source worker holding its shards.
   // DATA-plane endpoints, not control.
-  repeated tpu_raiden.proto.RaidenWorkerEndpointsProto src_worker_endpoints = 4;
+  repeated tpu_sync.proto.RaidenWorkerEndpointsProto src_worker_endpoints = 4;
 
   // Requested destination deadline, in milliseconds. MUST be > 0.
   //

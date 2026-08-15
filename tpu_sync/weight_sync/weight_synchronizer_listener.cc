@@ -136,19 +136,18 @@ void WeightSynchronizerListener::ConnectionWorker(int client_fd) {
     total_read += n;
   }
 
-  tpu_raiden::rpc::ControlRequest req;
+  tpu_sync::rpc::ControlRequest req;
   if (!req.ParseFromString(absl::string_view(buffer.data(), buffer.size()))) {
     LOG(ERROR) << "Failed to parse ControlRequest Protobuf";
     close(client_fd);
     return;
   }
 
-  tpu_raiden::rpc::ControlResponse resp;
+  tpu_sync::rpc::ControlResponse resp;
   resp.set_success(true);
   resp.set_message("SUCCESS");
 
-  if (req.command() ==
-      tpu_raiden::rpc::ControlRequest::COMMAND_START_TRANSFER) {
+  if (req.command() == tpu_sync::rpc::ControlRequest::COMMAND_START_TRANSFER) {
     bool is_sender = true;
     bool is_resharded = false;
     if (req.has_start_transfer_request()) {
@@ -228,8 +227,7 @@ void WeightSynchronizerListener::ConnectionWorker(int client_fd) {
         LOG(ERROR) << "RegisterExpectedChunks failed: " << status;
       }
     }
-  } else if (req.command() ==
-             tpu_raiden::rpc::ControlRequest::COMMAND_SHUTDOWN) {
+  } else if (req.command() == tpu_sync::rpc::ControlRequest::COMMAND_SHUTDOWN) {
     LOG(INFO) << "C++ Listener received SHUTDOWN command. Initiating "
                  "clean exit.";
     stopping_ = true;

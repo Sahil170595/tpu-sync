@@ -37,12 +37,11 @@ namespace tpu_raiden {
 namespace store_node {
 namespace {
 
-namespace gr = ::tpu_raiden::kv_cache::global_registry;
-
 class GrsKVTransferSpecSourceTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    service_ = std::make_unique<gr::GlobalRegistryServiceImpl>();
+    service_ = std::make_unique<
+        ::tpu_raiden::kv_cache::global_registry::GlobalRegistryServiceImpl>();
     grpc::ServerBuilder builder;
     builder.AddListeningPort("localhost:0", grpc::InsecureServerCredentials(),
                              &port_);
@@ -55,14 +54,17 @@ class GrsKVTransferSpecSourceTest : public ::testing::Test {
   void TearDown() override { server_->Shutdown(); }
 
   // Publishes a spec under `kv_pool_group` the way a serving host will.
-  void Publish(const gr::KVTransferSpec& spec,
-               absl::string_view kv_pool_group = "prefill_pool") {
-    gr::GlobalRegistryClient client(grpc::CreateChannel(
-        address_, grpc::InsecureChannelCredentials()));
+  void Publish(
+      const ::tpu_raiden::kv_cache::global_registry::KVTransferSpec& spec,
+      absl::string_view kv_pool_group = "prefill_pool") {
+    ::tpu_raiden::kv_cache::global_registry::GlobalRegistryClient client(
+        grpc::CreateChannel(address_, grpc::InsecureChannelCredentials()));
     ASSERT_TRUE(client.RegisterKVTransferSpec(spec, kv_pool_group).ok());
   }
 
-  std::unique_ptr<gr::GlobalRegistryServiceImpl> service_;
+  std::unique_ptr<
+      ::tpu_raiden::kv_cache::global_registry::GlobalRegistryServiceImpl>
+      service_;
   std::unique_ptr<grpc::Server> server_;
   int port_ = 0;
   std::string address_;
@@ -74,7 +76,7 @@ TEST_F(GrsKVTransferSpecSourceTest, NotFoundBeforePublish) {
 }
 
 TEST_F(GrsKVTransferSpecSourceTest, RoundTripsPublishedSpec) {
-  gr::KVTransferSpec proto;
+  ::tpu_raiden::kv_cache::global_registry::KVTransferSpec proto;
   proto.add_block_arrays()->set_block_bytes(4096);
   proto.add_block_arrays()->set_block_bytes(512);
   proto.set_num_kv_shards(2);
@@ -90,7 +92,7 @@ TEST_F(GrsKVTransferSpecSourceTest, RoundTripsPublishedSpec) {
 }
 
 TEST_F(GrsKVTransferSpecSourceTest, OtherGroupsSpecIsNotFound) {
-  gr::KVTransferSpec proto;
+  ::tpu_raiden::kv_cache::global_registry::KVTransferSpec proto;
   proto.add_block_arrays()->set_block_bytes(4096);
   proto.set_num_kv_shards(2);
   proto.set_num_workers(1);

@@ -33,6 +33,7 @@
 
 namespace tpu_raiden {
 namespace controller {
+
 namespace {
 
 using ::testing::ElementsAre;
@@ -49,12 +50,12 @@ class WorkerServiceTest : public ::testing::Test {
     unit_.set_data_name("test_data");
   }
 
-  rpc::RaidenIdProto unit_;
+  ::tpu_sync::rpc::RaidenIdProto unit_;
   std::unique_ptr<TestWorkerServer> test_server_;
 };
 
 TEST_F(WorkerServiceTest, CreateAndDeleteBuffersSuccess) {
-  proto::CreateBuffersRequest create_req;
+  ::tpu_sync::proto::CreateBuffersRequest create_req;
   *create_req.mutable_unit() = unit_;
   auto* spec1 = create_req.add_buffers();
   spec1->set_num_shards(2);
@@ -83,7 +84,7 @@ TEST_F(WorkerServiceTest, CreateAndDeleteBuffersSuccess) {
   EXPECT_EQ(alloc_or->size, 1024);
   EXPECT_NE(alloc_or->ptr, nullptr);
 
-  proto::DeleteBuffersRequest delete_req;
+  ::tpu_sync::proto::DeleteBuffersRequest delete_req;
   *delete_req.mutable_unit() = unit_;
   *delete_req.add_sharded_buffers() = buf1;
   *delete_req.add_sharded_buffers() = buf2;
@@ -95,7 +96,7 @@ TEST_F(WorkerServiceTest, CreateAndDeleteBuffersSuccess) {
 }
 
 TEST_F(WorkerServiceTest, CreateBuffersWithInvalidSpecFails) {
-  proto::CreateBuffersRequest create_req;
+  ::tpu_sync::proto::CreateBuffersRequest create_req;
   *create_req.mutable_unit() = unit_;
   auto* spec = create_req.add_buffers();
   spec->set_num_shards(0);
@@ -108,7 +109,7 @@ TEST_F(WorkerServiceTest, CreateBuffersWithInvalidSpecFails) {
 }
 
 TEST_F(WorkerServiceTest, DeleteNonExistentBufferFails) {
-  proto::DeleteBuffersRequest delete_req;
+  ::tpu_sync::proto::DeleteBuffersRequest delete_req;
   *delete_req.mutable_unit() = unit_;
   auto* sharded_buf = delete_req.add_sharded_buffers();
   sharded_buf->add_buffer_handles()->set_handle(9999);
@@ -123,10 +124,10 @@ TEST_F(WorkerServiceTest, TransferBuffersH2hSuccess) {
   MockTransferManager mock_mgr;
   test_server_->service->SetTransferManager(KVManagerHolder(&mock_mgr));
 
-  proto::TransferBuffersRequest transfer_req;
+  ::tpu_sync::proto::TransferBuffersRequest transfer_req;
   auto* transfer = transfer_req.mutable_transfer();
-  transfer->set_src_mem_type(rpc::MEMORY_TYPE_DRAM);
-  transfer->set_dst_mem_type(rpc::MEMORY_TYPE_DRAM);
+  transfer->set_src_mem_type(::tpu_sync::rpc::MEMORY_TYPE_DRAM);
+  transfer->set_dst_mem_type(::tpu_sync::rpc::MEMORY_TYPE_DRAM);
   transfer->add_src_offsets(10);
   transfer->add_dst_offsets(20);
   transfer->add_dst_buffers()->set_remote_address("localhost:8080");
@@ -147,10 +148,10 @@ TEST_F(WorkerServiceTest, TransferBuffersH2hMissingPeerFails) {
   MockTransferManager mock_mgr;
   test_server_->service->SetTransferManager(KVManagerHolder(&mock_mgr));
 
-  proto::TransferBuffersRequest transfer_req;
+  ::tpu_sync::proto::TransferBuffersRequest transfer_req;
   auto* transfer = transfer_req.mutable_transfer();
-  transfer->set_src_mem_type(rpc::MEMORY_TYPE_DRAM);
-  transfer->set_dst_mem_type(rpc::MEMORY_TYPE_DRAM);
+  transfer->set_src_mem_type(::tpu_sync::rpc::MEMORY_TYPE_DRAM);
+  transfer->set_dst_mem_type(::tpu_sync::rpc::MEMORY_TYPE_DRAM);
   transfer->add_src_offsets(10);
   transfer->add_dst_offsets(20);
 
@@ -164,10 +165,10 @@ TEST_F(WorkerServiceTest, TransferBuffersH2hInvalidCopySizeFails) {
   MockTransferManager mock_mgr;
   test_server_->service->SetTransferManager(KVManagerHolder(&mock_mgr));
 
-  proto::TransferBuffersRequest transfer_req;
+  ::tpu_sync::proto::TransferBuffersRequest transfer_req;
   auto* transfer = transfer_req.mutable_transfer();
-  transfer->set_src_mem_type(rpc::MEMORY_TYPE_DRAM);
-  transfer->set_dst_mem_type(rpc::MEMORY_TYPE_DRAM);
+  transfer->set_src_mem_type(::tpu_sync::rpc::MEMORY_TYPE_DRAM);
+  transfer->set_dst_mem_type(::tpu_sync::rpc::MEMORY_TYPE_DRAM);
   transfer->add_src_offsets(10);
   transfer->add_dst_offsets(20);
   transfer->add_copy_sizes(2);
@@ -183,10 +184,10 @@ TEST_F(WorkerServiceTest, TransferBuffersH2hOverflowFails) {
   MockTransferManager mock_mgr;
   test_server_->service->SetTransferManager(KVManagerHolder(&mock_mgr));
 
-  proto::TransferBuffersRequest transfer_req;
+  ::tpu_sync::proto::TransferBuffersRequest transfer_req;
   auto* transfer = transfer_req.mutable_transfer();
-  transfer->set_src_mem_type(rpc::MEMORY_TYPE_DRAM);
-  transfer->set_dst_mem_type(rpc::MEMORY_TYPE_DRAM);
+  transfer->set_src_mem_type(::tpu_sync::rpc::MEMORY_TYPE_DRAM);
+  transfer->set_dst_mem_type(::tpu_sync::rpc::MEMORY_TYPE_DRAM);
   transfer->add_src_offsets(2147483648L);
   transfer->add_dst_offsets(20);
   transfer->add_dst_buffers()->set_remote_address("localhost:8080");
@@ -200,10 +201,10 @@ TEST_F(WorkerServiceTest, TransferBuffersH2hOverflowFails) {
 }
 
 TEST_F(WorkerServiceTest, TransferBuffersWithoutTransferManagerFails) {
-  proto::TransferBuffersRequest transfer_req;
+  ::tpu_sync::proto::TransferBuffersRequest transfer_req;
   auto* transfer = transfer_req.mutable_transfer();
-  transfer->set_src_mem_type(rpc::MEMORY_TYPE_HBM);
-  transfer->set_dst_mem_type(rpc::MEMORY_TYPE_DRAM);
+  transfer->set_src_mem_type(::tpu_sync::rpc::MEMORY_TYPE_HBM);
+  transfer->set_dst_mem_type(::tpu_sync::rpc::MEMORY_TYPE_DRAM);
   transfer->add_src_offsets(10);
   transfer->add_dst_offsets(20);
 
@@ -214,10 +215,10 @@ TEST_F(WorkerServiceTest, TransferBuffersWithoutTransferManagerFails) {
 }
 
 TEST_F(WorkerServiceTest, TransferBuffersOffsetsMismatchFails) {
-  proto::TransferBuffersRequest transfer_req;
+  ::tpu_sync::proto::TransferBuffersRequest transfer_req;
   auto* transfer = transfer_req.mutable_transfer();
-  transfer->set_src_mem_type(rpc::MEMORY_TYPE_HBM);
-  transfer->set_dst_mem_type(rpc::MEMORY_TYPE_DRAM);
+  transfer->set_src_mem_type(::tpu_sync::rpc::MEMORY_TYPE_HBM);
+  transfer->set_dst_mem_type(::tpu_sync::rpc::MEMORY_TYPE_DRAM);
   transfer->add_src_offsets(10);
   transfer->add_dst_offsets(20);
   transfer->add_dst_offsets(30);
@@ -230,10 +231,10 @@ TEST_F(WorkerServiceTest, TransferBuffersOffsetsMismatchFails) {
 }
 
 TEST_F(WorkerServiceTest, TransferBuffersCopySizesMismatchFails) {
-  proto::TransferBuffersRequest transfer_req;
+  ::tpu_sync::proto::TransferBuffersRequest transfer_req;
   auto* transfer = transfer_req.mutable_transfer();
-  transfer->set_src_mem_type(rpc::MEMORY_TYPE_HBM);
-  transfer->set_dst_mem_type(rpc::MEMORY_TYPE_DRAM);
+  transfer->set_src_mem_type(::tpu_sync::rpc::MEMORY_TYPE_HBM);
+  transfer->set_dst_mem_type(::tpu_sync::rpc::MEMORY_TYPE_DRAM);
   transfer->add_src_offsets(10);
   transfer->add_dst_offsets(20);
   transfer->add_copy_sizes(1);
@@ -251,10 +252,10 @@ TEST_F(WorkerServiceTest, TransferBuffersD2HSuccess) {
   MockTransferManager mock_mgr;
   test_server_->service->SetTransferManager(KVManagerHolder(&mock_mgr));
 
-  proto::TransferBuffersRequest transfer_req;
+  ::tpu_sync::proto::TransferBuffersRequest transfer_req;
   auto* transfer = transfer_req.mutable_transfer();
-  transfer->set_src_mem_type(rpc::MEMORY_TYPE_HBM);
-  transfer->set_dst_mem_type(rpc::MEMORY_TYPE_DRAM);
+  transfer->set_src_mem_type(::tpu_sync::rpc::MEMORY_TYPE_HBM);
+  transfer->set_dst_mem_type(::tpu_sync::rpc::MEMORY_TYPE_DRAM);
   transfer->add_src_offsets(10);
   transfer->add_src_offsets(30);
   transfer->add_dst_offsets(20);
@@ -275,10 +276,10 @@ TEST_F(WorkerServiceTest, TransferBuffersRemoteD2hWithPeerSuccess) {
   MockTransferManager mock_mgr;
   test_server_->service->SetTransferManager(KVManagerHolder(&mock_mgr));
 
-  proto::TransferBuffersRequest transfer_req;
+  ::tpu_sync::proto::TransferBuffersRequest transfer_req;
   auto* transfer = transfer_req.mutable_transfer();
-  transfer->set_src_mem_type(rpc::MEMORY_TYPE_HBM);
-  transfer->set_dst_mem_type(rpc::MEMORY_TYPE_DRAM);
+  transfer->set_src_mem_type(::tpu_sync::rpc::MEMORY_TYPE_HBM);
+  transfer->set_dst_mem_type(::tpu_sync::rpc::MEMORY_TYPE_DRAM);
   transfer->add_src_offsets(100);
   transfer->add_dst_offsets(200);
   transfer->add_dst_buffers()->set_remote_address("remote_host:1234");
@@ -303,10 +304,10 @@ TEST_F(WorkerServiceTest,
   MockTransferManager mock_mgr;
   test_server_->service->SetTransferManager(KVManagerHolder(&mock_mgr));
 
-  proto::TransferBuffersRequest transfer_req;
+  ::tpu_sync::proto::TransferBuffersRequest transfer_req;
   auto* transfer = transfer_req.mutable_transfer();
-  transfer->set_src_mem_type(rpc::MEMORY_TYPE_HBM);
-  transfer->set_dst_mem_type(rpc::MEMORY_TYPE_DRAM);
+  transfer->set_src_mem_type(::tpu_sync::rpc::MEMORY_TYPE_HBM);
+  transfer->set_dst_mem_type(::tpu_sync::rpc::MEMORY_TYPE_DRAM);
 
   auto* src_buf = transfer->add_src_buffers();
   src_buf->set_index(100);
@@ -330,10 +331,10 @@ TEST_F(WorkerServiceTest,
   MockTransferManager mock_mgr;
   test_server_->service->SetTransferManager(KVManagerHolder(&mock_mgr));
 
-  proto::TransferBuffersRequest transfer_req;
+  ::tpu_sync::proto::TransferBuffersRequest transfer_req;
   auto* transfer = transfer_req.mutable_transfer();
-  transfer->set_src_mem_type(rpc::MEMORY_TYPE_HBM);
-  transfer->set_dst_mem_type(rpc::MEMORY_TYPE_DRAM);
+  transfer->set_src_mem_type(::tpu_sync::rpc::MEMORY_TYPE_HBM);
+  transfer->set_dst_mem_type(::tpu_sync::rpc::MEMORY_TYPE_DRAM);
 
   auto* src_buf = transfer->add_src_buffers();
   src_buf->set_index(100);
@@ -357,10 +358,10 @@ TEST_F(WorkerServiceTest, TransferBuffersLocalD2hFallbackSuccess) {
   MockTransferManager mock_mgr;
   test_server_->service->SetTransferManager(KVManagerHolder(&mock_mgr));
 
-  proto::TransferBuffersRequest transfer_req;
+  ::tpu_sync::proto::TransferBuffersRequest transfer_req;
   auto* transfer = transfer_req.mutable_transfer();
-  transfer->set_src_mem_type(rpc::MEMORY_TYPE_HBM);
-  transfer->set_dst_mem_type(rpc::MEMORY_TYPE_DRAM);
+  transfer->set_src_mem_type(::tpu_sync::rpc::MEMORY_TYPE_HBM);
+  transfer->set_dst_mem_type(::tpu_sync::rpc::MEMORY_TYPE_DRAM);
   transfer->add_src_offsets(100);
   transfer->add_dst_offsets(200);
 
@@ -377,10 +378,10 @@ TEST_F(WorkerServiceTest, TransferBuffersH2DSuccess) {
   MockTransferManager mock_mgr;
   test_server_->service->SetTransferManager(KVManagerHolder(&mock_mgr));
 
-  proto::TransferBuffersRequest transfer_req;
+  ::tpu_sync::proto::TransferBuffersRequest transfer_req;
   auto* transfer = transfer_req.mutable_transfer();
-  transfer->set_src_mem_type(rpc::MEMORY_TYPE_DRAM);
-  transfer->set_dst_mem_type(rpc::MEMORY_TYPE_HBM);
+  transfer->set_src_mem_type(::tpu_sync::rpc::MEMORY_TYPE_DRAM);
+  transfer->set_dst_mem_type(::tpu_sync::rpc::MEMORY_TYPE_HBM);
   transfer->add_src_offsets(100);
   transfer->add_dst_offsets(200);
 
@@ -397,10 +398,10 @@ TEST_F(WorkerServiceTest, TransferBuffersRemoteH2dWithPeerSuccess) {
   MockTransferManager mock_mgr;
   test_server_->service->SetTransferManager(KVManagerHolder(&mock_mgr));
 
-  proto::TransferBuffersRequest transfer_req;
+  ::tpu_sync::proto::TransferBuffersRequest transfer_req;
   auto* transfer = transfer_req.mutable_transfer();
-  transfer->set_src_mem_type(rpc::MEMORY_TYPE_DRAM);
-  transfer->set_dst_mem_type(rpc::MEMORY_TYPE_HBM);
+  transfer->set_src_mem_type(::tpu_sync::rpc::MEMORY_TYPE_DRAM);
+  transfer->set_dst_mem_type(::tpu_sync::rpc::MEMORY_TYPE_HBM);
   transfer->add_src_offsets(100);
   transfer->add_dst_offsets(200);
   transfer->add_dst_buffers()->set_remote_address("remote_host:1234");
@@ -423,10 +424,10 @@ TEST_F(WorkerServiceTest,
   MockTransferManager mock_mgr;
   test_server_->service->SetTransferManager(KVManagerHolder(&mock_mgr));
 
-  proto::TransferBuffersRequest transfer_req;
+  ::tpu_sync::proto::TransferBuffersRequest transfer_req;
   auto* transfer = transfer_req.mutable_transfer();
-  transfer->set_src_mem_type(rpc::MEMORY_TYPE_DRAM);
-  transfer->set_dst_mem_type(rpc::MEMORY_TYPE_HBM);
+  transfer->set_src_mem_type(::tpu_sync::rpc::MEMORY_TYPE_DRAM);
+  transfer->set_dst_mem_type(::tpu_sync::rpc::MEMORY_TYPE_HBM);
 
   auto* src_buf = transfer->add_src_buffers();
   src_buf->set_index(100);
@@ -454,10 +455,10 @@ TEST_F(WorkerServiceTest,
   MockTransferManager mock_mgr;
   test_server_->service->SetTransferManager(KVManagerHolder(&mock_mgr));
 
-  proto::TransferBuffersRequest transfer_req;
+  ::tpu_sync::proto::TransferBuffersRequest transfer_req;
   auto* transfer = transfer_req.mutable_transfer();
-  transfer->set_src_mem_type(rpc::MEMORY_TYPE_DRAM);
-  transfer->set_dst_mem_type(rpc::MEMORY_TYPE_HBM);
+  transfer->set_src_mem_type(::tpu_sync::rpc::MEMORY_TYPE_DRAM);
+  transfer->set_dst_mem_type(::tpu_sync::rpc::MEMORY_TYPE_HBM);
 
   auto* src_buf = transfer->add_src_buffers();
   src_buf->set_index(100);
@@ -473,6 +474,7 @@ TEST_F(WorkerServiceTest,
   EXPECT_EQ(mock_mgr.d2h_calls, 0);
   EXPECT_EQ(mock_mgr.h2d_calls, 0);
   EXPECT_EQ(mock_mgr.h2d_write_calls, 0);
+  EXPECT_EQ(mock_mgr.d2h_read_calls, 0);
   EXPECT_EQ(mock_mgr.h2d_read_calls, 1);
   EXPECT_EQ(mock_mgr.last_peer, "remote_host:5678");
   EXPECT_THAT(mock_mgr.last_src_offsets, ElementsAre(100));
@@ -488,10 +490,10 @@ TEST_F(WorkerServiceTest, TransferBuffersRemoteSrcHbmDstRunsVectorH2dRead) {
   ShardAwareMockTransferManager mock_mgr;
   test_server_->service->SetTransferManager(KVManagerHolder(&mock_mgr));
 
-  proto::TransferBuffersRequest transfer_req;
+  ::tpu_sync::proto::TransferBuffersRequest transfer_req;
   auto* transfer = transfer_req.mutable_transfer();
-  transfer->set_src_mem_type(rpc::MEMORY_TYPE_DRAM);
-  transfer->set_dst_mem_type(rpc::MEMORY_TYPE_HBM);
+  transfer->set_src_mem_type(::tpu_sync::rpc::MEMORY_TYPE_DRAM);
+  transfer->set_dst_mem_type(::tpu_sync::rpc::MEMORY_TYPE_HBM);
 
   auto* src_buf = transfer->add_src_buffers();
   src_buf->set_index(100);
@@ -529,10 +531,10 @@ TEST_F(WorkerServiceTest, TransferBuffersLocalH2dFallbackSuccess) {
   MockTransferManager mock_mgr;
   test_server_->service->SetTransferManager(KVManagerHolder(&mock_mgr));
 
-  proto::TransferBuffersRequest transfer_req;
+  ::tpu_sync::proto::TransferBuffersRequest transfer_req;
   auto* transfer = transfer_req.mutable_transfer();
-  transfer->set_src_mem_type(rpc::MEMORY_TYPE_DRAM);
-  transfer->set_dst_mem_type(rpc::MEMORY_TYPE_HBM);
+  transfer->set_src_mem_type(::tpu_sync::rpc::MEMORY_TYPE_DRAM);
+  transfer->set_dst_mem_type(::tpu_sync::rpc::MEMORY_TYPE_HBM);
   transfer->add_src_offsets(100);
   transfer->add_dst_offsets(200);
 
@@ -550,10 +552,10 @@ TEST_F(WorkerServiceTest, TransferBuffersWithBufferProtosSuccess) {
   MockTransferManager mock_mgr;
   test_server_->service->SetTransferManager(KVManagerHolder(&mock_mgr));
 
-  proto::TransferBuffersRequest transfer_req;
+  ::tpu_sync::proto::TransferBuffersRequest transfer_req;
   auto* transfer = transfer_req.mutable_transfer();
-  transfer->set_src_mem_type(rpc::MEMORY_TYPE_HBM);
-  transfer->set_dst_mem_type(rpc::MEMORY_TYPE_DRAM);
+  transfer->set_src_mem_type(::tpu_sync::rpc::MEMORY_TYPE_HBM);
+  transfer->set_dst_mem_type(::tpu_sync::rpc::MEMORY_TYPE_DRAM);
   auto* src_buf = transfer->add_src_buffers();
   src_buf->set_index(10);
   auto* dst_buf = transfer->add_dst_buffers();
@@ -571,14 +573,14 @@ TEST_F(WorkerServiceTest,
   MockTransferManager mock_mgr;
   test_server_->service->SetTransferManager(KVManagerHolder(&mock_mgr));
 
-  proto::TransferBuffersRequest transfer_req;
+  ::tpu_sync::proto::TransferBuffersRequest transfer_req;
   auto* transfer = transfer_req.mutable_transfer();
   auto* src_buf = transfer->add_src_buffers();
   src_buf->set_index(10);
-  src_buf->set_memory_type(rpc::MEMORY_TYPE_DRAM);
+  src_buf->set_memory_type(::tpu_sync::rpc::MEMORY_TYPE_DRAM);
   auto* dst_buf = transfer->add_dst_buffers();
   dst_buf->set_index(20);
-  dst_buf->set_memory_type(rpc::MEMORY_TYPE_DRAM);
+  dst_buf->set_memory_type(::tpu_sync::rpc::MEMORY_TYPE_DRAM);
   dst_buf->set_remote_address("localhost:8080");
 
   auto status = test_server_->client->TransferBuffers(transfer_req).Await();
@@ -595,15 +597,15 @@ TEST_F(WorkerServiceTest, TransferBuffersH2hReadRemoteSrcSuccess) {
   MockTransferManager mock_mgr;
   test_server_->service->SetTransferManager(KVManagerHolder(&mock_mgr));
 
-  proto::TransferBuffersRequest transfer_req;
+  ::tpu_sync::proto::TransferBuffersRequest transfer_req;
   auto* transfer = transfer_req.mutable_transfer();
   auto* src_buf = transfer->add_src_buffers();
   src_buf->set_index(10);
-  src_buf->set_memory_type(rpc::MEMORY_TYPE_DRAM);
+  src_buf->set_memory_type(::tpu_sync::rpc::MEMORY_TYPE_DRAM);
   src_buf->set_remote_address("localhost:8080");
   auto* dst_buf = transfer->add_dst_buffers();
   dst_buf->set_index(20);
-  dst_buf->set_memory_type(rpc::MEMORY_TYPE_DRAM);
+  dst_buf->set_memory_type(::tpu_sync::rpc::MEMORY_TYPE_DRAM);
 
   auto status = test_server_->client->TransferBuffers(transfer_req).Await();
   ASSERT_TRUE(status.ok()) << status.message();
@@ -619,10 +621,10 @@ TEST_F(WorkerServiceTest, TransferBuffersWithInvalidBufferProtoFails) {
   MockTransferManager mock_mgr;
   test_server_->service->SetTransferManager(KVManagerHolder(&mock_mgr));
 
-  proto::TransferBuffersRequest transfer_req;
+  ::tpu_sync::proto::TransferBuffersRequest transfer_req;
   auto* transfer = transfer_req.mutable_transfer();
-  transfer->set_src_mem_type(rpc::MEMORY_TYPE_HBM);
-  transfer->set_dst_mem_type(rpc::MEMORY_TYPE_DRAM);
+  transfer->set_src_mem_type(::tpu_sync::rpc::MEMORY_TYPE_HBM);
+  transfer->set_dst_mem_type(::tpu_sync::rpc::MEMORY_TYPE_DRAM);
   transfer->add_src_buffers();  // index not set
   transfer->add_dst_buffers();  // index not set
 

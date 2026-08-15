@@ -39,7 +39,8 @@
 namespace tpu_raiden {
 namespace kv_cache {
 
-class KVCacheStoreServiceImpl : public proto::KVCacheStoreService::Service {
+class KVCacheStoreServiceImpl
+    : public ::tpu_raiden::kv_cache::proto::KVCacheStoreService::Service {
  public:
   // A stand-in for the pull, used ONLY by tests. Production calls
   // controller_->TransferBuffers directly and never touches this.
@@ -59,24 +60,27 @@ class KVCacheStoreServiceImpl : public proto::KVCacheStoreService::Service {
                           tpu_raiden::controller::RaidenController* controller);
   ~KVCacheStoreServiceImpl() override;
 
-  ::grpc::Status Fetch(::grpc::ServerContext* context,
-                       const proto::FetchRequest* request,
-                       proto::FetchResponse* response) override;
+  ::grpc::Status Fetch(
+      ::grpc::ServerContext* context,
+      const ::tpu_raiden::kv_cache::proto::FetchRequest* request,
+      ::tpu_raiden::kv_cache::proto::FetchResponse* response) override;
 
   // Accepts an offer of blocks from a peer: decides whether the write is worth
   // doing, allocates landing blocks, issues the pull, and answers with an
   // operation id. Never waits for the bytes.
-  ::grpc::Status WriteRemote(::grpc::ServerContext* context,
-                             const proto::WriteRemoteRequest* request,
-                             proto::WriteRemoteResponse* response) override;
+  ::grpc::Status WriteRemote(
+      ::grpc::ServerContext* context,
+      const ::tpu_raiden::kv_cache::proto::WriteRemoteRequest* request,
+      ::tpu_raiden::kv_cache::proto::WriteRemoteResponse* response) override;
 
   // Reports what became of an accepted operation. UNKNOWN once the record has
   // aged out, which the source cannot distinguish from "never happened" and
   // must treat as failure.
   ::grpc::Status PollWriteRemote(
       ::grpc::ServerContext* context,
-      const proto::PollWriteRemoteRequest* request,
-      proto::PollWriteRemoteResponse* response) override;
+      const ::tpu_raiden::kv_cache::proto::PollWriteRemoteRequest* request,
+      ::tpu_raiden::kv_cache::proto::PollWriteRemoteResponse* response)
+      override;
 
   // Diverts the pull through `transfer_fn` instead of the controller. TESTS
   // ONLY, and only before the server serves: the member is not mutex-guarded,
@@ -122,7 +126,8 @@ class KVCacheStoreServiceImpl : public proto::KVCacheStoreService::Service {
     kStoredUnregistered,
   };
 
-  static proto::PollWriteRemoteResponse::State ToWireState(OpState state);
+  static ::tpu_raiden::kv_cache::proto::PollWriteRemoteResponse::State
+  ToWireState(OpState state);
 
   struct WriteOp {
     uint64_t id = 0;

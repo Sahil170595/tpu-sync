@@ -94,8 +94,8 @@ struct PoolReshardPlan {
 struct PlanRequest {
   std::vector<RaidenId> src_units;
   std::vector<RaidenId> dst_units;
-  std::vector<tpu_raiden::rpc::RegisterWorkUnitRequest> src_metadata;
-  std::vector<tpu_raiden::rpc::RegisterWorkUnitRequest> dst_metadata;
+  std::vector<tpu_sync::rpc::RegisterWorkUnitRequest> src_metadata;
+  std::vector<tpu_sync::rpc::RegisterWorkUnitRequest> dst_metadata;
   std::string req_id;
   int64_t uuid = 0;
   std::vector<int64_t> dst_device_block_ids;

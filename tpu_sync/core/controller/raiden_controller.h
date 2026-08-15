@@ -90,20 +90,19 @@ class RaidenController {
   // TODO(b/542288634): Remove preprovision_worker_buffers and legacy
   // Physical/BufferProto mode.
   static absl::StatusOr<std::unique_ptr<RaidenController>> Create(
-      const rpc::RaidenIdProto& unit, int num_blocks, int num_shards,
-      int64_t shard_size_bytes,
+      const ::tpu_sync::rpc::RaidenIdProto& unit, int num_blocks,
+      int num_shards, int64_t shard_size_bytes,
       absl::string_view raiden_controller_address = "",
       bool preprovision_worker_buffers = true, int expected_worker_count = 0);
 
   // Creates a fully initialized RaidenController for multiple worker addresses.
   // It will also start the ControllerServer to allow dynamic registrations.
   static absl::StatusOr<std::unique_ptr<RaidenController>> Create(
-      const rpc::RaidenIdProto& unit,
+      const ::tpu_sync::rpc::RaidenIdProto& unit,
       absl::Span<const std::string> worker_addresses, int num_blocks,
       int num_shards, int64_t shard_size_bytes,
       absl::string_view raiden_controller_address = "",
       bool preprovision_worker_buffers = true, int expected_worker_count = 0);
-
   // Destructor automatically calls DeleteBuffers to clean up all pre-created
   // buffers on the registered workers.
   ~RaidenController();
@@ -112,7 +111,8 @@ class RaidenController {
   // Allocates `num_blocks` logical blocks and returns their associated
   // `BufferProto`s containing sharded physical buffer handles. Use these if you
   // need worker-level raw buffer handles. No RPC is performed.
-  absl::StatusOr<std::vector<proto::BufferProto>> Allocate(int num_blocks);
+  absl::StatusOr<std::vector<::tpu_sync::proto::BufferProto>> Allocate(
+      int num_blocks);
 
   // Allocates num_blocks logical blocks from the pre-created buffer pool and
   // returns the corresponding Buffers. No gRPC call is made.
@@ -125,7 +125,8 @@ class RaidenController {
   // Legacy API (Physical/BufferProto Mode):
   // Deallocates logical blocks associated with the provided `BufferProto`s.
   // No RPC is performed.
-  absl::Status Deallocate(absl::Span<const proto::BufferProto> sharded_buffers);
+  absl::Status Deallocate(
+      absl::Span<const ::tpu_sync::proto::BufferProto> sharded_buffers);
 
   // New API (Logical/Block ID Mode):
   // Allocates `num_blocks` logical blocks from the block manager and returns
@@ -224,9 +225,9 @@ class RaidenController {
   // its persistent WorkerService channel. The controller does not interpret
   // the program or hold reshard state; an unknown worker id or missing client
   // resolves the future with an error status.
-  tsl::Future<proto::TransferProgramResponse> SubmitTransferProgram(
+  tsl::Future<::tpu_sync::proto::TransferProgramResponse> SubmitTransferProgram(
       absl::string_view worker_id,
-      const proto::TransferProgramRequest& request);
+      const ::tpu_sync::proto::TransferProgramRequest& request);
 
   // Cached peer-controller channels. Test observability only: what it pins is
   // that the cache stays bounded as peers restart onto new addresses.
@@ -237,7 +238,7 @@ class RaidenController {
   static size_t MaxCachedStubsForTest() { return kMaxCachedStubs; }
 
   // Accessors for state inspection and testing.
-  const rpc::RaidenIdProto& unit() const { return unit_; }
+  const ::tpu_sync::rpc::RaidenIdProto& unit() const { return unit_; }
   kv_cache::LogicalBlockManager* block_manager() const {
     return block_manager_.get();
   }
@@ -248,19 +249,21 @@ class RaidenController {
   int num_shards() const { return num_shards_; }
   int64_t shard_size_bytes() const { return shard_size_bytes_; }
   std::string controller_address() const { return raiden_controller_address_; }
-  const std::vector<proto::BufferProto>& all_sharded_buffers() const {
+  const std::vector<::tpu_sync::proto::BufferProto>& all_sharded_buffers()
+      const {
     return all_sharded_buffers_;
   }
 
  private:
-  absl::StatusOr<proto::TransferBuffersRequest> BuildTransferBuffersRequest(
+  absl::StatusOr<::tpu_sync::proto::TransferBuffersRequest>
+  BuildTransferBuffersRequest(
       absl::Span<const Buffer> src_buffers,
       absl::Span<const Buffer> dst_buffers,
       absl::Span<const Buffer> staging_host_buffers = {},
       absl::Span<const int64_t> copy_sizes = {});
 
  private:
-  RaidenController(const rpc::RaidenIdProto& unit, int num_blocks,
+  RaidenController(const ::tpu_sync::rpc::RaidenIdProto& unit, int num_blocks,
                    int num_shards, int64_t shard_size_bytes,
                    bool preprovision_worker_buffers);
 
@@ -272,13 +275,13 @@ class RaidenController {
 
   absl::Status InitializeWorkerBuffers(
       core::controller::WorkerRegistration& reg);
-  rpc::RaidenIdProto unit_;
+  ::tpu_sync::rpc::RaidenIdProto unit_;
 
   int num_shards_;
   int64_t shard_size_bytes_;
   int num_total_blocks_;
   bool preprovision_worker_buffers_ = true;
-  std::vector<proto::BufferProto> all_sharded_buffers_;
+  std::vector<::tpu_sync::proto::BufferProto> all_sharded_buffers_;
   std::shared_ptr<core::controller::WorkerRegistry> worker_registry_;
   mutable absl::Mutex mutex_;
   std::unique_ptr<kv_cache::LogicalBlockManager> block_manager_
@@ -321,7 +324,7 @@ class RaidenController {
   static constexpr size_t kMaxCachedStubs = 256;
   absl::flat_hash_map<
       std::string,
-      std::shared_ptr<::tpu_raiden::proto::RaidenControllerService::Stub>>
+      std::shared_ptr<::tpu_sync::proto::RaidenControllerService::Stub>>
       stubs_ ABSL_GUARDED_BY(mutex_);
   // Insertion order for the bound above.
   std::deque<std::string> stub_order_ ABSL_GUARDED_BY(mutex_);

@@ -77,6 +77,7 @@
 #include "tpu_sync/transport/block_transport_delegate.h"
 
 namespace tpu_raiden {
+
 namespace {
 
 bool EncodeIp(const std::string& ip_str, uint8_t* dst) {
@@ -657,14 +658,16 @@ int64_t KVCacheManagerWithTransfer::NotifyForRead(
 }
 
 absl::Status KVCacheManagerWithTransfer::RegisterActivePlan(
-    uint64_t uuid, const rpc::StartTransferRequest& request, bool is_sender) {
+    uint64_t uuid, const ::tpu_sync::rpc::StartTransferRequest& request,
+    bool is_sender) {
   // 1. Call base class implementation to register the plan in active_plans_
   TF_RETURN_IF_ERROR(kv_cache::KVCacheManagerBase::RegisterActivePlan(
       uuid, request, is_sender));
 
   // 2. If we are the receiver and the destination memory type is HBM,
   //    populate active_recv_entries_ to enable automatic H2D copy!
-  if (!is_sender && request.dst_mem_type() == rpc::MEMORY_TYPE_HBM) {
+  if (!is_sender &&
+      request.dst_mem_type() == ::tpu_sync::rpc::MEMORY_TYPE_HBM) {
     absl::MutexLock lock(mu_);
     RecvEntry recv_entry;
     std::string req_id = request.req_id().empty()
@@ -728,9 +731,8 @@ absl::Status KVCacheManagerWithTransfer::RegisterRecv(
   return absl::OkStatus();
 }
 
-
 absl::Status KVCacheManagerWithTransfer::ValidatePoolReshardPlan(
-    const rpc::StartTransferRequest& plan,
+    const ::tpu_sync::rpc::StartTransferRequest& plan,
     absl::Span<const int64_t> local_block_ids, bool is_sender) {
   if (plan.req_id().empty()) {
     return absl::InvalidArgumentError("reshard plan req_id must be non-empty");
@@ -936,7 +938,7 @@ absl::Status KVCacheManagerWithTransfer::ValidatePoolReshardPlan(
 }
 
 absl::Status KVCacheManagerWithTransfer::ValidatePoolReshardReceiverCoverage(
-    const rpc::StartTransferRequest& plan) {
+    const ::tpu_sync::rpc::StartTransferRequest& plan) {
   constexpr int64_t kMaxExpandedRepeats = 1 << 20;
 
   struct GroupView {
@@ -1140,7 +1142,7 @@ absl::Status KVCacheManagerWithTransfer::ValidatePoolReshardReceiverCoverage(
 }
 
 absl::Status KVCacheManagerWithTransfer::PoolReshardPush(
-    const rpc::StartTransferRequest& plan,
+    const ::tpu_sync::rpc::StartTransferRequest& plan,
     absl::Span<const int64_t> src_block_ids, int parallelism) {
   TF_RETURN_IF_ERROR(
       ValidatePoolReshardPlan(plan, src_block_ids, /*is_sender=*/true));
@@ -1364,7 +1366,7 @@ void KVCacheManagerWithTransfer::FinishPoolReshardSend(
 }
 
 absl::Status KVCacheManagerWithTransfer::PoolReshardRegisterRecv(
-    const rpc::StartTransferRequest& plan,
+    const ::tpu_sync::rpc::StartTransferRequest& plan,
     absl::Span<const int64_t> chip_block_ids) {
   TF_RETURN_IF_ERROR(
       ValidatePoolReshardPlan(plan, chip_block_ids, /*is_sender=*/false));
@@ -1375,7 +1377,7 @@ absl::Status KVCacheManagerWithTransfer::PoolReshardRegisterRecv(
         "pool reshard receive requires a device-attached manager; host-only "
         "managers are not supported");
   }
-  if (plan.dst_mem_type() != rpc::MEMORY_TYPE_HBM) {
+  if (plan.dst_mem_type() != ::tpu_sync::rpc::MEMORY_TYPE_HBM) {
     return absl::InvalidArgumentError(
         "pool reshard receiver requires dst_mem_type=HBM");
   }

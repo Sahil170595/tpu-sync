@@ -47,6 +47,12 @@
 #include "tpu_sync/kv_cache/kv_cache_manager_base.h"
 #include "tpu_sync/transport/block_transport_delegate.h"
 
+namespace tpu_sync {
+namespace rpc {
+class StartTransferRequest;
+}  // namespace rpc
+}  // namespace tpu_sync
+
 namespace tpu_raiden {
 
 class MetricsCollector;
@@ -195,9 +201,9 @@ class KVCacheManagerWithTransfer : public kv_cache::KVCacheManagerBase {
                      std::vector<std::string>>
   CompleteReadRaw();
 
-  absl::Status RegisterActivePlan(uint64_t uuid,
-                                  const rpc::StartTransferRequest& request,
-                                  bool is_sender) override;
+  absl::Status RegisterActivePlan(
+      uint64_t uuid, const ::tpu_sync::rpc::StartTransferRequest& request,
+      bool is_sender) override;
 
   absl::Status RegisterRecv(uint64_t uuid, const std::string& req_id,
                             int64_t expected_block_count) override;
@@ -206,14 +212,13 @@ class KVCacheManagerWithTransfer : public kv_cache::KVCacheManagerBase {
   // boundary validates the declared pool contract before any staging or
   // network side effect. Both methods are device-only: a manager without
   // device attachments fails closed.
-  absl::Status PoolReshardPush(const rpc::StartTransferRequest& plan,
-                               absl::Span<const int64_t> src_block_ids,
-                               int parallelism = 8) override;
+  absl::Status PoolReshardPush(
+      const ::tpu_sync::rpc::StartTransferRequest& plan,
+      absl::Span<const int64_t> src_block_ids, int parallelism = 8) override;
 
   absl::Status PoolReshardRegisterRecv(
-      const rpc::StartTransferRequest& plan,
+      const ::tpu_sync::rpc::StartTransferRequest& plan,
       absl::Span<const int64_t> chip_block_ids) override;
-
 
   absl::Status OnBlocksReceived(const std::vector<int>& block_ids,
                                 uint64_t uuid = 0) override;
@@ -399,7 +404,7 @@ class KVCacheManagerWithTransfer : public kv_cache::KVCacheManagerBase {
     bool failed = false;
     bool finalizing = false;
     std::chrono::steady_clock::time_point deadline;
-    rpc::StartTransferRequest plan;
+    ::tpu_sync::rpc::StartTransferRequest plan;
     std::vector<raiden::PjRtCopyFuture> d2h_futures;
   };
   absl::flat_hash_map<uint64_t, std::shared_ptr<PoolReshardSendEntry>>
@@ -412,7 +417,7 @@ class KVCacheManagerWithTransfer : public kv_cache::KVCacheManagerBase {
   void SendNextLayer(uint64_t uuid, size_t l);
 
   absl::Status ValidatePoolReshardPlan(
-      const rpc::StartTransferRequest& plan,
+      const ::tpu_sync::rpc::StartTransferRequest& plan,
       absl::Span<const int64_t> local_block_ids, bool is_sender);
   // Receiver-only byte accounting over the plan's group structure: group
   // pools must share one live-region map, declared extents must be
@@ -422,7 +427,7 @@ class KVCacheManagerWithTransfer : public kv_cache::KVCacheManagerBase {
   // is the trust boundary between a planner defect and silent decode
   // corruption; the arming worker validates for itself.
   absl::Status ValidatePoolReshardReceiverCoverage(
-      const rpc::StartTransferRequest& plan);
+      const ::tpu_sync::rpc::StartTransferRequest& plan);
   void StartPoolReshardPush(uint64_t uuid, size_t pool_idx);
   void FinishPoolReshardSend(uint64_t uuid, const absl::Status& status);
   void FinishPoolReshardRecvPool(uint64_t uuid, size_t pool_idx,

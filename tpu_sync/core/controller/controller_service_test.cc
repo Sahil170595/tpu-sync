@@ -35,11 +35,13 @@
 #include "tpu_sync/core/controller/controller_client.h"
 #include "tpu_sync/core/controller/test_util.h"
 #include "tpu_sync/core/raiden_transfer_endpoint.h"
+#include "tpu_sync/proto/controller_service.grpc.pb.h"
 #include "tpu_sync/proto/controller_service.pb.h"
 
 namespace tpu_raiden {
 namespace core {
 namespace controller {
+
 namespace {
 
 // The unqualified EXPECT_OK/ASSERT_OK spellings are gated behind
@@ -204,7 +206,8 @@ class ReadLeaseTest : public ::testing::Test {
           return store_->ValidateAndPin(h);
         },
         [this](absl::Span<const std::string> h) { store_->Unpin(h); });
-    stub_ = proto::RaidenControllerService::NewStub(test_server_->channel);
+    stub_ = ::tpu_sync::proto::RaidenControllerService::NewStub(
+        test_server_->channel);
   }
 
   void TearDown() override {
@@ -217,10 +220,10 @@ class ReadLeaseTest : public ::testing::Test {
   }
 
   grpc::Status Acquire(const std::vector<std::string>& hashes,
-                       proto::AcquireReadLeaseResponse* resp,
+                       ::tpu_sync::proto::AcquireReadLeaseResponse* resp,
                        int64_t ttl_ms = 0,
                        const std::string& requester = "peer_a") {
-    proto::AcquireReadLeaseRequest req;
+    ::tpu_sync::proto::AcquireReadLeaseRequest req;
     for (const auto& h : hashes) req.add_block_hashes(h);
     req.set_ttl_ms(ttl_ms);
     req.mutable_requester_raiden_id()->set_job_name(requester);
@@ -228,20 +231,21 @@ class ReadLeaseTest : public ::testing::Test {
     return stub_->AcquireReadLease(&ctx, req, resp);
   }
 
-  proto::LeaseVerdict Release(uint64_t lease_id) {
-    proto::ReleaseReadLeaseRequest req;
+  ::tpu_sync::proto::LeaseVerdict Release(uint64_t lease_id) {
+    ::tpu_sync::proto::ReleaseReadLeaseRequest req;
     req.set_lease_id(lease_id);
-    proto::ReleaseReadLeaseResponse resp;
+    ::tpu_sync::proto::ReleaseReadLeaseResponse resp;
     grpc::ClientContext ctx;
     EXPECT_TRUE(stub_->ReleaseReadLease(&ctx, req, &resp).ok());
     return resp.verdict();
   }
 
-  proto::RenewReadLeaseResponse Renew(uint64_t lease_id, int64_t extend_ms = 0) {
-    proto::RenewReadLeaseRequest req;
+  ::tpu_sync::proto::RenewReadLeaseResponse Renew(uint64_t lease_id,
+                                                  int64_t extend_ms = 0) {
+    ::tpu_sync::proto::RenewReadLeaseRequest req;
     req.set_lease_id(lease_id);
     req.set_extend_ms(extend_ms);
-    proto::RenewReadLeaseResponse resp;
+    ::tpu_sync::proto::RenewReadLeaseResponse resp;
     grpc::ClientContext ctx;
     EXPECT_TRUE(stub_->RenewReadLease(&ctx, req, &resp).ok());
     return resp;
@@ -249,11 +253,11 @@ class ReadLeaseTest : public ::testing::Test {
 
   std::unique_ptr<TestControllerServer> test_server_;
   std::unique_ptr<FakePinStore> store_;
-  std::unique_ptr<proto::RaidenControllerService::Stub> stub_;
+  std::unique_ptr<::tpu_sync::proto::RaidenControllerService::Stub> stub_;
 };
 
 TEST_F(ReadLeaseTest, AcquireValidatesAndPinsAllOrNothing) {
-  proto::AcquireReadLeaseResponse resp;
+  ::tpu_sync::proto::AcquireReadLeaseResponse resp;
   grpc::Status s = Acquire({"hash_a", "hash_missing", "hash_b"}, &resp);
   EXPECT_EQ(s.error_code(), grpc::StatusCode::NOT_FOUND);
   // Nothing pinned -- not even the hashes that were individually fine.
@@ -264,7 +268,7 @@ TEST_F(ReadLeaseTest, AcquireValidatesAndPinsAllOrNothing) {
 
 TEST_F(ReadLeaseTest, AcquireWrongStatusReturnsFailedPrecondition) {
   store_->SetPresentButNotHostResident("hash_c");
-  proto::AcquireReadLeaseResponse resp;
+  ::tpu_sync::proto::AcquireReadLeaseResponse resp;
   grpc::Status s = Acquire({"hash_a", "hash_c"}, &resp);
   // The verify hook's distinctions must survive the RPC boundary: a hash that
   // is present but not host-resident is a different problem from an absent one.
@@ -273,7 +277,7 @@ TEST_F(ReadLeaseTest, AcquireWrongStatusReturnsFailedPrecondition) {
 }
 
 TEST_F(ReadLeaseTest, AcquireEmptyHashesRejected) {
-  proto::AcquireReadLeaseResponse resp;
+  ::tpu_sync::proto::AcquireReadLeaseResponse resp;
   grpc::Status s = Acquire({}, &resp);
   EXPECT_EQ(s.error_code(), grpc::StatusCode::INVALID_ARGUMENT);
   EXPECT_EQ(test_server_->service->LeaseCountForTest(), 0u);
@@ -290,7 +294,7 @@ TEST_F(ReadLeaseTest, AcquireReturnsAuthoritativeIdsAndEndpoints) {
                                    /*node_id=*/7)
                   .ok());
 
-  proto::AcquireReadLeaseResponse resp;
+  ::tpu_sync::proto::AcquireReadLeaseResponse resp;
   ASSERT_TRUE(Acquire({"hash_a", "hash_b"}, &resp).ok());
   EXPECT_NE(resp.lease_id(), 0u) << "0 is reserved as never-granted";
 
@@ -312,19 +316,19 @@ TEST_F(ReadLeaseTest, AcquireReturnsAuthoritativeIdsAndEndpoints) {
 }
 
 TEST_F(ReadLeaseTest, AcquireClampsTtl) {
-  proto::AcquireReadLeaseResponse defaulted;
+  ::tpu_sync::proto::AcquireReadLeaseResponse defaulted;
   ASSERT_TRUE(Acquire({"hash_a"}, &defaulted, /*ttl_ms=*/0).ok());
   EXPECT_EQ(defaulted.granted_ttl_ms(),
             absl::ToInt64Milliseconds(
                 RaidenControllerServiceImpl::DefaultLeaseTtl()));
 
-  proto::AcquireReadLeaseResponse too_big;
+  ::tpu_sync::proto::AcquireReadLeaseResponse too_big;
   ASSERT_TRUE(Acquire({"hash_b"}, &too_big, /*ttl_ms=*/999999999).ok());
   EXPECT_EQ(
       too_big.granted_ttl_ms(),
       absl::ToInt64Milliseconds(RaidenControllerServiceImpl::MaxLeaseTtl()));
 
-  proto::AcquireReadLeaseResponse too_small;
+  ::tpu_sync::proto::AcquireReadLeaseResponse too_small;
   ASSERT_TRUE(Acquire({"hash_c"}, &too_small, /*ttl_ms=*/1).ok());
   EXPECT_EQ(
       too_small.granted_ttl_ms(),
@@ -332,7 +336,7 @@ TEST_F(ReadLeaseTest, AcquireClampsTtl) {
 }
 
 TEST_F(ReadLeaseTest, LeaseExpiryUnpinsAndMarksRevoked) {
-  proto::AcquireReadLeaseResponse resp;
+  ::tpu_sync::proto::AcquireReadLeaseResponse resp;
   ASSERT_TRUE(Acquire({"hash_a"}, &resp).ok());
   EXPECT_EQ(store_->PinCount("hash_a"), 1);
 
@@ -341,67 +345,69 @@ TEST_F(ReadLeaseTest, LeaseExpiryUnpinsAndMarksRevoked) {
 
   // The sweeper MARKS, it does not forget: a late release must learn REVOKED,
   // not UNKNOWN, so expiry stays distinguishable from a source restart.
-  EXPECT_EQ(Release(resp.lease_id()), proto::LEASE_REVOKED);
+  EXPECT_EQ(Release(resp.lease_id()), ::tpu_sync::proto::LEASE_REVOKED);
   EXPECT_EQ(store_->PinCount("hash_a"), 0) << "and must not unpin twice";
 }
 
 TEST_F(ReadLeaseTest, ConcurrentLeasesSameHashesIndependent) {
-  proto::AcquireReadLeaseResponse a, b;
+  ::tpu_sync::proto::AcquireReadLeaseResponse a, b;
   ASSERT_TRUE(Acquire({"hash_a"}, &a).ok());
   ASSERT_TRUE(Acquire({"hash_a"}, &b).ok());
   EXPECT_NE(a.lease_id(), b.lease_id());
   EXPECT_EQ(store_->PinCount("hash_a"), 2) << "pins are a refcount";
 
-  EXPECT_EQ(Release(a.lease_id()), proto::LEASE_HELD);
+  EXPECT_EQ(Release(a.lease_id()), ::tpu_sync::proto::LEASE_HELD);
   // B's protection must survive A's release -- this is the property that
   // breaks the moment leases are deduped by hash set.
   EXPECT_EQ(store_->PinCount("hash_a"), 1);
-  EXPECT_EQ(Renew(b.lease_id()).verdict(), proto::LEASE_HELD);
+  EXPECT_EQ(Renew(b.lease_id()).verdict(), ::tpu_sync::proto::LEASE_HELD);
 
-  EXPECT_EQ(Release(b.lease_id()), proto::LEASE_HELD);
+  EXPECT_EQ(Release(b.lease_id()), ::tpu_sync::proto::LEASE_HELD);
   EXPECT_EQ(store_->PinCount("hash_a"), 0);
 }
 
 TEST_F(ReadLeaseTest, ReleaseIsIdempotent) {
-  proto::AcquireReadLeaseResponse resp;
+  ::tpu_sync::proto::AcquireReadLeaseResponse resp;
   ASSERT_TRUE(Acquire({"hash_a"}, &resp).ok());
-  EXPECT_EQ(Release(resp.lease_id()), proto::LEASE_HELD);
-  EXPECT_EQ(Release(resp.lease_id()), proto::LEASE_HELD);
-  EXPECT_EQ(Release(resp.lease_id()), proto::LEASE_HELD);
+  EXPECT_EQ(Release(resp.lease_id()), ::tpu_sync::proto::LEASE_HELD);
+  EXPECT_EQ(Release(resp.lease_id()), ::tpu_sync::proto::LEASE_HELD);
+  EXPECT_EQ(Release(resp.lease_id()), ::tpu_sync::proto::LEASE_HELD);
   EXPECT_EQ(store_->PinCount("hash_a"), 0);
   EXPECT_EQ(store_->total_unpin_calls(), 1) << "exactly one unpin per lease";
 }
 
 TEST_F(ReadLeaseTest, ReleaseUnknownLeaseReturnsUnknown) {
-  EXPECT_EQ(Release(0xdeadbeefcafe), proto::LEASE_UNKNOWN);
-  EXPECT_EQ(Release(0), proto::LEASE_UNKNOWN) << "0 is never granted";
+  EXPECT_EQ(Release(0xdeadbeefcafe), ::tpu_sync::proto::LEASE_UNKNOWN);
+  EXPECT_EQ(Release(0), ::tpu_sync::proto::LEASE_UNKNOWN)
+      << "0 is never granted";
   EXPECT_EQ(store_->total_unpin_calls(), 0);
 }
 
 TEST_F(ReadLeaseTest, RenewExtendsLiveLeaseOnly) {
-  proto::AcquireReadLeaseResponse resp;
+  ::tpu_sync::proto::AcquireReadLeaseResponse resp;
   ASSERT_TRUE(Acquire({"hash_a"}, &resp, /*ttl_ms=*/40000).ok());
-  proto::RenewReadLeaseResponse renewed = Renew(resp.lease_id(), 60000);
-  EXPECT_EQ(renewed.verdict(), proto::LEASE_HELD);
+  ::tpu_sync::proto::RenewReadLeaseResponse renewed =
+      Renew(resp.lease_id(), 60000);
+  EXPECT_EQ(renewed.verdict(), ::tpu_sync::proto::LEASE_HELD);
   EXPECT_EQ(renewed.new_ttl_ms(), 60000);
   EXPECT_EQ(store_->PinCount("hash_a"), 1);
 
   ASSERT_TRUE(test_server_->service->ForceExpireForTest(resp.lease_id()));
   // Never resurrect a revoked lease: the pins are already gone, so extending
   // the record would promise protection that no longer exists.
-  EXPECT_EQ(Renew(resp.lease_id()).verdict(), proto::LEASE_REVOKED);
+  EXPECT_EQ(Renew(resp.lease_id()).verdict(), ::tpu_sync::proto::LEASE_REVOKED);
   EXPECT_EQ(store_->PinCount("hash_a"), 0);
 }
 
 TEST_F(ReadLeaseTest, RenewUnknownLeaseReturnsUnknown) {
-  EXPECT_EQ(Renew(12345).verdict(), proto::LEASE_UNKNOWN);
+  EXPECT_EQ(Renew(12345).verdict(), ::tpu_sync::proto::LEASE_UNKNOWN);
 }
 
 TEST_F(ReadLeaseTest, SweeperReleaseRaceUnpinsOnce) {
   // Expiry racing release: whoever transitions the lease out of "live" first
   // owns the single unpin. Run many rounds to give the race a chance.
   for (int i = 0; i < 50; ++i) {
-    proto::AcquireReadLeaseResponse resp;
+    ::tpu_sync::proto::AcquireReadLeaseResponse resp;
     ASSERT_TRUE(Acquire({"hash_a"}, &resp).ok());
     absl::Notification go;
     std::thread expirer([&] {
@@ -426,7 +432,7 @@ TEST_F(ReadLeaseTest, ConcurrentAcquireReleaseKeepsPinsExact) {
   for (int t = 0; t < kThreads; ++t) {
     threads.emplace_back([&] {
       for (int r = 0; r < kRounds; ++r) {
-        proto::AcquireReadLeaseResponse resp;
+        ::tpu_sync::proto::AcquireReadLeaseResponse resp;
         if (Acquire({"hash_a", "hash_b"}, &resp).ok()) {
           Release(resp.lease_id());
         }
@@ -439,7 +445,7 @@ TEST_F(ReadLeaseTest, ConcurrentAcquireReleaseKeepsPinsExact) {
 }
 
 TEST_F(ReadLeaseTest, DestructorUnpinsLiveLeases) {
-  proto::AcquireReadLeaseResponse a, b;
+  ::tpu_sync::proto::AcquireReadLeaseResponse a, b;
   ASSERT_TRUE(Acquire({"hash_a"}, &a).ok());
   ASSERT_TRUE(Acquire({"hash_b", "hash_c"}, &b).ok());
   EXPECT_EQ(store_->PinCount("hash_a"), 1);
@@ -456,7 +462,7 @@ TEST_F(ReadLeaseTest, DestructorUnpinsLiveLeases) {
 }
 
 TEST_F(ReadLeaseTest, ClearedHooksSurviveExpiry) {
-  proto::AcquireReadLeaseResponse resp;
+  ::tpu_sync::proto::AcquireReadLeaseResponse resp;
   ASSERT_TRUE(Acquire({"hash_a"}, &resp).ok());
   // Simulates store shutdown ordering: once the hooks are detached, neither
   // the sweeper nor the destructor may reach into the dead store.
@@ -471,7 +477,7 @@ TEST_F(ReadLeaseTest, ClearedHooksSurviveExpiry) {
 }
 
 TEST_F(ReadLeaseTest, PerPeerLeasedBlockMetric) {
-  proto::AcquireReadLeaseResponse a, b;
+  ::tpu_sync::proto::AcquireReadLeaseResponse a, b;
   ASSERT_TRUE(Acquire({"hash_a", "hash_b"}, &a, 0, "peer_a").ok());
   ASSERT_TRUE(Acquire({"hash_c"}, &b, 0, "peer_b").ok());
   EXPECT_EQ(test_server_->service->LeasedBlocksForPeerForTest("peer_a///0"), 2);

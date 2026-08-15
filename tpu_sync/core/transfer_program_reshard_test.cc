@@ -27,11 +27,12 @@
 
 namespace tpu_raiden {
 namespace core {
+
 namespace {
 
 using ::testing::HasSubstr;
 
-std::string Canonical(const rpc::StartTransferRequest& msg) {
+std::string Canonical(const ::tpu_sync::rpc::StartTransferRequest& msg) {
   std::string out;
   google::protobuf::io::StringOutputStream stream(&out);
   google::protobuf::io::CodedOutputStream coded(&stream);
@@ -41,10 +42,11 @@ std::string Canonical(const rpc::StartTransferRequest& msg) {
   return out;
 }
 
-rpc::ShardPushEntryProto MakeEntry(int32_t src_block, int32_t dst_block,
-                                   int64_t src_off, int64_t dst_off,
-                                   int64_t size) {
-  rpc::ShardPushEntryProto entry;
+::tpu_sync::rpc::ShardPushEntryProto MakeEntry(int32_t src_block,
+                                               int32_t dst_block,
+                                               int64_t src_off, int64_t dst_off,
+                                               int64_t size) {
+  ::tpu_sync::rpc::ShardPushEntryProto entry;
   entry.set_dst_peer("10.0.0.2:14579");
   entry.set_dst_shard_idx(1);
   entry.set_dst_offset_bytes(dst_off);
@@ -61,8 +63,8 @@ rpc::ShardPushEntryProto MakeEntry(int32_t src_block, int32_t dst_block,
 // A representative multi-rank pool request exercising every
 // presence-sensitive field: skip_d2h present-false, per-entry layer_idx
 // present/absent, pool_group present/absent, empty skip_tiling.
-rpc::StartTransferRequest MakePoolRequest(bool is_sender) {
-  rpc::StartTransferRequest req;
+::tpu_sync::rpc::StartTransferRequest MakePoolRequest(bool is_sender) {
+  ::tpu_sync::rpc::StartTransferRequest req;
   auto* src_unit = req.add_src_units();
   src_unit->set_job_name("p");
   src_unit->set_job_replica_id("0");
@@ -74,7 +76,7 @@ rpc::StartTransferRequest MakePoolRequest(bool is_sender) {
   dst_unit->set_data_replica_idx(3);
   req.set_uuid(int64_t{0x7fee'dd00'1234'5678});
   req.set_is_sender(is_sender);
-  req.set_dst_mem_type(rpc::MEMORY_TYPE_HBM);
+  req.set_dst_mem_type(::tpu_sync::rpc::MEMORY_TYPE_HBM);
   req.set_use_block_chunks(true);
   req.set_expected_block_count(10);
   req.set_req_id("req-roundtrip-0");
@@ -103,7 +105,7 @@ rpc::StartTransferRequest MakePoolRequest(bool is_sender) {
   // Rank 0: two entries, one with layer_idx+pool_group, one bare.
   auto& schedule0 = (*req.mutable_shard_push_schedules())[0];
   {
-    rpc::ShardPushEntryProto entry = MakeEntry(5, 11, 0, 0, 65536);
+    ::tpu_sync::rpc::ShardPushEntryProto entry = MakeEntry(5, 11, 0, 0, 65536);
     entry.set_layer_idx(7);
     entry.set_pool_group(0);
     *schedule0.add_entries() = entry;
@@ -112,7 +114,7 @@ rpc::StartTransferRequest MakePoolRequest(bool is_sender) {
   if (!is_sender) {
     // Receiver arm carries every source rank's schedule.
     auto& schedule3 = (*req.mutable_shard_push_schedules())[3];
-    rpc::ShardPushEntryProto entry = MakeEntry(9, 3, 64, 32, 49152);
+    ::tpu_sync::rpc::ShardPushEntryProto entry = MakeEntry(9, 3, 64, 32, 49152);
     entry.set_pool_group(1);
     *schedule3.add_entries() = entry;
   }
@@ -120,7 +122,7 @@ rpc::StartTransferRequest MakePoolRequest(bool is_sender) {
 }
 
 TEST(TransferProgramReshard, SenderRoundTripsByteIdentical) {
-  const rpc::StartTransferRequest original = MakePoolRequest(true);
+  const ::tpu_sync::rpc::StartTransferRequest original = MakePoolRequest(true);
   auto program = CompileStartTransfer(original);
   ASSERT_TRUE(program.ok()) << program.status();
   auto lowering_class = NormalizeReshardProgram(*program);
@@ -134,7 +136,7 @@ TEST(TransferProgramReshard, SenderRoundTripsByteIdentical) {
 }
 
 TEST(TransferProgramReshard, ArmRoundTripsByteIdentical) {
-  const rpc::StartTransferRequest original = MakePoolRequest(false);
+  const ::tpu_sync::rpc::StartTransferRequest original = MakePoolRequest(false);
   auto program = CompileStartTransfer(original);
   ASSERT_TRUE(program.ok()) << program.status();
   auto lowering_class = NormalizeReshardProgram(*program);
@@ -148,7 +150,7 @@ TEST(TransferProgramReshard, ArmRoundTripsByteIdentical) {
 }
 
 TEST(TransferProgramReshard, SkipTilingMapRoundTrips) {
-  rpc::StartTransferRequest original = MakePoolRequest(true);
+  ::tpu_sync::rpc::StartTransferRequest original = MakePoolRequest(true);
   (*original.mutable_skip_tiling())[2] = true;
   (*original.mutable_skip_tiling())[5] = false;
   auto program = CompileStartTransfer(original);
@@ -159,7 +161,7 @@ TEST(TransferProgramReshard, SkipTilingMapRoundTrips) {
 }
 
 TEST(TransferProgramReshard, LegacyDensePlanRefusesToCompile) {
-  rpc::StartTransferRequest legacy;
+  ::tpu_sync::rpc::StartTransferRequest legacy;
   legacy.set_uuid(1);
   legacy.set_is_sender(true);
   auto program = CompileStartTransfer(legacy);
@@ -169,7 +171,7 @@ TEST(TransferProgramReshard, LegacyDensePlanRefusesToCompile) {
 // Conformance pins for completion contracts that the pool-reshard worker
 // entry does not support.
 TEST(TransferProgramReshard, AwaitInlineIsUnimplemented) {
-  proto::TransferProgramRequest request;
+  ::tpu_sync::proto::TransferProgramRequest request;
   request.mutable_program()->mutable_completion()->mutable_await_inline();
   auto result = NormalizeReshardProgram(request);
   EXPECT_EQ(result.status().code(), absl::StatusCode::kUnimplemented);
@@ -178,7 +180,7 @@ TEST(TransferProgramReshard, AwaitInlineIsUnimplemented) {
 }
 
 TEST(TransferProgramReshard, BarrierIsUnimplemented) {
-  proto::TransferProgramRequest request;
+  ::tpu_sync::proto::TransferProgramRequest request;
   request.mutable_program()->mutable_completion()->mutable_barrier();
   auto result = NormalizeReshardProgram(request);
   EXPECT_EQ(result.status().code(), absl::StatusCode::kUnimplemented);
@@ -188,7 +190,7 @@ TEST(TransferProgramReshard, BarrierIsUnimplemented) {
 TEST(TransferProgramReshard, MalformedProgramsAreInvalid) {
   // No contract at all.
   {
-    proto::TransferProgramRequest request;
+    ::tpu_sync::proto::TransferProgramRequest request;
     EXPECT_EQ(NormalizeReshardProgram(request).status().code(),
               absl::StatusCode::kInvalidArgument);
   }
@@ -196,7 +198,7 @@ TEST(TransferProgramReshard, MalformedProgramsAreInvalid) {
   auto program = CompileStartTransfer(MakePoolRequest(true));
   ASSERT_TRUE(program.ok());
   {
-    proto::TransferProgramRequest mutated = *program;
+    ::tpu_sync::proto::TransferProgramRequest mutated = *program;
     *mutated.mutable_program()->mutable_steps(0)->add_extents() =
         mutated.program().steps(0).extents(0);
     EXPECT_EQ(NormalizeReshardProgram(mutated).status().code(),
@@ -204,7 +206,7 @@ TEST(TransferProgramReshard, MalformedProgramsAreInvalid) {
   }
   // MemoryRef.space set on a reshard step.
   {
-    proto::TransferProgramRequest mutated = *program;
+    ::tpu_sync::proto::TransferProgramRequest mutated = *program;
     mutated.mutable_program()->mutable_steps(0)->mutable_src()
         ->set_pool_index(0);
     EXPECT_EQ(NormalizeReshardProgram(mutated).status().code(),
@@ -212,15 +214,16 @@ TEST(TransferProgramReshard, MalformedProgramsAreInvalid) {
   }
   // Out-of-range group reference.
   {
-    proto::TransferProgramRequest mutated = *program;
+    ::tpu_sync::proto::TransferProgramRequest mutated = *program;
     mutated.mutable_program()->mutable_steps(0)->set_group(99);
     EXPECT_EQ(NormalizeReshardProgram(mutated).status().code(),
               absl::StatusCode::kInvalidArgument);
   }
   // Unknown role.
   {
-    proto::TransferProgramRequest mutated = *program;
-    mutated.mutable_envelope()->set_role(proto::TRANSFER_ROLE_UNSPECIFIED);
+    ::tpu_sync::proto::TransferProgramRequest mutated = *program;
+    mutated.mutable_envelope()->set_role(
+        ::tpu_sync::proto::TRANSFER_ROLE_UNSPECIFIED);
     EXPECT_EQ(NormalizeReshardProgram(mutated).status().code(),
               absl::StatusCode::kInvalidArgument);
   }

@@ -40,6 +40,8 @@ namespace tpu_raiden {
 namespace kv_cache {
 namespace global_registry {
 
+using namespace ::tpu_raiden::kv_cache::global_registry;  // NOLINT
+
 namespace {
 
 // RegisterStore runs synchronously inside KVCacheStore construction, so
@@ -47,7 +49,7 @@ namespace {
 // indefinitely.
 constexpr absl::Duration kRegisterStoreRpcTimeout = absl::Seconds(10);
 
-void ToProto(const RaidenId& id, ::tpu_raiden::rpc::RaidenIdProto* proto) {
+void ToProto(const RaidenId& id, ::tpu_sync::rpc::RaidenIdProto* proto) {
   proto->set_job_name(id.job_name);
   proto->set_job_replica_id(id.job_replica_id);
   proto->set_data_name(id.data_name);

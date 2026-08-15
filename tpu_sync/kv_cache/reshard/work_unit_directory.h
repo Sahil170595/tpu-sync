@@ -42,12 +42,12 @@ struct WorkUnitRegistration {
   std::optional<std::vector<int32_t>> layout;
   std::optional<std::vector<int64_t>> global_shape;
   std::optional<int32_t> itemsize;
-  std::optional<std::vector<tpu_raiden::rpc::PoolSpecProto>> pool_manifest;
+  std::optional<std::vector<tpu_sync::rpc::PoolSpecProto>> pool_manifest;
   std::optional<std::string> layout_fingerprint;
   std::optional<int64_t> page_tokens;
   std::optional<int32_t> transfer_parallelism;
   std::optional<int32_t> transfer_rank;
-  std::optional<std::vector<tpu_raiden::rpc::VariableMetadataProto>> variables;
+  std::optional<std::vector<tpu_sync::rpc::VariableMetadataProto>> variables;
 };
 
 // Port of RaidenController's work-unit registration surface. All state
@@ -72,14 +72,14 @@ class WorkUnitDirectory {
 
   // _metadata_proto_locked: rebuilds the wire metadata proto field-for-field
   // in Python's field order. Caller must hold the shared mutex.
-  absl::StatusOr<tpu_raiden::rpc::RegisterWorkUnitRequest> MetadataProtoLocked(
+  absl::StatusOr<tpu_sync::rpc::RegisterWorkUnitRequest> MetadataProtoLocked(
       const RaidenId& unit) const ABSL_EXCLUSIVE_LOCKS_REQUIRED(mu_);
 
   // get_all_metadata (registration insertion order).
-  std::vector<tpu_raiden::rpc::RegisterWorkUnitRequest> AllMetadata() const;
+  std::vector<tpu_sync::rpc::RegisterWorkUnitRequest> AllMetadata() const;
 
   // _get_local_metadata: metadata for exactly these units.
-  absl::StatusOr<std::vector<tpu_raiden::rpc::RegisterWorkUnitRequest>>
+  absl::StatusOr<std::vector<tpu_sync::rpc::RegisterWorkUnitRequest>>
   LocalMetadata(const std::vector<RaidenId>& units) const;
 
   bool IsRegisteredLocked(const RaidenId& unit) const
@@ -87,7 +87,7 @@ class WorkUnitDirectory {
 
   // Live pool manifest view for register_request_blocks' per-tag live-byte
   // check. Empty when the unit has no manifest.
-  std::vector<tpu_raiden::rpc::PoolSpecProto> PoolManifestLocked(
+  std::vector<tpu_sync::rpc::PoolSpecProto> PoolManifestLocked(
       const RaidenId& unit) const ABSL_EXCLUSIVE_LOCKS_REQUIRED(mu_);
 
   absl::Mutex* mu() const ABSL_LOCK_RETURNED(mu_) { return mu_; }
@@ -101,13 +101,12 @@ class WorkUnitDirectory {
     std::optional<std::vector<int32_t>> layout;
     std::optional<std::vector<int64_t>> global_shape;
     std::optional<int32_t> itemsize;
-    std::optional<std::vector<tpu_raiden::rpc::PoolSpecProto>> pools;
+    std::optional<std::vector<tpu_sync::rpc::PoolSpecProto>> pools;
     std::optional<std::string> layout_fingerprint;
     std::optional<int64_t> page_tokens;
     std::optional<int32_t> transfer_parallelism;
     std::optional<int32_t> transfer_rank;
-    std::optional<std::vector<tpu_raiden::rpc::VariableMetadataProto>>
-        variables;
+    std::optional<std::vector<tpu_sync::rpc::VariableMetadataProto>> variables;
   };
 
   int FindLocked(const RaidenId& unit) const ABSL_EXCLUSIVE_LOCKS_REQUIRED(mu_);

@@ -48,27 +48,27 @@ enum class ReshardLoweringClass {
 // rejects it. Dispatch keys on the completion contract and role, never on
 // envelope.kind (kind is checked only for consistency).
 absl::StatusOr<ReshardLoweringClass> NormalizeReshardProgram(
-    const proto::TransferProgramRequest& request);
+    const ::tpu_sync::proto::TransferProgramRequest& request);
 
 // Lossless pool-reshard StartTransferRequest -> program conversion.
 // Rejects non-pool requests (legacy dense plans stay on the framed door).
-absl::StatusOr<proto::TransferProgramRequest> CompileStartTransfer(
-    const rpc::StartTransferRequest& request);
+absl::StatusOr<::tpu_sync::proto::TransferProgramRequest> CompileStartTransfer(
+    const ::tpu_sync::rpc::StartTransferRequest& request);
 
 // Worker-door lowering (inverse of CompileStartTransfer). Callers must have
 // run NormalizeReshardProgram first; this reconstructs the byte-identical
 // StartTransferRequest the framed door would have delivered.
-absl::StatusOr<rpc::StartTransferRequest> LowerToStartTransfer(
-    const proto::TransferProgramRequest& request);
+absl::StatusOr<::tpu_sync::rpc::StartTransferRequest> LowerToStartTransfer(
+    const ::tpu_sync::proto::TransferProgramRequest& request);
 
 // Listener-parity block-id derivations (kv_cache_listener.cc sender/receiver
 // paths): the sender's local block list is the sorted-unique union of its
 // schedule entries' source blocks; the receiver's flat destination list is
 // the pool groups' dst_device_block_ids concatenation.
 std::vector<int64_t> DeriveSenderSourceBlockIds(
-    const rpc::StartTransferRequest& request);
+    const ::tpu_sync::rpc::StartTransferRequest& request);
 std::vector<int64_t> DeriveArmChipBlockIds(
-    const rpc::StartTransferRequest& request);
+    const ::tpu_sync::rpc::StartTransferRequest& request);
 
 }  // namespace core
 }  // namespace tpu_raiden

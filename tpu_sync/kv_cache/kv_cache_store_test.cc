@@ -1059,7 +1059,7 @@ class MetadataRegion {
 // which only touch the logical block manager.
 std::unique_ptr<::tpu_raiden::controller::RaidenController>
 MakeRecoveryController(const RaidenId& rid, int num_blocks) {
-  rpc::RaidenIdProto unit;
+  ::tpu_sync::rpc::RaidenIdProto unit;
   unit.set_job_name(rid.job_name);
   unit.set_job_replica_id(rid.job_replica_id);
   unit.set_data_name(rid.data_name);
@@ -1216,7 +1216,7 @@ class KVCacheStoreEmbeddedControllerTest : public ::testing::Test {
         unit_, num_blocks, num_shards, shard_size_bytes, controller_address);
   }
 
-  rpc::RaidenIdProto unit_;
+  ::tpu_sync::rpc::RaidenIdProto unit_;
   std::unique_ptr<::tpu_raiden::controller::TestWorkerServer> test_server_;
   std::unique_ptr<::tpu_raiden::controller::ShardAwareMockTransferManager>
       dst_transfer_mock_;
@@ -2311,7 +2311,7 @@ TEST_F(KVCacheStoreEmbeddedControllerTest, ReadRemoteSuccess) {
   // 2. Start src controller server
   auto src_controller_server = core::controller::CreateTestControllerServer();
 
-  rpc::RaidenIdProto src_unit;
+  ::tpu_sync::rpc::RaidenIdProto src_unit;
   src_unit.set_job_name("src_job");
   src_unit.set_job_replica_id("0");
   src_unit.set_data_name("src_data");
@@ -2596,7 +2596,7 @@ TEST_F(KVCacheStoreEmbeddedControllerTest, ReadRemoteFailure) {
 
   auto src_controller_server = core::controller::CreateTestControllerServer();
 
-  rpc::RaidenIdProto src_unit;
+  ::tpu_sync::rpc::RaidenIdProto src_unit;
   src_unit.set_job_name("src_job");
   src_unit.set_job_replica_id("0");
   src_unit.set_data_name("src_data");
@@ -2713,7 +2713,7 @@ TEST_F(KVCacheStoreEmbeddedControllerTest, ReadRemoteFailure) {
 TEST_F(KVCacheStoreEmbeddedControllerTest,
        ReadRemoteSourceVerifyMissingRevertsDestination) {
   auto src_controller_server = core::controller::CreateTestControllerServer();
-  rpc::RaidenIdProto src_unit;
+  ::tpu_sync::rpc::RaidenIdProto src_unit;
   src_unit.set_job_name("src_job");
   src_unit.set_job_replica_id("0");
   src_unit.set_data_name("src_data");
@@ -2779,7 +2779,7 @@ TEST_F(KVCacheStoreEmbeddedControllerTest,
 TEST_F(KVCacheStoreEmbeddedControllerTest,
        ReadRemoteSourceVerifySuccessTransfers) {
   auto src_controller_server = core::controller::CreateTestControllerServer();
-  rpc::RaidenIdProto src_unit;
+  ::tpu_sync::rpc::RaidenIdProto src_unit;
   src_unit.set_job_name("src_job");
   src_unit.set_job_replica_id("0");
   src_unit.set_data_name("src_data");
@@ -2841,7 +2841,7 @@ TEST_F(KVCacheStoreEmbeddedControllerTest,
 TEST_F(KVCacheStoreEmbeddedControllerTest, ReadRemoteDuplicateFails) {
   auto src_controller_server = core::controller::CreateTestControllerServer();
 
-  rpc::RaidenIdProto src_unit;
+  ::tpu_sync::rpc::RaidenIdProto src_unit;
   src_unit.set_job_name("src_job");
   src_unit.set_job_replica_id("0");
   src_unit.set_data_name("src_data");
@@ -2991,7 +2991,7 @@ TEST_F(KVCacheStoreEmbeddedControllerTest, ReadRemoteMultipleSources) {
   auto src_controller_server_1 = core::controller::CreateTestControllerServer();
   auto src_controller_server_2 = core::controller::CreateTestControllerServer();
 
-  rpc::RaidenIdProto src_unit_1;
+  ::tpu_sync::rpc::RaidenIdProto src_unit_1;
   src_unit_1.set_job_name("src_job_1");
   src_unit_1.set_job_replica_id("0");
   src_unit_1.set_data_name("src_data_1");
@@ -3003,7 +3003,7 @@ TEST_F(KVCacheStoreEmbeddedControllerTest, ReadRemoteMultipleSources) {
   src_raiden_id_1.data_name = "src_data_1";
   src_raiden_id_1.data_replica_idx = 0;
 
-  rpc::RaidenIdProto src_unit_2;
+  ::tpu_sync::rpc::RaidenIdProto src_unit_2;
   src_unit_2.set_job_name("src_job_2");
   src_unit_2.set_job_replica_id("0");
   src_unit_2.set_data_name("src_data_2");
@@ -3177,7 +3177,7 @@ TEST_F(KVCacheStoreEmbeddedControllerTest,
 
   auto src_controller_server = core::controller::CreateTestControllerServer();
 
-  rpc::RaidenIdProto src_unit;
+  ::tpu_sync::rpc::RaidenIdProto src_unit;
   src_unit.set_job_name("src_job");
   src_unit.set_job_replica_id("0");
   src_unit.set_data_name("src_data");
@@ -4063,33 +4063,38 @@ TEST_F(StoreDiscoveryTest, FailedLoadDropsTheCachedPeerClient) {
 // which tests the destination, and reaches the source's handling only by
 // implication. STORED_UNREGISTERED is the clearest case: producing it for real
 // needs a registry that fails at one exact moment mid-transfer.
-class FakeDestinationService : public proto::KVCacheStoreService::Service {
+class FakeDestinationService
+    : public ::tpu_raiden::kv_cache::proto::KVCacheStoreService::Service {
  public:
   static constexpr uint64_t kOperationId = 4242;
 
-  ::grpc::Status WriteRemote(::grpc::ServerContext* /*context*/,
-                             const proto::WriteRemoteRequest* request,
-                             proto::WriteRemoteResponse* response) override {
+  ::grpc::Status WriteRemote(
+      ::grpc::ServerContext* /*context*/,
+      const ::tpu_raiden::kv_cache::proto::WriteRemoteRequest* request,
+      ::tpu_raiden::kv_cache::proto::WriteRemoteResponse* response) override {
     absl::MutexLock lock(&mutex_);
     ++write_calls_;
     requested_deadline_ms_ = request->deadline_ms();
     response->set_operation_id(kOperationId);
-    response->set_exist_state(proto::WRITE_EXIST_STATE_UNSPECIFIED);
+    response->set_exist_state(
+        ::tpu_raiden::kv_cache::proto::WRITE_EXIST_STATE_UNSPECIFIED);
     response->set_granted_deadline_ms(request->deadline_ms());
     return ::grpc::Status::OK;
   }
 
   ::grpc::Status PollWriteRemote(
       ::grpc::ServerContext* /*context*/,
-      const proto::PollWriteRemoteRequest* /*request*/,
-      proto::PollWriteRemoteResponse* response) override {
+      const ::tpu_raiden::kv_cache::proto::PollWriteRemoteRequest* /*request*/,
+      ::tpu_raiden::kv_cache::proto::PollWriteRemoteResponse* response)
+      override {
     absl::MutexLock lock(&mutex_);
     ++poll_calls_;
     *response = poll_response_;
     return ::grpc::Status::OK;
   }
 
-  void SetPollResponse(proto::PollWriteRemoteResponse response) {
+  void SetPollResponse(
+      ::tpu_raiden::kv_cache::proto::PollWriteRemoteResponse response) {
     absl::MutexLock lock(&mutex_);
     poll_response_ = std::move(response);
   }
@@ -4105,7 +4110,8 @@ class FakeDestinationService : public proto::KVCacheStoreService::Service {
 
  private:
   mutable absl::Mutex mutex_;
-  proto::PollWriteRemoteResponse poll_response_ ABSL_GUARDED_BY(mutex_);
+  ::tpu_raiden::kv_cache::proto::PollWriteRemoteResponse poll_response_
+      ABSL_GUARDED_BY(mutex_);
   int write_calls_ ABSL_GUARDED_BY(mutex_) = 0;
   int poll_calls_ ABSL_GUARDED_BY(mutex_) = 0;
   int64_t requested_deadline_ms_ ABSL_GUARDED_BY(mutex_) = 0;
@@ -4349,8 +4355,9 @@ TEST_F(RemoteWriteSourceTest, StoredUnregisteredIsFailedAndNamesTheBlocks) {
   Populate(*src_store, src, {"a", "b"});
   StartFakeDestination(dst);
 
-  proto::PollWriteRemoteResponse verdict;
-  verdict.set_state(proto::PollWriteRemoteResponse::STORED_UNREGISTERED);
+  ::tpu_raiden::kv_cache::proto::PollWriteRemoteResponse verdict;
+  verdict.set_state(::tpu_raiden::kv_cache::proto::PollWriteRemoteResponse::
+                        STORED_UNREGISTERED);
   verdict.add_unregistered_hashes("a");
   verdict.add_unregistered_hashes("b");
   fake_destination_.SetPollResponse(verdict);
@@ -4380,8 +4387,9 @@ TEST_F(RemoteWriteSourceTest, CommittedIsReportedAsDone) {
   Populate(*src_store, src, {"a", "b"});
   StartFakeDestination(dst);
 
-  proto::PollWriteRemoteResponse verdict;
-  verdict.set_state(proto::PollWriteRemoteResponse::COMMITTED);
+  ::tpu_raiden::kv_cache::proto::PollWriteRemoteResponse verdict;
+  verdict.set_state(
+      ::tpu_raiden::kv_cache::proto::PollWriteRemoteResponse::COMMITTED);
   verdict.add_committed_hashes("a");
   verdict.add_committed_hashes("b");
   fake_destination_.SetPollResponse(verdict);
@@ -4406,8 +4414,9 @@ TEST_F(RemoteWriteSourceTest, UnknownIsReportedAsAPlainFailure) {
   Populate(*src_store, src, {"a"});
   StartFakeDestination(dst);
 
-  proto::PollWriteRemoteResponse verdict;
-  verdict.set_state(proto::PollWriteRemoteResponse::UNKNOWN);
+  ::tpu_raiden::kv_cache::proto::PollWriteRemoteResponse verdict;
+  verdict.set_state(
+      ::tpu_raiden::kv_cache::proto::PollWriteRemoteResponse::UNKNOWN);
   fake_destination_.SetPollResponse(verdict);
 
   ASSERT_TRUE(src_store->WriteRemote({"a"}, dst).ok());
@@ -4428,8 +4437,9 @@ TEST_F(RemoteWriteSourceTest, TheOfferAsksForLessThanTheSourceWillHold) {
   Populate(*src_store, src, {"a"});
   StartFakeDestination(dst);
 
-  proto::PollWriteRemoteResponse verdict;
-  verdict.set_state(proto::PollWriteRemoteResponse::COMMITTED);
+  ::tpu_raiden::kv_cache::proto::PollWriteRemoteResponse verdict;
+  verdict.set_state(
+      ::tpu_raiden::kv_cache::proto::PollWriteRemoteResponse::COMMITTED);
   verdict.add_committed_hashes("a");
   fake_destination_.SetPollResponse(verdict);
 

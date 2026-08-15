@@ -38,6 +38,8 @@ namespace tpu_raiden {
 namespace kv_cache {
 namespace global_registry {
 
+using namespace ::tpu_raiden::kv_cache::global_registry;  // NOLINT
+
 struct RegistryEntry {
   RaidenId raiden_id;
   int32_t block_id;

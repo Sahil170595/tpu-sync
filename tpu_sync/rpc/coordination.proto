@@ -14,7 +14,7 @@
 
 syntax = "proto3";
 
-package tpu_raiden.rpc;
+package tpu_sync.rpc;
 
 service CoordinationService {
   // Queries peer server and returns metadata (port, block_ids, host_ip).

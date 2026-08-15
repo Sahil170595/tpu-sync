@@ -150,13 +150,13 @@ absl::StatusOr<std::vector<LiveCopyChunk>> TranslateLiveCopy(
     absl::Span<const PoolLiveSegment> dst_segments, int64_t src_offset,
     int64_t dst_offset, int64_t size);
 
-tpu_raiden::rpc::RegionSpecProto ToProto(const RegionSpec& region);
+tpu_sync::rpc::RegionSpecProto ToProto(const RegionSpec& region);
 absl::StatusOr<RegionSpec> RegionSpecFromProto(
-    const tpu_raiden::rpc::RegionSpecProto& proto);
+    const tpu_sync::rpc::RegionSpecProto& proto);
 
-tpu_raiden::rpc::PoolSpecProto ToProto(const PoolSpec& pool);
+tpu_sync::rpc::PoolSpecProto ToProto(const PoolSpec& pool);
 absl::StatusOr<PoolSpec> PoolSpecFromProto(
-    const tpu_raiden::rpc::PoolSpecProto& proto);
+    const tpu_sync::rpc::PoolSpecProto& proto);
 
 }  // namespace kv_cache
 }  // namespace tpu_raiden

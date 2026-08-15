@@ -14,7 +14,7 @@
 
 syntax = "proto3";
 
-package tpu_raiden.proto;
+package tpu_sync.proto;
 
 import "tpu_sync/proto/transfer_program.proto";
 import "tpu_sync/rpc/raiden_service.proto";
@@ -47,12 +47,10 @@ service WorkerService {
       returns (TransferProgramResponse);
 
   // Polls the execution status of a previously submitted TransferProgram.
-  rpc PollTransfer(PollTransferRequest)
-      returns (PollTransferResponse);
+  rpc PollTransfer(PollTransferRequest) returns (PollTransferResponse);
 
   // Aborts an in-flight TransferProgram on this worker.
-  rpc AbortTransfer(AbortTransferRequest)
-      returns (AbortTransferResponse);
+  rpc AbortTransfer(AbortTransferRequest) returns (AbortTransferResponse);
 }
 
 // Transfer endpoint descriptor for worker sub-managers.
@@ -84,7 +82,7 @@ message BufferHandleProto {
 message BufferProto {
   repeated BufferHandleProto buffer_handles = 1;
   optional int32 index = 2;
-  tpu_raiden.rpc.MemoryType memory_type = 3;
+  tpu_sync.rpc.MemoryType memory_type = 3;
   string remote_address = 4;
   repeated RaidenTransferEndpointProto remote_descriptors = 9;
   // Ordered per-destination-worker endpoint groups (sorted by worker index),
@@ -109,7 +107,7 @@ message CreateBufferSpec {
 // Request to allocate one or more sharded buffers on a transfer worker.
 message CreateBuffersRequest {
   // Target Raiden work unit (job/replica identifier).
-  tpu_raiden.rpc.RaidenIdProto unit = 1;
+  tpu_sync.rpc.RaidenIdProto unit = 1;
   // List of sharded buffer specifications to allocate.
   repeated CreateBufferSpec buffers = 2;
 }
@@ -126,7 +124,7 @@ message CreateBuffersResponse {
 // worker.
 message DeleteBuffersRequest {
   // Target Raiden work unit (job/replica identifier).
-  tpu_raiden.rpc.RaidenIdProto unit = 1;
+  tpu_sync.rpc.RaidenIdProto unit = 1;
   // List of sharded buffers to deallocate.
   repeated BufferProto sharded_buffers = 2;
 }
@@ -149,9 +147,9 @@ message TransferBufferSpec {
   // if not specified).
   repeated int64 copy_sizes = 3;
   // Memory type of the source buffer (e.g., HBM for D2H, DRAM for H2D).
-  tpu_raiden.rpc.MemoryType src_mem_type = 4;
+  tpu_sync.rpc.MemoryType src_mem_type = 4;
   // Memory type of the destination buffer (e.g., DRAM for D2H, HBM for H2D).
-  tpu_raiden.rpc.MemoryType dst_mem_type = 5;
+  tpu_sync.rpc.MemoryType dst_mem_type = 5;
   reserved 6;
   // Source buffers for transfer.
   repeated BufferProto src_buffers = 7;

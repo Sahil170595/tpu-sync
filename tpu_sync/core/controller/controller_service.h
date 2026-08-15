@@ -47,7 +47,7 @@ namespace core {
 namespace controller {
 
 class RaidenControllerServiceImpl final
-    : public ::tpu_raiden::proto::RaidenControllerService::Service {
+    : public ::tpu_sync::proto::RaidenControllerService::Service {
  public:
   explicit RaidenControllerServiceImpl(
       std::shared_ptr<WorkerRegistry> worker_registry = nullptr);
@@ -61,9 +61,8 @@ class RaidenControllerServiceImpl final
 
   grpc::Status RegisterWorker(
       grpc::ServerContext* context,
-      const ::tpu_raiden::proto::RegisterWorkerRequest* request,
-      ::tpu_raiden::proto::RegisterWorkerResponse* response)
-      override;
+      const ::tpu_sync::proto::RegisterWorkerRequest* request,
+      ::tpu_sync::proto::RegisterWorkerResponse* response) override;
 
   // --- Read-lease protocol (source side) ---------------------------------
   //
@@ -81,18 +80,18 @@ class RaidenControllerServiceImpl final
   //      set: that recreates the release-steals-the-other-reader's-pin bug.
   grpc::Status AcquireReadLease(
       grpc::ServerContext* context,
-      const ::tpu_raiden::proto::AcquireReadLeaseRequest* request,
-      ::tpu_raiden::proto::AcquireReadLeaseResponse* response) override;
+      const ::tpu_sync::proto::AcquireReadLeaseRequest* request,
+      ::tpu_sync::proto::AcquireReadLeaseResponse* response) override;
 
   grpc::Status RenewReadLease(
       grpc::ServerContext* context,
-      const ::tpu_raiden::proto::RenewReadLeaseRequest* request,
-      ::tpu_raiden::proto::RenewReadLeaseResponse* response) override;
+      const ::tpu_sync::proto::RenewReadLeaseRequest* request,
+      ::tpu_sync::proto::RenewReadLeaseResponse* response) override;
 
   grpc::Status ReleaseReadLease(
       grpc::ServerContext* context,
-      const ::tpu_raiden::proto::ReleaseReadLeaseRequest* request,
-      ::tpu_raiden::proto::ReleaseReadLeaseResponse* response) override;
+      const ::tpu_sync::proto::ReleaseReadLeaseRequest* request,
+      ::tpu_sync::proto::ReleaseReadLeaseResponse* response) override;
 
   // Forces `lease_id` to expire immediately, exactly as the sweeper would.
   // Test seam: the lease TTL floor (30 s) is far longer than any unit test,

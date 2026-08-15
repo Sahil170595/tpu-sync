@@ -45,6 +45,7 @@
 #include "tpu_sync/kv_cache/kv_cache_store_client.h"
 #include "tpu_sync/kv_cache/kv_cache_store_server.h"
 #include "tpu_sync/kv_cache/raiden_id.h"
+#include "tpu_sync/rpc/raiden_service.pb.h"
 
 namespace tpu_raiden {
 namespace kv_cache {
@@ -166,7 +167,7 @@ TEST(HostOffloadBackendTest, LookupReturnsRemoteDescriptors) {
   ASSERT_TRUE(registry_client->Register(regs).ok());
 
   RaidenId local_node_id{"local_job", "0", "data", 0};
-  rpc::RaidenIdProto unit_proto;
+  ::tpu_sync::rpc::RaidenIdProto unit_proto;
   unit_proto.set_job_name(local_node_id.job_name);
   unit_proto.set_job_replica_id(local_node_id.job_replica_id);
   unit_proto.set_data_name(local_node_id.data_name);
@@ -220,7 +221,7 @@ TEST(HostOffloadBackendTest,
   };
   ASSERT_TRUE(registry_client->Register(regs).ok());
 
-  rpc::RaidenIdProto unit_proto;
+  ::tpu_sync::rpc::RaidenIdProto unit_proto;
   unit_proto.set_job_name(local_node_id.job_name);
   unit_proto.set_job_replica_id(local_node_id.job_replica_id);
   unit_proto.set_data_name(local_node_id.data_name);
@@ -250,7 +251,7 @@ TEST(HostOffloadBackendTest, CreateRegistersKVTransferSpecFromConfig) {
   std::string server_address = reg_server->server_address;
 
   RaidenId node_id{"node_job", "0", "data", 0};
-  rpc::RaidenIdProto unit_proto;
+  ::tpu_sync::rpc::RaidenIdProto unit_proto;
   unit_proto.set_job_name(node_id.job_name);
   unit_proto.set_job_replica_id(node_id.job_replica_id);
   unit_proto.set_data_name(node_id.data_name);
@@ -295,7 +296,7 @@ TEST(HostOffloadBackendTest, CreateRegistersKVTransferSpecFromConfig) {
 
 TEST(HostOffloadBackendTest, KVTransferSpecWithoutRegistryFailsCreation) {
   RaidenId node_id{"node_job", "0", "data", 0};
-  rpc::RaidenIdProto unit_proto;
+  ::tpu_sync::rpc::RaidenIdProto unit_proto;
   unit_proto.set_job_name(node_id.job_name);
   unit_proto.set_job_replica_id(node_id.job_replica_id);
   unit_proto.set_data_name(node_id.data_name);
@@ -406,7 +407,7 @@ TEST(HostOffloadBackendTest, ServerLifecycleAndControllerInitialization) {
   config.raiden_id = node_id;
 
   // Create RaidenController
-  rpc::RaidenIdProto unit_proto;
+  ::tpu_sync::rpc::RaidenIdProto unit_proto;
   unit_proto.set_job_name(node_id.job_name);
   unit_proto.set_job_replica_id(node_id.job_replica_id);
   unit_proto.set_data_name(node_id.data_name);
@@ -434,7 +435,7 @@ TEST(HostOffloadBackendTest, ServerLifecycleAndControllerInitialization) {
 
 TEST(HostOffloadBackendTest, StartServerStripsControllerPort) {
   RaidenId node_id{"node_job", "0", "data", 0};
-  rpc::RaidenIdProto unit_proto;
+  ::tpu_sync::rpc::RaidenIdProto unit_proto;
   unit_proto.set_job_name(node_id.job_name);
   unit_proto.set_job_replica_id(node_id.job_replica_id);
   unit_proto.set_data_name(node_id.data_name);
@@ -509,7 +510,7 @@ TEST(HostOffloadBackendTest, EndToEndFetchRPC) {
   ASSERT_OK(registry_client->Register(registrations));
 
   // 6. Create destination HostOffloadBackend & RaidenController
-  rpc::RaidenIdProto dst_unit_proto;
+  ::tpu_sync::rpc::RaidenIdProto dst_unit_proto;
   dst_unit_proto.set_job_name(dst_raiden_id.job_name);
   dst_unit_proto.set_job_replica_id(dst_raiden_id.job_replica_id);
   dst_unit_proto.set_data_name(dst_raiden_id.data_name);
@@ -576,7 +577,7 @@ TEST(HostOffloadBackendTest, LoadMismatchedDeviceBlockCount) {
   std::string server_address = reg_server->server_address;
   RaidenId node_id{"node_job", "0", "data", 0};
 
-  rpc::RaidenIdProto unit_proto;
+  ::tpu_sync::rpc::RaidenIdProto unit_proto;
   unit_proto.set_job_name(node_id.job_name);
   unit_proto.set_job_replica_id(node_id.job_replica_id);
   unit_proto.set_data_name(node_id.data_name);
@@ -625,7 +626,7 @@ TEST(HostOffloadBackendTest, LoadSuccess) {
   ASSERT_OK(registry_client->Register(regs));
 
   // Setup local RaidenController
-  rpc::RaidenIdProto local_unit;
+  ::tpu_sync::rpc::RaidenIdProto local_unit;
   local_unit.set_job_name(local_node_id.job_name);
   local_unit.set_job_replica_id(local_node_id.job_replica_id);
   local_unit.set_data_name(local_node_id.data_name);
@@ -704,7 +705,7 @@ TEST(HostOffloadBackendTest, LoadSuccess) {
 
 TEST(HostOffloadBackendTest, LoadLocalSuccess) {
   RaidenId node_id{"node_job", "0", "data", 0};
-  rpc::RaidenIdProto unit_proto;
+  ::tpu_sync::rpc::RaidenIdProto unit_proto;
   unit_proto.set_job_name(node_id.job_name);
   unit_proto.set_job_replica_id(node_id.job_replica_id);
   unit_proto.set_data_name(node_id.data_name);
@@ -746,7 +747,7 @@ TEST(HostOffloadBackendTest, LoadLocalSuccess) {
 
 TEST(HostOffloadBackendTest, LoadLocalMissingBlockError) {
   RaidenId node_id{"node_job", "0", "data", 0};
-  rpc::RaidenIdProto unit_proto;
+  ::tpu_sync::rpc::RaidenIdProto unit_proto;
   unit_proto.set_job_name(node_id.job_name);
   unit_proto.set_job_replica_id(node_id.job_replica_id);
   unit_proto.set_data_name(node_id.data_name);
@@ -773,7 +774,7 @@ TEST(HostOffloadBackendTest, LoadLocalMissingBlockError) {
 
 TEST(HostOffloadBackendTest, LoadLocalNonHostBlockError) {
   RaidenId node_id{"node_job", "0", "data", 0};
-  rpc::RaidenIdProto unit_proto;
+  ::tpu_sync::rpc::RaidenIdProto unit_proto;
   unit_proto.set_job_name(node_id.job_name);
   unit_proto.set_job_replica_id(node_id.job_replica_id);
   unit_proto.set_data_name(node_id.data_name);
@@ -805,7 +806,7 @@ TEST(HostOffloadBackendTest, LoadLocalNonHostBlockError) {
 
 TEST(HostOffloadBackendTest, StoreServerOverride) {
   RaidenId local_node_id{"override_job", "0", "cache", 0};
-  rpc::RaidenIdProto local_unit;
+  ::tpu_sync::rpc::RaidenIdProto local_unit;
   local_unit.set_job_name(local_node_id.job_name);
   local_unit.set_job_replica_id(local_node_id.job_replica_id);
   local_unit.set_data_name(local_node_id.data_name);
@@ -835,8 +836,8 @@ TEST(HostOffloadBackendTest, StoreServerOverride) {
 
 namespace {
 
-rpc::RaidenIdProto ToProto(const RaidenId& id) {
-  rpc::RaidenIdProto proto;
+::tpu_sync::rpc::RaidenIdProto ToProto(const RaidenId& id) {
+  ::tpu_sync::rpc::RaidenIdProto proto;
   proto.set_job_name(id.job_name);
   proto.set_job_replica_id(id.job_replica_id);
   proto.set_data_name(id.data_name);
@@ -1049,7 +1050,7 @@ TEST(HostOffloadBackendTest, LookupAndPinRemoteDescriptorsUnpinnedLocally) {
   ASSERT_TRUE(registry_client->Register(regs).ok());
 
   RaidenId local_node_id{"local_job", "0", "data", 0};
-  rpc::RaidenIdProto unit_proto;
+  ::tpu_sync::rpc::RaidenIdProto unit_proto;
   unit_proto.set_job_name(local_node_id.job_name);
   unit_proto.set_job_replica_id(local_node_id.job_replica_id);
   unit_proto.set_data_name(local_node_id.data_name);
@@ -1097,7 +1098,7 @@ std::unique_ptr<InterleavedFixture> MakeInterleavedFixture(
   auto fixture = std::make_unique<InterleavedFixture>();
   fixture->registry = global_registry::CreateTestGlobalRegistryServer();
 
-  rpc::RaidenIdProto unit_proto;
+  ::tpu_sync::rpc::RaidenIdProto unit_proto;
   unit_proto.set_job_name(fixture->local_id.job_name);
   unit_proto.set_job_replica_id(fixture->local_id.job_replica_id);
   unit_proto.set_data_name(fixture->local_id.data_name);

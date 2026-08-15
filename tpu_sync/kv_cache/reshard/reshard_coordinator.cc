@@ -45,6 +45,7 @@
 namespace tpu_raiden {
 namespace kv_cache {
 namespace reshard {
+
 namespace {
 
 // Worker RPC timeout: WorkerRpcClient uses connect_socket(timeout=60).
@@ -91,7 +92,7 @@ absl::Status SendWorkerRpc(FramedTransport* transport,
                            const std::string& payload) {
   auto response = transport->Call(address, payload, kWorkerRpcTimeout);
   if (!response.ok()) return response.status();
-  tpu_raiden::rpc::ControlResponse resp;
+  tpu_sync::rpc::ControlResponse resp;
   if (!resp.ParseFromString(*response)) {
     return absl::InternalError(
         "Failed to parse worker ControlResponse payload");
@@ -105,18 +106,18 @@ absl::Status SendWorkerRpc(FramedTransport* transport,
 
 }  // namespace
 
-tpu_raiden::rpc::StartTransferRequest BuildStartTransferForTarget(
+tpu_sync::rpc::StartTransferRequest BuildStartTransferForTarget(
     const PoolReshardPlan& plan, const RaidenId& target) {
   const bool is_sender = std::find(plan.src_units.begin(), plan.src_units.end(),
                                    target) != plan.src_units.end();
-  tpu_raiden::rpc::StartTransferRequest start_req;
+  tpu_sync::rpc::StartTransferRequest start_req;
   for (const RaidenId& unit : plan.src_units) {
     *start_req.add_src_units() = RaidenIdToProto(unit);
   }
   *start_req.add_dst_units() = RaidenIdToProto(plan.dst_unit);
   start_req.set_uuid(plan.uuid);
   start_req.set_is_sender(is_sender);
-  start_req.set_dst_mem_type(tpu_raiden::rpc::MEMORY_TYPE_HBM);
+  start_req.set_dst_mem_type(tpu_sync::rpc::MEMORY_TYPE_HBM);
   start_req.set_use_block_chunks(true);
   start_req.set_expected_block_count(plan.expected_block_count);
   start_req.set_req_id(plan.req_id);
@@ -133,7 +134,7 @@ tpu_raiden::rpc::StartTransferRequest BuildStartTransferForTarget(
   // Pool plans leave skip_tiling empty: absent map on the wire.
 
   for (const PlanPoolGroup& group : plan.pool_groups) {
-    tpu_raiden::rpc::PoolGroupProto* group_proto = start_req.add_pool_groups();
+    tpu_sync::rpc::PoolGroupProto* group_proto = start_req.add_pool_groups();
     for (int32_t index : group.pool_indices) {
       group_proto->add_pool_indices(index);
     }
@@ -149,9 +150,9 @@ tpu_raiden::rpc::StartTransferRequest BuildStartTransferForTarget(
 
   auto entries_to_proto =
       [](const std::vector<ScheduleEntry>& entries,
-         tpu_raiden::rpc::ShardPushScheduleProto* schedule_proto) {
+         tpu_sync::rpc::ShardPushScheduleProto* schedule_proto) {
         for (const ScheduleEntry& entry : entries) {
-          tpu_raiden::rpc::ShardPushEntryProto* entry_proto =
+          tpu_sync::rpc::ShardPushEntryProto* entry_proto =
               schedule_proto->add_entries();
           entry_proto->set_dst_peer(entry.dst_peer);
           entry_proto->set_dst_shard_idx(entry.dst_shard_idx);
@@ -182,7 +183,7 @@ tpu_raiden::rpc::StartTransferRequest BuildStartTransferForTarget(
         if (entry.dst_peer == plan.dst_peer) filtered.push_back(entry);
       }
       if (filtered.empty()) continue;
-      tpu_raiden::rpc::ShardPushScheduleProto schedule_proto;
+      tpu_sync::rpc::ShardPushScheduleProto schedule_proto;
       entries_to_proto(filtered, &schedule_proto);
       (*start_req.mutable_shard_push_schedules())[key_it->second] =
           schedule_proto;
@@ -190,7 +191,7 @@ tpu_raiden::rpc::StartTransferRequest BuildStartTransferForTarget(
   } else {
     auto schedule_it = plan.schedules.find(target);
     if (schedule_it != plan.schedules.end() && !schedule_it->second.empty()) {
-      tpu_raiden::rpc::ShardPushScheduleProto schedule_proto;
+      tpu_sync::rpc::ShardPushScheduleProto schedule_proto;
       entries_to_proto(schedule_it->second, &schedule_proto);
       (*start_req.mutable_shard_push_schedules())[0] = schedule_proto;
     }
@@ -201,8 +202,8 @@ tpu_raiden::rpc::StartTransferRequest BuildStartTransferForTarget(
 
 std::string EncodeStartTransfer(const PoolReshardPlan& plan,
                                 const RaidenId& target) {
-  tpu_raiden::rpc::ControlRequest req;
-  req.set_command(tpu_raiden::rpc::ControlRequest::COMMAND_START_TRANSFER);
+  tpu_sync::rpc::ControlRequest req;
+  req.set_command(tpu_sync::rpc::ControlRequest::COMMAND_START_TRANSFER);
   // peers: the destination units' data endpoints (one dst, one endpoint).
   req.add_peers(plan.dst_peer);
   *req.mutable_start_transfer_request() =
@@ -219,14 +220,14 @@ ReshardCoordinator::ReshardCoordinator(WorkUnitDirectory* directory,
       transport_(transport),
       delivery_(delivery) {}
 
-absl::StatusOr<std::vector<tpu_raiden::rpc::RegisterWorkUnitRequest>>
+absl::StatusOr<std::vector<tpu_sync::rpc::RegisterWorkUnitRequest>>
 ReshardCoordinator::QueryRemoteMetadata(const std::string& address) {
-  tpu_raiden::rpc::ControlRequest req;
-  req.set_command(tpu_raiden::rpc::ControlRequest::COMMAND_GET_METADATA);
+  tpu_sync::rpc::ControlRequest req;
+  req.set_command(tpu_sync::rpc::ControlRequest::COMMAND_GET_METADATA);
   auto response =
       transport_->Call(address, req.SerializeAsString(), kWorkerRpcTimeout);
   if (!response.ok()) return response.status();
-  tpu_raiden::rpc::ControlResponse resp;
+  tpu_sync::rpc::ControlResponse resp;
   if (!resp.ParseFromString(*response)) {
     return absl::InternalError(
         "Failed to parse remote metadata ControlResponse");
@@ -235,7 +236,7 @@ ReshardCoordinator::QueryRemoteMetadata(const std::string& address) {
     return absl::InternalError(
         absl::StrCat("Failed to query remote metadata: ", resp.message()));
   }
-  std::vector<tpu_raiden::rpc::RegisterWorkUnitRequest> metadata(
+  std::vector<tpu_sync::rpc::RegisterWorkUnitRequest> metadata(
       resp.get_metadata_response().metadata().begin(),
       resp.get_metadata_response().metadata().end());
   return metadata;
@@ -271,7 +272,7 @@ absl::Status ReshardCoordinator::StartPoolReshard(const PoolReshardArgs& args) {
     return absl::InvalidArgumentError(
         "Pool resharding requires use_block_chunks=true");
   }
-  if (args.dst_mem_type != tpu_raiden::rpc::MEMORY_TYPE_HBM) {
+  if (args.dst_mem_type != tpu_sync::rpc::MEMORY_TYPE_HBM) {
     return absl::InvalidArgumentError(
         "Pool resharding requires dst_mem_type=HBM");
   }
@@ -306,7 +307,7 @@ absl::Status ReshardCoordinator::ExecutePoolReshard(
 
   auto src_metadata = directory_->LocalMetadata(args.src_units);
   if (!src_metadata.ok()) return src_metadata.status();
-  std::vector<tpu_raiden::rpc::RegisterWorkUnitRequest> dst_metadata;
+  std::vector<tpu_sync::rpc::RegisterWorkUnitRequest> dst_metadata;
   if (!args.dst_controller_address.empty()) {
     auto remote = QueryRemoteMetadata(args.dst_controller_address);
     if (!remote.ok()) return remote.status();
@@ -383,7 +384,8 @@ absl::Status ReshardCoordinator::ExecutePoolReshard(
     // Senders route via the local controller's persistent WorkerService
     // channels. Workers are registered as "worker_<schedule_key>" (where
     // schedule_key matches the shard_id the worker was initialized with).
-    std::vector<tsl::Future<proto::TransferProgramResponse>> futures;
+    std::vector<tsl::Future<::tpu_sync::proto::TransferProgramResponse>>
+        futures;
     futures.reserve(plan.src_units.size());
     for (size_t i = 0; i < plan.src_units.size(); ++i) {
       const RaidenId& unit = plan.src_units[i];

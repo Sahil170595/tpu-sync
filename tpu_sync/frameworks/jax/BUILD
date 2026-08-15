@@ -729,6 +729,7 @@ cc_test(
     tags = [],
     deps = [
         ":kv_cache_manager_core_lib",
+        "//tpu_sync/core:buffer",
         "//tpu_sync/core:kv_cache_manager_with_transfer",
         "//tpu_sync/core:raiden_transfer_endpoint",
         "//tpu_sync/core:raw_transfer_core",

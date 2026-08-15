@@ -35,7 +35,8 @@ namespace {
 // Mirror of kv_cache_listener.cc HasPoolReshardFields: either field opts
 // into the pool executor so partially populated plans fail closed there
 // instead of silently taking the legacy path.
-bool HasPoolReshardFields(const rpc::StartTransferRequest& request) {
+bool HasPoolReshardFields(
+    const ::tpu_sync::rpc::StartTransferRequest& request) {
   return !request.transfer_pool_indices().empty() ||
          !request.pool_groups().empty();
 }
@@ -52,37 +53,37 @@ absl::Status CheckInt32(int64_t value, absl::string_view what) {
 }  // namespace
 
 absl::StatusOr<ReshardLoweringClass> NormalizeReshardProgram(
-    const proto::TransferProgramRequest& request) {
-  const proto::TransferProgram& program = request.program();
-  const proto::TransferEnvelope& envelope = request.envelope();
+    const ::tpu_sync::proto::TransferProgramRequest& request) {
+  const ::tpu_sync::proto::TransferProgram& program = request.program();
+  const ::tpu_sync::proto::TransferEnvelope& envelope = request.envelope();
 
   // Dispatch keys on the completion contract, never on `kind`.
   switch (program.completion().mode_case()) {
-    case proto::CompletionContract::kAwaitInline:
+    case ::tpu_sync::proto::CompletionContract::kAwaitInline:
       return absl::UnimplementedError(
           "AwaitInline transfer programs are not supported by the "
           "pool-reshard worker entry");
-    case proto::CompletionContract::kBarrier:
+    case ::tpu_sync::proto::CompletionContract::kBarrier:
       return absl::UnimplementedError(
           "Barrier transfer programs are not supported by the pool-reshard "
           "worker entry");
-    case proto::CompletionContract::kFanIn:
+    case ::tpu_sync::proto::CompletionContract::kFanIn:
       break;
-    case proto::CompletionContract::MODE_NOT_SET:
+    case ::tpu_sync::proto::CompletionContract::MODE_NOT_SET:
       return absl::InvalidArgumentError(
           "transfer program carries no completion contract");
   }
 
   // `kind` is observability-only, but an inconsistent envelope is a caller
   // bug worth failing loudly on.
-  if (envelope.kind() != proto::TRANSFER_KIND_POOL_RESHARD &&
-      envelope.kind() != proto::TRANSFER_KIND_UNSPECIFIED) {
-    return absl::InvalidArgumentError(absl::StrCat(
-        "fan-in transfer program carries inconsistent kind ",
-        proto::TransferKind_Name(envelope.kind())));
+  if (envelope.kind() != ::tpu_sync::proto::TRANSFER_KIND_POOL_RESHARD &&
+      envelope.kind() != ::tpu_sync::proto::TRANSFER_KIND_UNSPECIFIED) {
+    return absl::InvalidArgumentError(
+        absl::StrCat("fan-in transfer program carries inconsistent kind ",
+                     ::tpu_sync::proto::TransferKind_Name(envelope.kind())));
   }
 
-  const proto::FanIn& fan_in = program.completion().fan_in();
+  const ::tpu_sync::proto::FanIn& fan_in = program.completion().fan_in();
   if (fan_in.groups().empty()) {
     return absl::InvalidArgumentError(
         "pool-reshard program declares no fan-in groups");
@@ -94,14 +95,16 @@ absl::StatusOr<ReshardLoweringClass> NormalizeReshardProgram(
   if (program.steps().empty()) {
     return absl::InvalidArgumentError("pool-reshard program has no steps");
   }
-  for (const proto::TransferStep& step : program.steps()) {
+  for (const ::tpu_sync::proto::TransferStep& step : program.steps()) {
     if (step.extents_size() != 1) {
       return absl::InvalidArgumentError(absl::StrCat(
           "pool-reshard steps carry exactly one extent, got ",
           step.extents_size()));
     }
-    if (step.src().space_case() != proto::MemoryRef::SPACE_NOT_SET ||
-        step.dst().space_case() != proto::MemoryRef::SPACE_NOT_SET) {
+    if (step.src().space_case() !=
+            ::tpu_sync::proto::MemoryRef::SPACE_NOT_SET ||
+        step.dst().space_case() !=
+            ::tpu_sync::proto::MemoryRef::SPACE_NOT_SET) {
       return absl::InvalidArgumentError(
           "pool-reshard steps address blocks through their fan-in group "
           "scope; MemoryRef.space must be unset");
@@ -115,11 +118,11 @@ absl::StatusOr<ReshardLoweringClass> NormalizeReshardProgram(
   }
 
   switch (envelope.role()) {
-    case proto::TRANSFER_ROLE_SENDER:
+    case ::tpu_sync::proto::TRANSFER_ROLE_SENDER:
       return ReshardLoweringClass::kPoolReshardSender;
-    case proto::TRANSFER_ROLE_RECEIVER_ARM:
+    case ::tpu_sync::proto::TRANSFER_ROLE_RECEIVER_ARM:
       return ReshardLoweringClass::kPoolReshardArm;
-    case proto::TRANSFER_ROLE_LOCAL_COPY:
+    case ::tpu_sync::proto::TRANSFER_ROLE_LOCAL_COPY:
       return absl::UnimplementedError(
           "LOCAL_COPY transfer programs are not supported by the "
           "pool-reshard worker entry");
@@ -129,25 +132,26 @@ absl::StatusOr<ReshardLoweringClass> NormalizeReshardProgram(
   }
 }
 
-absl::StatusOr<proto::TransferProgramRequest> CompileStartTransfer(
-    const rpc::StartTransferRequest& request) {
+absl::StatusOr<::tpu_sync::proto::TransferProgramRequest> CompileStartTransfer(
+    const ::tpu_sync::rpc::StartTransferRequest& request) {
   if (!HasPoolReshardFields(request)) {
     return absl::InvalidArgumentError(
         "only pool-reshard StartTransferRequests compile to transfer "
         "programs (legacy dense plans stay on the framed door)");
   }
 
-  proto::TransferProgramRequest out;
-  proto::TransferEnvelope* envelope = out.mutable_envelope();
+  ::tpu_sync::proto::TransferProgramRequest out;
+  ::tpu_sync::proto::TransferEnvelope* envelope = out.mutable_envelope();
   envelope->set_uuid(static_cast<uint64_t>(request.uuid()));
   envelope->set_req_id(request.req_id());
-  envelope->set_kind(proto::TRANSFER_KIND_POOL_RESHARD);
-  envelope->set_role(request.is_sender() ? proto::TRANSFER_ROLE_SENDER
-                                         : proto::TRANSFER_ROLE_RECEIVER_ARM);
+  envelope->set_kind(::tpu_sync::proto::TRANSFER_KIND_POOL_RESHARD);
+  envelope->set_role(request.is_sender()
+                         ? ::tpu_sync::proto::TRANSFER_ROLE_SENDER
+                         : ::tpu_sync::proto::TRANSFER_ROLE_RECEIVER_ARM);
 
-  proto::TransferProgram* program = out.mutable_program();
+  ::tpu_sync::proto::TransferProgram* program = out.mutable_program();
 
-  proto::ExecutionPolicy* policy = program->mutable_policy();
+  ::tpu_sync::proto::ExecutionPolicy* policy = program->mutable_policy();
   policy->set_parallelism(request.parallelism());
   if (request.has_skip_d2h()) {
     policy->set_skip_d2h(request.skip_d2h());
@@ -158,18 +162,18 @@ absl::StatusOr<proto::TransferProgramRequest> CompileStartTransfer(
   policy->set_dst_mem_type(request.dst_mem_type());
   policy->set_use_block_chunks(request.use_block_chunks());
 
-  proto::ReshardBinding* binding = program->mutable_reshard();
+  ::tpu_sync::proto::ReshardBinding* binding = program->mutable_reshard();
   *binding->mutable_src_units() = request.src_units();
   *binding->mutable_dst_units() = request.dst_units();
   *binding->mutable_transfer_pool_indices() =
       request.transfer_pool_indices();
   *binding->mutable_pool_dtype_tags() = request.pool_dtype_tags();
 
-  proto::FanIn* fan_in =
+  ::tpu_sync::proto::FanIn* fan_in =
       program->mutable_completion()->mutable_fan_in();
   fan_in->set_expected_block_count(request.expected_block_count());
-  for (const rpc::PoolGroupProto& group : request.pool_groups()) {
-    proto::FanInGroup* out_group = fan_in->add_groups();
+  for (const ::tpu_sync::rpc::PoolGroupProto& group : request.pool_groups()) {
+    ::tpu_sync::proto::FanInGroup* out_group = fan_in->add_groups();
     *out_group->mutable_pool_indices() = group.pool_indices();
     *out_group->mutable_dst_device_block_ids() =
         group.dst_device_block_ids();
@@ -189,13 +193,14 @@ absl::StatusOr<proto::TransferProgramRequest> CompileStartTransfer(
   }
   std::sort(ranks.begin(), ranks.end());
   for (int32_t rank : ranks) {
-    const rpc::ShardPushScheduleProto& schedule =
+    const ::tpu_sync::rpc::ShardPushScheduleProto& schedule =
         request.shard_push_schedules().at(rank);
-    for (const rpc::ShardPushEntryProto& entry : schedule.entries()) {
-      proto::TransferStep* step = program->add_steps();
+    for (const ::tpu_sync::rpc::ShardPushEntryProto& entry :
+         schedule.entries()) {
+      ::tpu_sync::proto::TransferStep* step = program->add_steps();
       step->mutable_src()->set_block_id(entry.src_block_id());
       step->mutable_dst()->set_block_id(entry.dst_block_id());
-      proto::Extent* extent = step->add_extents();
+      ::tpu_sync::proto::Extent* extent = step->add_extents();
       extent->set_src_offset_bytes(entry.src_offset_bytes());
       extent->set_dst_offset_bytes(entry.dst_offset_bytes());
       extent->set_size_bytes(entry.size_bytes());
@@ -216,27 +221,28 @@ absl::StatusOr<proto::TransferProgramRequest> CompileStartTransfer(
   return out;
 }
 
-absl::StatusOr<rpc::StartTransferRequest> LowerToStartTransfer(
-    const proto::TransferProgramRequest& request) {
-  const proto::TransferProgram& program = request.program();
-  if (program.completion().mode_case() != proto::CompletionContract::kFanIn) {
+absl::StatusOr<::tpu_sync::rpc::StartTransferRequest> LowerToStartTransfer(
+    const ::tpu_sync::proto::TransferProgramRequest& request) {
+  const ::tpu_sync::proto::TransferProgram& program = request.program();
+  if (program.completion().mode_case() !=
+      ::tpu_sync::proto::CompletionContract::kFanIn) {
     return absl::InvalidArgumentError(
         "only fan-in programs lower to StartTransferRequest");
   }
 
-  rpc::StartTransferRequest out;
+  ::tpu_sync::rpc::StartTransferRequest out;
   out.set_uuid(static_cast<int64_t>(request.envelope().uuid()));
   out.set_req_id(request.envelope().req_id());
   out.set_is_sender(request.envelope().role() ==
-                    proto::TRANSFER_ROLE_SENDER);
+                    ::tpu_sync::proto::TRANSFER_ROLE_SENDER);
 
-  const proto::ReshardBinding& binding = program.reshard();
+  const ::tpu_sync::proto::ReshardBinding& binding = program.reshard();
   *out.mutable_src_units() = binding.src_units();
   *out.mutable_dst_units() = binding.dst_units();
   *out.mutable_transfer_pool_indices() = binding.transfer_pool_indices();
   *out.mutable_pool_dtype_tags() = binding.pool_dtype_tags();
 
-  const proto::ExecutionPolicy& policy = program.policy();
+  const ::tpu_sync::proto::ExecutionPolicy& policy = program.policy();
   out.set_parallelism(policy.parallelism());
   if (policy.has_skip_d2h()) {
     out.set_skip_d2h(policy.skip_d2h());
@@ -247,10 +253,10 @@ absl::StatusOr<rpc::StartTransferRequest> LowerToStartTransfer(
   out.set_dst_mem_type(policy.dst_mem_type());
   out.set_use_block_chunks(policy.use_block_chunks());
 
-  const proto::FanIn& fan_in = program.completion().fan_in();
+  const ::tpu_sync::proto::FanIn& fan_in = program.completion().fan_in();
   out.set_expected_block_count(fan_in.expected_block_count());
-  for (const proto::FanInGroup& group : fan_in.groups()) {
-    rpc::PoolGroupProto* out_group = out.add_pool_groups();
+  for (const ::tpu_sync::proto::FanInGroup& group : fan_in.groups()) {
+    ::tpu_sync::rpc::PoolGroupProto* out_group = out.add_pool_groups();
     *out_group->mutable_pool_indices() = group.pool_indices();
     *out_group->mutable_dst_device_block_ids() =
         group.dst_device_block_ids();
@@ -260,12 +266,12 @@ absl::StatusOr<rpc::StartTransferRequest> LowerToStartTransfer(
     out_group->set_order_rank(group.order_rank());
   }
 
-  for (const proto::TransferStep& step : program.steps()) {
+  for (const ::tpu_sync::proto::TransferStep& step : program.steps()) {
     if (step.extents_size() != 1) {
       return absl::InvalidArgumentError(
           "pool-reshard steps carry exactly one extent");
     }
-    const proto::Extent& extent = step.extents(0);
+    const ::tpu_sync::proto::Extent& extent = step.extents(0);
     if (absl::Status s = CheckInt32(step.src().block_id(), "src block id");
         !s.ok()) {
       return s;
@@ -274,9 +280,8 @@ absl::StatusOr<rpc::StartTransferRequest> LowerToStartTransfer(
         !s.ok()) {
       return s;
     }
-    rpc::ShardPushEntryProto* entry =
-        (*out.mutable_shard_push_schedules())[step.source_rank()]
-            .add_entries();
+    ::tpu_sync::rpc::ShardPushEntryProto* entry =
+        (*out.mutable_shard_push_schedules())[step.source_rank()].add_entries();
     entry->set_dst_peer(step.dst_peer());
     entry->set_dst_shard_idx(step.dst_shard_idx());
     entry->set_dst_offset_bytes(extent.dst_offset_bytes());
@@ -298,7 +303,7 @@ absl::StatusOr<rpc::StartTransferRequest> LowerToStartTransfer(
 }
 
 std::vector<int64_t> DeriveSenderSourceBlockIds(
-    const rpc::StartTransferRequest& request) {
+    const ::tpu_sync::rpc::StartTransferRequest& request) {
   std::set<int64_t> src_id_set;
   for (const auto& [schedule_key, schedule] :
        request.shard_push_schedules()) {
@@ -310,7 +315,7 @@ std::vector<int64_t> DeriveSenderSourceBlockIds(
 }
 
 std::vector<int64_t> DeriveArmChipBlockIds(
-    const rpc::StartTransferRequest& request) {
+    const ::tpu_sync::rpc::StartTransferRequest& request) {
   std::vector<int64_t> chip_block_ids;
   for (const auto& group : request.pool_groups()) {
     chip_block_ids.insert(chip_block_ids.end(),

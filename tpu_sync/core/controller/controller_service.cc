@@ -52,8 +52,8 @@ RaidenControllerServiceImpl::RaidenControllerServiceImpl(
 
 grpc::Status RaidenControllerServiceImpl::RegisterWorker(
     grpc::ServerContext* context,
-    const ::tpu_raiden::proto::RegisterWorkerRequest* request,
-    ::tpu_raiden::proto::RegisterWorkerResponse* response) {
+    const ::tpu_sync::proto::RegisterWorkerRequest* request,
+    ::tpu_sync::proto::RegisterWorkerResponse* response) {
   std::vector<::tpu_raiden::RaidenTransferEndpoint> eps;
   eps.reserve(request->raiden_transfer_endpoints_size());
   for (const auto& desc_proto : request->raiden_transfer_endpoints()) {
@@ -111,7 +111,7 @@ absl::Duration DurationFromEnv(const char* name, absl::Duration fallback) {
   return absl::Seconds(seconds);
 }
 
-std::string RequesterKey(const ::tpu_raiden::rpc::RaidenIdProto& id) {
+std::string RequesterKey(const ::tpu_sync::rpc::RaidenIdProto& id) {
   return absl::StrCat(id.job_name(), "/", id.job_replica_id(), "/",
                       id.data_name(), "/", id.data_replica_idx());
 }
@@ -148,8 +148,8 @@ absl::Duration RaidenControllerServiceImpl::RevokedLeaseRetention() {
 
 grpc::Status RaidenControllerServiceImpl::AcquireReadLease(
     grpc::ServerContext* context,
-    const ::tpu_raiden::proto::AcquireReadLeaseRequest* request,
-    ::tpu_raiden::proto::AcquireReadLeaseResponse* response) {
+    const ::tpu_sync::proto::AcquireReadLeaseRequest* request,
+    ::tpu_sync::proto::AcquireReadLeaseResponse* response) {
   if (request->block_hashes().empty()) {
     // Closes the "empty hashes skip validation" hole by construction: there is
     // no path that transfers without validating.
@@ -263,8 +263,8 @@ grpc::Status RaidenControllerServiceImpl::AcquireReadLease(
 
 grpc::Status RaidenControllerServiceImpl::RenewReadLease(
     grpc::ServerContext* context,
-    const ::tpu_raiden::proto::RenewReadLeaseRequest* request,
-    ::tpu_raiden::proto::RenewReadLeaseResponse* response) {
+    const ::tpu_sync::proto::RenewReadLeaseRequest* request,
+    ::tpu_sync::proto::RenewReadLeaseResponse* response) {
   absl::Duration extend = request->extend_ms() > 0
                               ? absl::Milliseconds(request->extend_ms())
                               : DefaultLeaseTtl();
@@ -273,22 +273,21 @@ grpc::Status RaidenControllerServiceImpl::RenewReadLease(
   absl::MutexLock lock(mutex_);
   auto it = read_leases_.find(request->lease_id());
   if (it == read_leases_.end()) {
-    response->set_verdict(::tpu_raiden::proto::LEASE_UNKNOWN);
+    response->set_verdict(::tpu_sync::proto::LEASE_UNKNOWN);
     return grpc::Status::OK;
   }
   if (!it->second.live) {
     // Never resurrect: the pins are already gone, so extending the record
     // would promise protection that does not exist.
-    response->set_verdict(it->second.revoked
-                              ? ::tpu_raiden::proto::LEASE_REVOKED
-                              : ::tpu_raiden::proto::LEASE_HELD);
+    response->set_verdict(it->second.revoked ? ::tpu_sync::proto::LEASE_REVOKED
+                                             : ::tpu_sync::proto::LEASE_HELD);
     return grpc::Status::OK;
   }
   // Extension is measured from now, not from the current expiration, and is
   // clamped per extension -- so a live destination CAN hold pins indefinitely
   // by renewing. That is intended: a healthy reader should not lose its blocks.
   it->second.expiration = absl::Now() + extend;
-  response->set_verdict(::tpu_raiden::proto::LEASE_HELD);
+  response->set_verdict(::tpu_sync::proto::LEASE_HELD);
   response->set_new_ttl_ms(absl::ToInt64Milliseconds(extend));
   sweeper_cv_.Signal();
   return grpc::Status::OK;
@@ -296,25 +295,25 @@ grpc::Status RaidenControllerServiceImpl::RenewReadLease(
 
 grpc::Status RaidenControllerServiceImpl::ReleaseReadLease(
     grpc::ServerContext* context,
-    const ::tpu_raiden::proto::ReleaseReadLeaseRequest* request,
-    ::tpu_raiden::proto::ReleaseReadLeaseResponse* response) {
+    const ::tpu_sync::proto::ReleaseReadLeaseRequest* request,
+    ::tpu_sync::proto::ReleaseReadLeaseResponse* response) {
   std::vector<std::string> to_unpin;
   std::shared_ptr<const UnpinCallback> unpin_cb;
   {
     absl::MutexLock lock(mutex_);
     auto it = read_leases_.find(request->lease_id());
     if (it == read_leases_.end()) {
-      response->set_verdict(::tpu_raiden::proto::LEASE_UNKNOWN);
+      response->set_verdict(::tpu_sync::proto::LEASE_UNKNOWN);
       return grpc::Status::OK;
     }
     if (it->second.revoked) {
-      response->set_verdict(::tpu_raiden::proto::LEASE_REVOKED);
+      response->set_verdict(::tpu_sync::proto::LEASE_REVOKED);
       return grpc::Status::OK;
     }
     // Live, or already released: both answer HELD (release is idempotent, and
     // the verdict is retained until the record ages out). Only the first
     // release unpins.
-    response->set_verdict(::tpu_raiden::proto::LEASE_HELD);
+    response->set_verdict(::tpu_sync::proto::LEASE_HELD);
     to_unpin = TransitionOutOfLive(request->lease_id(), /*revoked=*/false);
     unpin_cb = unpin_cb_;
   }

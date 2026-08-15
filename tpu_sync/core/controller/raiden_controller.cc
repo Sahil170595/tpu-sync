@@ -78,8 +78,9 @@ bool CompareWorkerIds(absl::string_view a, absl::string_view b) {
   return a < b;
 }
 
-absl::StatusOr<proto::CreateBuffersResponse> CreateBuffersForWorker(
-    WorkerServiceClient& client, const proto::CreateBuffersRequest& request,
+absl::StatusOr<::tpu_sync::proto::CreateBuffersResponse> CreateBuffersForWorker(
+    WorkerServiceClient& client,
+    const ::tpu_sync::proto::CreateBuffersRequest& request,
     absl::string_view worker_id, int num_blocks) {
   auto resp_or = client.CreateBuffers(request).Await();
   if (!resp_or.ok()) {
@@ -152,12 +153,11 @@ bool LeaseTraceEnabled() {
 // revocations), so say so loudly rather than let it pass.
 void CheckTimingTripleOnce() {
   static const bool checked = [] {
-    namespace svc = ::tpu_raiden::core::controller;
-    const absl::Duration ttl =
-        svc::RaidenControllerServiceImpl::DefaultLeaseTtl();
+    const absl::Duration ttl = ::tpu_raiden::core::controller::
+        RaidenControllerServiceImpl::DefaultLeaseTtl();
     const absl::Duration deadline = RemoteReadDeadline();
-    const absl::Duration retention =
-        svc::RaidenControllerServiceImpl::RevokedLeaseRetention();
+    const absl::Duration retention = ::tpu_raiden::core::controller::
+        RaidenControllerServiceImpl::RevokedLeaseRetention();
     if (!(retention > deadline && deadline > ttl)) {
       LOG(ERROR) << "Incoherent remote-read timing: expected retention > "
                     "deadline > ttl, got retention="
@@ -274,7 +274,7 @@ absl::Status RaidenController::Init(
   return absl::OkStatus();
 }
 
-RaidenController::RaidenController(const rpc::RaidenIdProto& unit,
+RaidenController::RaidenController(const ::tpu_sync::rpc::RaidenIdProto& unit,
                                    int num_blocks, int num_shards,
                                    int64_t shard_size_bytes,
                                    bool preprovision_worker_buffers)
@@ -288,7 +288,7 @@ RaidenController::RaidenController(const rpc::RaidenIdProto& unit,
           std::make_unique<kv_cache::LogicalBlockManager>(num_blocks)) {}
 
 absl::StatusOr<std::unique_ptr<RaidenController>> RaidenController::Create(
-    const rpc::RaidenIdProto& unit, int num_blocks, int num_shards,
+    const ::tpu_sync::rpc::RaidenIdProto& unit, int num_blocks, int num_shards,
     int64_t shard_size_bytes, absl::string_view raiden_controller_address,
     bool preprovision_worker_buffers, int expected_worker_count) {
   return Create(unit, /*worker_addresses=*/{}, num_blocks, num_shards,
@@ -297,7 +297,7 @@ absl::StatusOr<std::unique_ptr<RaidenController>> RaidenController::Create(
 }
 
 absl::StatusOr<std::unique_ptr<RaidenController>> RaidenController::Create(
-    const rpc::RaidenIdProto& unit,
+    const ::tpu_sync::rpc::RaidenIdProto& unit,
     absl::Span<const std::string> worker_addresses, int num_blocks,
     int num_shards, int64_t shard_size_bytes,
     absl::string_view raiden_controller_address,
@@ -335,7 +335,7 @@ void RaidenController::Cleanup() {
 
   if (all_sharded_buffers_.empty() || !worker_registry_) return;
 
-  proto::DeleteBuffersRequest request;
+  ::tpu_sync::proto::DeleteBuffersRequest request;
   *request.mutable_unit() = unit_;
   for (const auto& sharded_buf : all_sharded_buffers_) {
     *request.add_sharded_buffers() = sharded_buf;
@@ -371,7 +371,7 @@ absl::Status RaidenController::InitializeWorkerBuffers(
   // reachable, but no physical buffers are created on the worker.
   const int provision_blocks =
       preprovision_worker_buffers_ ? num_total_blocks_ : 0;
-  proto::CreateBuffersRequest request;
+  ::tpu_sync::proto::CreateBuffersRequest request;
   *request.mutable_unit() = unit_;
   for (int block_id = 0; block_id < provision_blocks; ++block_id) {
     auto* spec = request.add_buffers();
@@ -387,10 +387,10 @@ absl::Status RaidenController::InitializeWorkerBuffers(
   }
   auto resp = *resp_or;
 
-  std::vector<proto::BufferProto> created_buffers;
+  std::vector<::tpu_sync::proto::BufferProto> created_buffers;
   created_buffers.reserve(provision_blocks);
   for (int block_id = 0; block_id < provision_blocks; ++block_id) {
-    proto::BufferProto buf = resp.buffers(block_id);
+    ::tpu_sync::proto::BufferProto buf = resp.buffers(block_id);
     buf.set_index(block_id);
     created_buffers.push_back(std::move(buf));
   }
@@ -404,8 +404,8 @@ absl::Status RaidenController::InitializeWorkerBuffers(
   return absl::OkStatus();
 }
 
-absl::StatusOr<std::vector<proto::BufferProto>> RaidenController::Allocate(
-    int num_blocks) {
+absl::StatusOr<std::vector<::tpu_sync::proto::BufferProto>>
+RaidenController::Allocate(int num_blocks) {
   absl::MutexLock lock(mutex_);
   // Without the pre-provisioned buffers (no worker registered yet, or
   // preprovision_worker_buffers=false) indexing all_sharded_buffers_ below
@@ -418,7 +418,7 @@ absl::StatusOr<std::vector<proto::BufferProto>> RaidenController::Allocate(
   }
   ASSIGN_OR_RETURN(std::vector<int> block_ids,
                    block_manager_->Allocate(num_blocks, /*lock=*/true));
-  std::vector<proto::BufferProto> result;
+  std::vector<::tpu_sync::proto::BufferProto> result;
   result.reserve(num_blocks);
   for (int block_id : block_ids) {
     result.push_back(all_sharded_buffers_[block_id]);
@@ -428,20 +428,20 @@ absl::StatusOr<std::vector<proto::BufferProto>> RaidenController::Allocate(
 
 absl::StatusOr<std::vector<Buffer>> RaidenController::AllocateBuffers(
     int num_blocks) {
-  ASSIGN_OR_RETURN(std::vector<proto::BufferProto> protos,
+  ASSIGN_OR_RETURN(std::vector<::tpu_sync::proto::BufferProto> protos,
                    Allocate(num_blocks));
   std::vector<Buffer> buffers;
   buffers.reserve(protos.size());
   for (const auto& proto : protos) {
     Buffer buf = Buffer::FromProto(proto);
-    buf.set_memory_type(rpc::MEMORY_TYPE_DRAM);
+    buf.set_memory_type(::tpu_sync::rpc::MEMORY_TYPE_DRAM);
     buffers.push_back(std::move(buf));
   }
   return buffers;
 }
 
 absl::Status RaidenController::Deallocate(
-    absl::Span<const proto::BufferProto> sharded_buffers) {
+    absl::Span<const ::tpu_sync::proto::BufferProto> sharded_buffers) {
   std::vector<int> block_ids;
   block_ids.reserve(sharded_buffers.size());
   for (const auto& sharded_buf : sharded_buffers) {
@@ -475,7 +475,7 @@ absl::Status RaidenController::AllocateTargetBlockIds(
 
 absl::Status RaidenController::DeallocateBuffers(
     absl::Span<const Buffer> buffers) {
-  std::vector<proto::BufferProto> protos;
+  std::vector<::tpu_sync::proto::BufferProto> protos;
   protos.reserve(buffers.size());
   for (const auto& buf : buffers) {
     protos.push_back(buf.ToProto());
@@ -483,7 +483,7 @@ absl::Status RaidenController::DeallocateBuffers(
   return Deallocate(protos);
 }
 
-absl::StatusOr<proto::TransferBuffersRequest>
+absl::StatusOr<::tpu_sync::proto::TransferBuffersRequest>
 RaidenController::BuildTransferBuffersRequest(
     absl::Span<const Buffer> src_buffers, absl::Span<const Buffer> dst_buffers,
     absl::Span<const Buffer> staging_host_buffers,
@@ -497,10 +497,10 @@ RaidenController::BuildTransferBuffersRequest(
         "copy_sizes, if provided, must match the length of src_buffers");
   }
 
-  rpc::MemoryType src_mem_type = src_buffers[0].memory_type();
-  rpc::MemoryType dst_mem_type = dst_buffers[0].memory_type();
+  ::tpu_sync::rpc::MemoryType src_mem_type = src_buffers[0].memory_type();
+  ::tpu_sync::rpc::MemoryType dst_mem_type = dst_buffers[0].memory_type();
 
-  proto::TransferBuffersRequest request;
+  ::tpu_sync::proto::TransferBuffersRequest request;
   auto* transfer = request.mutable_transfer();
   transfer->set_src_mem_type(src_mem_type);
   transfer->set_dst_mem_type(dst_mem_type);
@@ -606,8 +606,10 @@ tsl::Future<> RaidenController::TransferBuffers(
   absl::Span<const Buffer> request_staging = staging_host_buffers;
 
   if (is_remote) {
-    bool src_is_hbm = src_buffers.front().memory_type() == rpc::MEMORY_TYPE_HBM;
-    bool dst_is_hbm = dst_buffers.front().memory_type() == rpc::MEMORY_TYPE_HBM;
+    bool src_is_hbm =
+        src_buffers.front().memory_type() == ::tpu_sync::rpc::MEMORY_TYPE_HBM;
+    bool dst_is_hbm =
+        dst_buffers.front().memory_type() == ::tpu_sync::rpc::MEMORY_TYPE_HBM;
 
     // 2. Determine if a staging host block is required.
     //    For cross-node transfers involving TPU HBM (High Bandwidth Memory),
@@ -638,7 +640,8 @@ tsl::Future<> RaidenController::TransferBuffers(
       local_staging_buffers.reserve(auto_allocated_staging_ids->size());
       for (int id : *auto_allocated_staging_ids) {
         local_staging_buffers.emplace_back(id, std::vector<BufferShard>{},
-                                           std::nullopt, rpc::MEMORY_TYPE_DRAM);
+                                           std::nullopt,
+                                           ::tpu_sync::rpc::MEMORY_TYPE_DRAM);
       }
       request_staging = local_staging_buffers;
     }
@@ -795,7 +798,7 @@ void RaidenController::SetReadRemoteHooks(
 // without capturing `this` -- controller teardown mid-read must not be a
 // use-after-free.
 struct RemoteReadState {
-  std::shared_ptr<::tpu_raiden::proto::RaidenControllerService::Stub> stub;
+  std::shared_ptr<::tpu_sync::proto::RaidenControllerService::Stub> stub;
   std::shared_ptr<tsl::Promise<>> promise;
   std::vector<int32_t> dst_host_block_ids;
   std::vector<int32_t> dst_device_block_ids;
@@ -820,7 +823,6 @@ tsl::Future<> RaidenController::ReadRemote(
     const std::vector<int32_t>& dst_host_block_ids,
     const std::vector<std::string>& block_hashes,
     const std::vector<int32_t>& dst_device_block_ids) {
-  namespace cproto = ::tpu_raiden::proto;
   CheckTimingTripleOnce();
 
   if (src_host_block_ids.size() != dst_host_block_ids.size()) {
@@ -864,7 +866,7 @@ tsl::Future<> RaidenController::ReadRemote(
   }
   const std::string controller_address(src_controller_address);
 
-  std::shared_ptr<cproto::RaidenControllerService::Stub> stub;
+  std::shared_ptr<::tpu_sync::proto::RaidenControllerService::Stub> stub;
   {
     absl::MutexLock lock(mutex_);
     auto it = stubs_.find(controller_address);
@@ -873,7 +875,7 @@ tsl::Future<> RaidenController::ReadRemote(
   if (stub == nullptr) {
     auto channel = grpc::CreateChannel(controller_address,
                                        grpc::InsecureChannelCredentials());
-    stub = cproto::RaidenControllerService::NewStub(channel);
+    stub = ::tpu_sync::proto::RaidenControllerService::NewStub(channel);
     {
       absl::MutexLock lock(mutex_);
       if (stubs_.emplace(controller_address, stub).second) {
@@ -901,12 +903,14 @@ tsl::Future<> RaidenController::ReadRemote(
 
   // ---- Phase 1: Prepare -- acquire the lease. -----------------------------
   auto acquire_ctx = std::make_shared<grpc::ClientContext>();
-  auto acquire_req = std::make_shared<cproto::AcquireReadLeaseRequest>();
+  auto acquire_req =
+      std::make_shared<::tpu_sync::proto::AcquireReadLeaseRequest>();
   for (const auto& hash : block_hashes) acquire_req->add_block_hashes(hash);
   acquire_req->set_ttl_ms(absl::ToInt64Milliseconds(
       core::controller::RaidenControllerServiceImpl::DefaultLeaseTtl()));
   *acquire_req->mutable_requester_raiden_id() = unit_;
-  auto acquire_resp = std::make_shared<cproto::AcquireReadLeaseResponse>();
+  auto acquire_resp =
+      std::make_shared<::tpu_sync::proto::AcquireReadLeaseResponse>();
 
   // Capture only shared state and by-value copies -- never `this`.
   auto lifetime = lifetime_;
@@ -960,10 +964,10 @@ tsl::Future<> RaidenController::ReadRemote(
           // source does not hold pins for a full TTL, then fail the read.
           auto ctx = std::make_shared<grpc::ClientContext>();
           auto req =
-              std::make_shared<::tpu_raiden::proto::ReleaseReadLeaseRequest>();
+              std::make_shared<::tpu_sync::proto::ReleaseReadLeaseRequest>();
           req->set_lease_id(state->lease_id);
           auto resp =
-              std::make_shared<::tpu_raiden::proto::ReleaseReadLeaseResponse>();
+              std::make_shared<::tpu_sync::proto::ReleaseReadLeaseResponse>();
           state->stub->async()->ReleaseReadLease(
               ctx.get(), req.get(), resp.get(),
               [ctx, req, resp](grpc::Status) {});
@@ -989,11 +993,10 @@ tsl::Future<> RaidenController::ReadRemote(
       // Best-effort, fire-and-forget: let the source reclaim early rather than
       // wait out the TTL.
       auto ctx = std::make_shared<grpc::ClientContext>();
-      auto req =
-          std::make_shared<::tpu_raiden::proto::ReleaseReadLeaseRequest>();
+      auto req = std::make_shared<::tpu_sync::proto::ReleaseReadLeaseRequest>();
       req->set_lease_id(state->lease_id);
       auto resp =
-          std::make_shared<::tpu_raiden::proto::ReleaseReadLeaseResponse>();
+          std::make_shared<::tpu_sync::proto::ReleaseReadLeaseResponse>();
       state->stub->async()->ReleaseReadLease(ctx.get(), req.get(), resp.get(),
                                              [ctx, req, resp](grpc::Status) {});
     }
@@ -1016,7 +1019,7 @@ void RaidenController::PullAndRelease(
   src_buffers.reserve(src_host_block_ids.size());
   for (int32_t id : src_host_block_ids) {
     Buffer src_buf(id, std::vector<BufferShard>{}, std::nullopt,
-                   rpc::MemoryType::MEMORY_TYPE_DRAM);
+                   ::tpu_sync::rpc::MemoryType::MEMORY_TYPE_DRAM);
     src_buf.set_remote_worker_endpoints(src_groups);
     src_buffers.push_back(std::move(src_buf));
   }
@@ -1030,18 +1033,19 @@ void RaidenController::PullAndRelease(
     dst_buffers.reserve(state->dst_device_block_ids.size());
     for (int32_t id : state->dst_device_block_ids) {
       dst_buffers.emplace_back(id, std::vector<BufferShard>{}, std::nullopt,
-                               rpc::MemoryType::MEMORY_TYPE_HBM);
+                               ::tpu_sync::rpc::MemoryType::MEMORY_TYPE_HBM);
     }
     staging_buffers.reserve(state->dst_host_block_ids.size());
     for (int32_t id : state->dst_host_block_ids) {
-      staging_buffers.emplace_back(id, std::vector<BufferShard>{}, std::nullopt,
-                                   rpc::MemoryType::MEMORY_TYPE_DRAM);
+      staging_buffers.emplace_back(
+          id, std::vector<BufferShard>{}, std::nullopt,
+          ::tpu_sync::rpc::MemoryType::MEMORY_TYPE_DRAM);
     }
   } else {
     dst_buffers.reserve(state->dst_host_block_ids.size());
     for (int32_t id : state->dst_host_block_ids) {
       dst_buffers.emplace_back(id, std::vector<BufferShard>{}, std::nullopt,
-                               rpc::MemoryType::MEMORY_TYPE_DRAM);
+                               ::tpu_sync::rpc::MemoryType::MEMORY_TYPE_DRAM);
     }
   }
 
@@ -1060,10 +1064,9 @@ void RaidenController::PullAndRelease(
     RAIDEN_LEASE_TRACE("pull done lease=", state->lease_id,
                        " status=", transfer_status.ToString());
     auto ctx = std::make_shared<grpc::ClientContext>();
-    auto req = std::make_shared<::tpu_raiden::proto::ReleaseReadLeaseRequest>();
+    auto req = std::make_shared<::tpu_sync::proto::ReleaseReadLeaseRequest>();
     req->set_lease_id(state->lease_id);
-    auto resp =
-        std::make_shared<::tpu_raiden::proto::ReleaseReadLeaseResponse>();
+    auto resp = std::make_shared<::tpu_sync::proto::ReleaseReadLeaseResponse>();
     state->stub->async()->ReleaseReadLease(
         ctx.get(), req.get(), resp.get(),
         [state, ctx, req, resp, transfer_status](grpc::Status rpc_status) {
@@ -1083,10 +1086,10 @@ void RaidenController::PullAndRelease(
           RAIDEN_LEASE_TRACE("release lease=", state->lease_id,
                              " verdict=", static_cast<int>(resp->verdict()));
           switch (resp->verdict()) {
-            case ::tpu_raiden::proto::LEASE_HELD:
+            case ::tpu_sync::proto::LEASE_HELD:
               state->Settle(absl::OkStatus());
               return;
-            case ::tpu_raiden::proto::LEASE_REVOKED:
+            case ::tpu_sync::proto::LEASE_REVOKED:
               state->Settle(absl::FailedPreconditionError(
                   "read discarded: the source lease was revoked mid-read (its "
                   "TTL expired), so the bytes may be from reused blocks"));
@@ -1101,11 +1104,13 @@ void RaidenController::PullAndRelease(
   });
 }
 
-tsl::Future<proto::TransferProgramResponse>
+tsl::Future<::tpu_sync::proto::TransferProgramResponse>
 RaidenController::SubmitTransferProgram(
-    absl::string_view worker_id, const proto::TransferProgramRequest& request) {
+    absl::string_view worker_id,
+    const ::tpu_sync::proto::TransferProgramRequest& request) {
   auto fail = [](absl::Status status) {
-    auto [promise, future] = tsl::MakePromise<proto::TransferProgramResponse>();
+    auto [promise, future] =
+        tsl::MakePromise<::tpu_sync::proto::TransferProgramResponse>();
     std::move(promise).ToShared()->Set(std::move(status));
     return future;
   };

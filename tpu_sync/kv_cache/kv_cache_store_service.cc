@@ -205,8 +205,9 @@ void KVCacheStoreServiceImpl::SetTransferFnForTesting(TransferFn transfer_fn) {
 }
 
 ::grpc::Status KVCacheStoreServiceImpl::Fetch(
-    ::grpc::ServerContext* context, const proto::FetchRequest* request,
-    proto::FetchResponse* response) {
+    ::grpc::ServerContext* context,
+    const ::tpu_raiden::kv_cache::proto::FetchRequest* request,
+    ::tpu_raiden::kv_cache::proto::FetchResponse* response) {
   if (backend_ == nullptr || controller_ == nullptr) {
     return ::grpc::Status(::grpc::StatusCode::FAILED_PRECONDITION,
                           "Backend or RaidenController non-initialized");
@@ -307,14 +308,14 @@ void KVCacheStoreServiceImpl::SetTransferFnForTesting(TransferFn transfer_fn) {
   src_buffers.reserve(src_host_block_ids.size());
   for (int id : src_host_block_ids) {
     src_buffers.emplace_back(id, std::vector<BufferShard>{}, std::nullopt,
-                             rpc::MEMORY_TYPE_DRAM);
+                             ::tpu_sync::rpc::MEMORY_TYPE_DRAM);
   }
 
   std::vector<Buffer> dst_buffers;
   dst_buffers.reserve(dst_host_block_ids.size());
   for (int id : dst_host_block_ids) {
     Buffer dst_buf(id, std::vector<BufferShard>{}, std::nullopt,
-                             rpc::MEMORY_TYPE_DRAM);
+                   ::tpu_sync::rpc::MEMORY_TYPE_DRAM);
     if (!client_groups.empty()) {
       dst_buf.set_remote_worker_endpoints(client_groups);
     }
@@ -339,23 +340,25 @@ void KVCacheStoreServiceImpl::SetTransferFnForTesting(TransferFn transfer_fn) {
   return ::grpc::Status::OK;
 }
 
-proto::PollWriteRemoteResponse::State KVCacheStoreServiceImpl::ToWireState(
-    OpState state) {
+::tpu_raiden::kv_cache::proto::PollWriteRemoteResponse::State
+KVCacheStoreServiceImpl::ToWireState(OpState state) {
   switch (state) {
     case OpState::kPending:
     // COMPLETING has no wire representation: to the source it is still pending.
     case OpState::kCompleting:
-      return proto::PollWriteRemoteResponse::PENDING;
+      return ::tpu_raiden::kv_cache::proto::PollWriteRemoteResponse::PENDING;
     case OpState::kCommitted:
-      return proto::PollWriteRemoteResponse::COMMITTED;
+      return ::tpu_raiden::kv_cache::proto::PollWriteRemoteResponse::COMMITTED;
     case OpState::kAllExist:
-      return proto::PollWriteRemoteResponse::ALL_EXIST;
+      return ::tpu_raiden::kv_cache::proto::PollWriteRemoteResponse::ALL_EXIST;
     case OpState::kPartialExist:
-      return proto::PollWriteRemoteResponse::PARTIAL_EXIST;
+      return ::tpu_raiden::kv_cache::proto::PollWriteRemoteResponse::
+          PARTIAL_EXIST;
     case OpState::kFailed:
-      return proto::PollWriteRemoteResponse::FAILED;
+      return ::tpu_raiden::kv_cache::proto::PollWriteRemoteResponse::FAILED;
     case OpState::kStoredUnregistered:
-      return proto::PollWriteRemoteResponse::STORED_UNREGISTERED;
+      return ::tpu_raiden::kv_cache::proto::PollWriteRemoteResponse::
+          STORED_UNREGISTERED;
   }
 }
 
@@ -391,8 +394,9 @@ void KVCacheStoreServiceImpl::Settle(const std::shared_ptr<WriteOp>& op) {
 }
 
 ::grpc::Status KVCacheStoreServiceImpl::WriteRemote(
-    ::grpc::ServerContext* context, const proto::WriteRemoteRequest* request,
-    proto::WriteRemoteResponse* response) {
+    ::grpc::ServerContext* context,
+    const ::tpu_raiden::kv_cache::proto::WriteRemoteRequest* request,
+    ::tpu_raiden::kv_cache::proto::WriteRemoteResponse* response) {
   if (backend_ == nullptr || controller_ == nullptr) {
     return ::grpc::Status(::grpc::StatusCode::FAILED_PRECONDITION,
                           "Backend or RaidenController non-initialized");
@@ -443,14 +447,15 @@ void KVCacheStoreServiceImpl::Settle(const std::shared_ptr<WriteOp>& op) {
   std::vector<std::string> present =
       backend_->AlreadyPresentHostResident(block_hashes);
   if (present.size() == block_hashes.size()) {
-    response->set_exist_state(proto::WRITE_ALL_EXIST);
+    response->set_exist_state(::tpu_raiden::kv_cache::proto::WRITE_ALL_EXIST);
     for (const auto& hash : present) {
       response->add_existing_hashes(hash);
     }
     return ::grpc::Status::OK;
   }
   if (!present.empty()) {
-    response->set_exist_state(proto::WRITE_PARTIAL_EXIST);
+    response->set_exist_state(
+        ::tpu_raiden::kv_cache::proto::WRITE_PARTIAL_EXIST);
     for (const auto& hash : present) {
       response->add_existing_hashes(hash);
     }
@@ -522,7 +527,7 @@ void KVCacheStoreServiceImpl::Settle(const std::shared_ptr<WriteOp>& op) {
   src_buffers.reserve(src_host_block_ids.size());
   for (int id : src_host_block_ids) {
     Buffer src_buf(id, std::vector<BufferShard>{}, std::nullopt,
-                   rpc::MEMORY_TYPE_DRAM);
+                   ::tpu_sync::rpc::MEMORY_TYPE_DRAM);
     if (!client_groups.empty()) {
       src_buf.set_remote_worker_endpoints(client_groups);
     }
@@ -533,7 +538,7 @@ void KVCacheStoreServiceImpl::Settle(const std::shared_ptr<WriteOp>& op) {
   dst_buffers.reserve(landing_block_ids.size());
   for (int id : landing_block_ids) {
     dst_buffers.emplace_back(id, std::vector<BufferShard>{}, std::nullopt,
-                             rpc::MEMORY_TYPE_DRAM);
+                             ::tpu_sync::rpc::MEMORY_TYPE_DRAM);
   }
 
   // Production goes straight to the controller; transfer_fn_override_ is empty
@@ -548,7 +553,8 @@ void KVCacheStoreServiceImpl::Settle(const std::shared_ptr<WriteOp>& op) {
     OnTransferComplete(lifetime, op_id, status);
   });
 
-  response->set_exist_state(proto::WRITE_EXIST_STATE_UNSPECIFIED);
+  response->set_exist_state(
+      ::tpu_raiden::kv_cache::proto::WRITE_EXIST_STATE_UNSPECIFIED);
   response->set_operation_id(op_id);
   response->set_granted_deadline_ms(
       absl::ToInt64Milliseconds(granted_deadline));
@@ -663,8 +669,8 @@ void KVCacheStoreServiceImpl::CompleteWriteRemote(
 
 ::grpc::Status KVCacheStoreServiceImpl::PollWriteRemote(
     ::grpc::ServerContext* context,
-    const proto::PollWriteRemoteRequest* request,
-    proto::PollWriteRemoteResponse* response) {
+    const ::tpu_raiden::kv_cache::proto::PollWriteRemoteRequest* request,
+    ::tpu_raiden::kv_cache::proto::PollWriteRemoteResponse* response) {
   if (request->operation_id() == 0) {
     return ::grpc::Status(
         ::grpc::StatusCode::INVALID_ARGUMENT,
@@ -683,7 +689,8 @@ void KVCacheStoreServiceImpl::CompleteWriteRemote(
 
   auto it = write_ops_.find(request->operation_id());
   if (it == write_ops_.end()) {
-    response->set_state(proto::PollWriteRemoteResponse::UNKNOWN);
+    response->set_state(
+        ::tpu_raiden::kv_cache::proto::PollWriteRemoteResponse::UNKNOWN);
     return ::grpc::Status::OK;
   }
 

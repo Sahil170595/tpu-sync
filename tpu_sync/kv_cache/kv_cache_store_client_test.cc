@@ -26,6 +26,8 @@
 #include "grpcpp/grpcpp.h"
 #include "grpcpp/security/credentials.h"
 #include "grpcpp/security/server_credentials.h"
+#include "grpcpp/support/status.h"
+#include "xla/tsl/concurrency/future.h"
 #include "tpu_sync/core/raiden_future.h"
 #include "tpu_sync/proto/kv_cache_store_service.grpc.pb.h"
 #include "tpu_sync/proto/kv_cache_store_service.pb.h"
@@ -33,16 +35,19 @@
 
 namespace tpu_raiden {
 namespace kv_cache {
+
 namespace {
 
 using ::absl_testing::StatusIs;
 using ::testing::UnorderedElementsAre;
 
-class TestKVCacheStoreService : public proto::KVCacheStoreService::Service {
+class TestKVCacheStoreService
+    : public ::tpu_raiden::kv_cache::proto::KVCacheStoreService::Service {
  public:
-  ::grpc::Status Fetch(::grpc::ServerContext* context,
-                       const proto::FetchRequest* request,
-                       proto::FetchResponse* response) override {
+  ::grpc::Status Fetch(
+      ::grpc::ServerContext* context,
+      const ::tpu_raiden::kv_cache::proto::FetchRequest* request,
+      ::tpu_raiden::kv_cache::proto::FetchResponse* response) override {
     if (fail_rpc_) {
       return ::grpc::Status(::grpc::StatusCode::INTERNAL,
                             "Simulated RPC error");
@@ -55,11 +60,13 @@ class TestKVCacheStoreService : public proto::KVCacheStoreService::Service {
   }
 
   void SetFailRpc(bool fail) { fail_rpc_ = fail; }
-  const proto::FetchRequest& last_request() const { return last_request_; }
+  const ::tpu_raiden::kv_cache::proto::FetchRequest& last_request() const {
+    return last_request_;
+  }
 
  private:
   bool fail_rpc_ = false;
-  proto::FetchRequest last_request_;
+  ::tpu_raiden::kv_cache::proto::FetchRequest last_request_;
 };
 
 class KVCacheStoreClientTest : public ::testing::Test {
@@ -93,11 +100,11 @@ class KVCacheStoreClientTest : public ::testing::Test {
 TEST_F(KVCacheStoreClientTest, FetchReturnsFutureWithFetchResponseSuccess) {
   std::vector<std::string> hashes = {"hash_1", "hash_2"};
   std::vector<int32_t> host_ids = {10, 11};
-  rpc::RaidenIdProto client_id;
+  ::tpu_sync::rpc::RaidenIdProto client_id;
   client_id.set_job_name("test_job");
   client_id.set_job_replica_id("0");
 
-  tsl::Future<proto::FetchResponse> future =
+  tsl::Future<::tpu_raiden::kv_cache::proto::FetchResponse> future =
       client_->Fetch(hashes, /*device_block_ids=*/{}, host_ids, client_id);
   auto response_or = future.Await();
   ASSERT_OK(response_or.status());
@@ -110,7 +117,7 @@ TEST_F(KVCacheStoreClientTest, FetchReturnsFutureWithErrorStatusOnRPCFailure) {
   std::vector<std::string> hashes = {"hash_1"};
   std::vector<int32_t> host_ids = {10};
 
-  tsl::Future<proto::FetchResponse> future =
+  tsl::Future<::tpu_raiden::kv_cache::proto::FetchResponse> future =
       client_->Fetch(hashes, /*device_block_ids=*/{}, host_ids);
   auto response_or = future.Await();
   EXPECT_THAT(response_or.status(), StatusIs(absl::StatusCode::kInternal));
@@ -120,13 +127,13 @@ TEST_F(KVCacheStoreClientTest, FetchPopulatesRequestFieldsCorrectly) {
   std::vector<std::string> hashes = {"hash_a", "hash_b"};
   std::vector<int32_t> dev_ids = {100, 101};
   std::vector<int32_t> host_ids = {10, 11};
-  rpc::RaidenIdProto client_id;
+  ::tpu_sync::rpc::RaidenIdProto client_id;
   client_id.set_job_name("client_job");
   client_id.set_job_replica_id("1");
   client_id.set_data_name("data");
   client_id.set_data_replica_idx(2);
 
-  tsl::Future<proto::FetchResponse> future =
+  tsl::Future<::tpu_raiden::kv_cache::proto::FetchResponse> future =
       client_->Fetch(hashes, dev_ids, host_ids, client_id);
   auto response_or = future.Await();
   ASSERT_OK(response_or.status());
@@ -147,7 +154,8 @@ TEST_F(KVCacheStoreClientTest, FetchValidatesMismatchedDeviceBlockIds) {
   std::vector<std::string> hashes = {"hash_1", "hash_2"};
   std::vector<int32_t> dev_ids = {100};  // Mismatched count
 
-  tsl::Future<proto::FetchResponse> future = client_->Fetch(hashes, dev_ids);
+  tsl::Future<::tpu_raiden::kv_cache::proto::FetchResponse> future =
+      client_->Fetch(hashes, dev_ids);
   auto response_or = future.Await();
   EXPECT_THAT(response_or.status(),
               StatusIs(absl::StatusCode::kInvalidArgument));
@@ -157,7 +165,7 @@ TEST_F(KVCacheStoreClientTest, FetchValidatesMismatchedHostBlockIds) {
   std::vector<std::string> hashes = {"hash_1", "hash_2"};
   std::vector<int32_t> host_ids = {10};  // Mismatched count
 
-  tsl::Future<proto::FetchResponse> future =
+  tsl::Future<::tpu_raiden::kv_cache::proto::FetchResponse> future =
       client_->Fetch(hashes, /*device_block_ids=*/{}, host_ids);
   auto response_or = future.Await();
   EXPECT_THAT(response_or.status(),
@@ -166,7 +174,8 @@ TEST_F(KVCacheStoreClientTest, FetchValidatesMismatchedHostBlockIds) {
 
 TEST_F(KVCacheStoreClientTest, FetchEmptyHashesReturnsEmptyResponse) {
   std::vector<std::string> hashes;
-  tsl::Future<proto::FetchResponse> future = client_->Fetch(hashes);
+  tsl::Future<::tpu_raiden::kv_cache::proto::FetchResponse> future =
+      client_->Fetch(hashes);
   auto response_or = future.Await();
   ASSERT_OK(response_or.status());
   EXPECT_EQ(response_or->done_block_hashes_size(), 0);

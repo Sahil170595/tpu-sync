@@ -31,7 +31,7 @@
 #include "tpu_sync/rpc/coordination.grpc.pb.h"
 #include "tpu_sync/rpc/coordination.pb.h"
 
-namespace tpu_raiden {
+namespace tpu_sync {
 namespace rpc {
 namespace {
 
@@ -92,4 +92,4 @@ TEST(CoordinationClientTest, CollectReplicaInfoWorks) {
 
 }  // namespace
 }  // namespace rpc
-}  // namespace tpu_raiden
+}  // namespace tpu_sync

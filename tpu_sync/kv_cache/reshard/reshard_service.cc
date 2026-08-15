@@ -42,8 +42,6 @@ namespace kv_cache {
 namespace reshard {
 namespace {
 
-namespace rpcpb = tpu_raiden::rpc;
-
 double SteadyClockSeconds() {
   return std::chrono::duration<double>(
              std::chrono::steady_clock::now().time_since_epoch())
@@ -96,26 +94,28 @@ int ReshardService::port() const {
 }
 
 std::string ReshardService::HandleFrame(const std::string& request_bytes) {
-  rpcpb::ControllerRequest req;
+  tpu_sync::rpc::ControllerRequest req;
   if (!req.ParseFromString(request_bytes)) {
-    req.set_command(rpcpb::ControllerRequest::COMMAND_UNSPECIFIED);
+    req.set_command(tpu_sync::rpc::ControllerRequest::COMMAND_UNSPECIFIED);
   }
 
   const bool is_controller_command =
-      (req.command() == rpcpb::ControllerRequest::COMMAND_COORDINATE_TRANSFER &&
+      (req.command() ==
+           tpu_sync::rpc::ControllerRequest::COMMAND_COORDINATE_TRANSFER &&
        req.has_coordinate_transfer_request()) ||
-      (req.command() == rpcpb::ControllerRequest::COMMAND_GET_TRANSFER_STATUS &&
+      (req.command() ==
+           tpu_sync::rpc::ControllerRequest::COMMAND_GET_TRANSFER_STATUS &&
        req.has_get_transfer_status_request()) ||
       (req.command() ==
-           rpcpb::ControllerRequest::COMMAND_REGISTER_REQUEST_BLOCKS &&
+           tpu_sync::rpc::ControllerRequest::COMMAND_REGISTER_REQUEST_BLOCKS &&
        req.has_register_request_blocks_request()) ||
       (req.command() ==
-           rpcpb::ControllerRequest::COMMAND_RELEASE_REQUEST_BLOCKS &&
+           tpu_sync::rpc::ControllerRequest::COMMAND_RELEASE_REQUEST_BLOCKS &&
        req.has_release_request_blocks_request()) ||
       (req.command() ==
-           rpcpb::ControllerRequest::COMMAND_COMPLETE_REQUEST_BLOCKS &&
+           tpu_sync::rpc::ControllerRequest::COMMAND_COMPLETE_REQUEST_BLOCKS &&
        req.has_complete_request_blocks_request()) ||
-      (req.command() == rpcpb::ControllerRequest::
+      (req.command() == tpu_sync::rpc::ControllerRequest::
                             COMMAND_CANCEL_REQUEST_BLOCKS_IF_UNCLAIMED &&
        req.has_cancel_request_blocks_if_unclaimed_request());
   if (is_controller_command) {
@@ -125,12 +125,12 @@ std::string ReshardService::HandleFrame(const std::string& request_bytes) {
 }
 
 std::string ReshardService::HandleControllerCommand(
-    const rpcpb::ControllerRequest& req) {
-  rpcpb::ControllerResponse resp;
+    const tpu_sync::rpc::ControllerRequest& req) {
+  tpu_sync::rpc::ControllerResponse resp;
   resp.set_success(false);
 
   switch (req.command()) {
-    case rpcpb::ControllerRequest::COMMAND_COORDINATE_TRANSFER: {
+    case tpu_sync::rpc::ControllerRequest::COMMAND_COORDINATE_TRANSFER: {
       const auto& coord_req = req.coordinate_transfer_request();
       // Reshard requests are recognized by their destination block list;
       // num_tokens was retired from the wire.
@@ -180,16 +180,16 @@ std::string ReshardService::HandleControllerCommand(
       resp.set_success(true);
       break;
     }
-    case rpcpb::ControllerRequest::COMMAND_GET_TRANSFER_STATUS: {
+    case tpu_sync::rpc::ControllerRequest::COMMAND_GET_TRANSFER_STATUS: {
       const auto& status_req = req.get_transfer_status_request();
       resp.mutable_get_transfer_status_response()->set_status(
-          static_cast<rpcpb::GetTransferStatusResponse::Status>(
+          static_cast<tpu_sync::rpc::GetTransferStatusResponse::Status>(
               static_cast<int>(
                   coordinator_->GetTransferStatus(status_req.req_id()))));
       resp.set_success(true);
       break;
     }
-    case rpcpb::ControllerRequest::COMMAND_REGISTER_REQUEST_BLOCKS: {
+    case tpu_sync::rpc::ControllerRequest::COMMAND_REGISTER_REQUEST_BLOCKS: {
       const auto& block_req = req.register_request_blocks_request();
       std::vector<PoolSpanRegistration> pool_spans;
       for (const auto& entry : block_req.pool_spans()) {
@@ -226,7 +226,7 @@ std::string ReshardService::HandleControllerCommand(
       resp.set_success(true);
       break;
     }
-    case rpcpb::ControllerRequest::COMMAND_RELEASE_REQUEST_BLOCKS: {
+    case tpu_sync::rpc::ControllerRequest::COMMAND_RELEASE_REQUEST_BLOCKS: {
       const auto& release_req = req.release_request_blocks_request();
       if (!release_req.force()) {
         resp.set_message(
@@ -244,7 +244,7 @@ std::string ReshardService::HandleControllerCommand(
       resp.set_success(true);
       break;
     }
-    case rpcpb::ControllerRequest::COMMAND_COMPLETE_REQUEST_BLOCKS: {
+    case tpu_sync::rpc::ControllerRequest::COMMAND_COMPLETE_REQUEST_BLOCKS: {
       const auto& complete_req = req.complete_request_blocks_request();
       auto released =
           registry_->Complete(complete_req.req_id(), complete_req.uuid(),
@@ -257,7 +257,8 @@ std::string ReshardService::HandleControllerCommand(
       resp.set_success(true);
       break;
     }
-    case rpcpb::ControllerRequest::COMMAND_CANCEL_REQUEST_BLOCKS_IF_UNCLAIMED: {
+    case tpu_sync::rpc::ControllerRequest::
+        COMMAND_CANCEL_REQUEST_BLOCKS_IF_UNCLAIMED: {
       const auto& cancel_req = req.cancel_request_blocks_if_unclaimed_request();
       auto cancelled =
           registry_->CancelIfUnclaimed(cancel_req.req_id(), cancel_req.uuid());
@@ -278,8 +279,8 @@ std::string ReshardService::HandleControllerCommand(
 
 std::string ReshardService::HandleRaidenCommand(
     const std::string& request_bytes) {
-  rpcpb::ControlRequest raiden_req;
-  rpcpb::ControlResponse raiden_resp;
+  tpu_sync::rpc::ControlRequest raiden_req;
+  tpu_sync::rpc::ControlResponse raiden_resp;
   raiden_resp.set_success(false);
   if (!raiden_req.ParseFromString(request_bytes)) {
     raiden_resp.set_message("Failed to parse ControlRequest");
@@ -287,7 +288,7 @@ std::string ReshardService::HandleRaidenCommand(
   }
 
   switch (raiden_req.command()) {
-    case rpcpb::ControlRequest::COMMAND_REGISTER_WORK_UNIT: {
+    case tpu_sync::rpc::ControlRequest::COMMAND_REGISTER_WORK_UNIT: {
       const auto& reg = raiden_req.register_work_unit_request();
       WorkUnitRegistration registration;
       registration.unit = RaidenIdFromProto(reg.unit());
@@ -346,7 +347,7 @@ std::string ReshardService::HandleRaidenCommand(
       raiden_resp.set_success(true);
       break;
     }
-    case rpcpb::ControlRequest::COMMAND_GET_METADATA: {
+    case tpu_sync::rpc::ControlRequest::COMMAND_GET_METADATA: {
       for (auto& metadata : directory_->AllMetadata()) {
         *raiden_resp.mutable_get_metadata_response()->add_metadata() =
             std::move(metadata);
@@ -354,7 +355,7 @@ std::string ReshardService::HandleRaidenCommand(
       raiden_resp.set_success(true);
       break;
     }
-    case rpcpb::ControlRequest::COMMAND_REGISTER_TRANSFER_SCHEDULE: {
+    case tpu_sync::rpc::ControlRequest::COMMAND_REGISTER_TRANSFER_SCHEDULE: {
       const auto& start_req = raiden_req.start_transfer_request();
       if (start_req.transfer_pool_indices_size() > 0 ||
           start_req.pool_groups_size() > 0) {
@@ -369,10 +370,10 @@ std::string ReshardService::HandleRaidenCommand(
       }
       break;
     }
-    case rpcpb::ControlRequest::COMMAND_START_TRANSFER: {
+    case tpu_sync::rpc::ControlRequest::COMMAND_START_TRANSFER: {
       return HandleRaidenStartTransfer(raiden_req);
     }
-    case rpcpb::ControlRequest::COMMAND_SHUTDOWN: {
+    case tpu_sync::rpc::ControlRequest::COMMAND_SHUTDOWN: {
       // Best-effort worker shutdown fan-out, then stop (the Python
       // controller's shutdown_workers + stop()).
       std::set<std::string> addresses;
@@ -381,8 +382,8 @@ std::string ReshardService::HandleRaidenCommand(
           addresses.insert(metadata.control_plane_rpc_address());
         }
       }
-      rpcpb::ControlRequest shutdown_req;
-      shutdown_req.set_command(rpcpb::ControlRequest::COMMAND_SHUTDOWN);
+      tpu_sync::rpc::ControlRequest shutdown_req;
+      shutdown_req.set_command(tpu_sync::rpc::ControlRequest::COMMAND_SHUTDOWN);
       const std::string payload = shutdown_req.SerializeAsString();
       for (const std::string& address : addresses) {
         transport_->Call(address, payload, absl::Seconds(5))
@@ -401,8 +402,8 @@ std::string ReshardService::HandleRaidenCommand(
 }
 
 std::string ReshardService::HandleRaidenStartTransfer(
-    const rpcpb::ControlRequest& req) {
-  rpcpb::ControlResponse resp;
+    const tpu_sync::rpc::ControlRequest& req) {
+  tpu_sync::rpc::ControlResponse resp;
   resp.set_success(false);
   if (delivery_.mode != WorkerDelivery::Mode::kController) {
     // In framed mode, START_TRANSFER is a worker-side RPC; the framed

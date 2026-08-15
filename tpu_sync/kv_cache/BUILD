@@ -514,6 +514,7 @@ cc_test(
         "//tpu_sync/kv_cache/global_registry:global_registry_client_cc",
         "//tpu_sync/kv_cache/global_registry:global_registry_server_lib",
         "//tpu_sync/kv_cache/global_registry:test_util",
+        "//tpu_sync/rpc:raiden_service_cc_proto",
         "@com_github_grpc_grpc//:grpc++",
         "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/status",
@@ -640,6 +641,7 @@ cc_test(
         "@com_google_absl//absl/status:status_matchers",
         "@com_google_googletest//:gtest",
         "@com_google_googletest//:gtest_main",
+        "@xla//xla/tsl/concurrency:future",
     ],
 )
 

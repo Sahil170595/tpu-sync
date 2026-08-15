@@ -44,6 +44,9 @@
 namespace tpu_raiden {
 namespace kv_cache {
 namespace global_registry {
+
+using namespace ::tpu_raiden::kv_cache::global_registry;  // NOLINT
+
 namespace {
 
 class GlobalRegistryTest : public ::testing::Test {

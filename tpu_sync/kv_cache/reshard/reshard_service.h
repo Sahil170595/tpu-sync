@@ -77,10 +77,10 @@ class ReshardService {
 
  private:
   std::string HandleControllerCommand(
-      const tpu_raiden::rpc::ControllerRequest& req);
+      const tpu_sync::rpc::ControllerRequest& req);
   std::string HandleRaidenCommand(const std::string& request_bytes);
   std::string HandleRaidenStartTransfer(
-      const tpu_raiden::rpc::ControlRequest& req);
+      const tpu_sync::rpc::ControlRequest& req);
 
   absl::Mutex state_mu_;  // the controller-wide lock (Python self._lock)
   std::unique_ptr<SocketFramedTransport> default_transport_;

@@ -14,7 +14,7 @@
 
 syntax = "proto3";
 
-package tpu_raiden.proto;
+package tpu_sync.proto;
 
 import "tpu_sync/proto/worker_service.proto";
 import "tpu_sync/rpc/raiden_service.proto";
@@ -70,7 +70,7 @@ message AcquireReadLeaseRequest {
   int64 ttl_ms = 2;
   // Identifies the requesting node, for logging and per-peer accounting. Not
   // used for authorization.
-  .tpu_raiden.rpc.RaidenIdProto requester_raiden_id = 3;
+  .tpu_sync.rpc.RaidenIdProto requester_raiden_id = 3;
 }
 
 message AcquireReadLeaseResponse {
@@ -84,8 +84,7 @@ message AcquireReadLeaseResponse {
   // destination worker can pair with the source worker holding its shards.
   // These are DATA-plane endpoints -- the pull speaks the block-transport
   // protocol, not the control protocol.
-  repeated .tpu_raiden.proto.RaidenWorkerEndpointsProto src_worker_endpoints =
-      3;
+  repeated .tpu_sync.proto.RaidenWorkerEndpointsProto src_worker_endpoints = 3;
   // The TTL actually granted, after clamping.
   int64 granted_ttl_ms = 4;
 }
@@ -116,7 +115,7 @@ message RegisterWorkerRequest {
   // Control-plane RPC address of the worker (e.g., "ip:port" or BNS).
   string raiden_worker_endpoint = 2;
   // Data-plane socket addresses/endpoints owned by this worker.
-  repeated .tpu_raiden.proto.RaidenTransferEndpointProto
+  repeated .tpu_sync.proto.RaidenTransferEndpointProto
       raiden_transfer_endpoints = 3;
   // Unique identifier for this host/node in the distributed mesh. Used by the
   // controller to match source workers to their destination peer worker during

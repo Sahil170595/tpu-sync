@@ -33,29 +33,30 @@ class WorkerServiceClient {
   explicit WorkerServiceClient(std::shared_ptr<grpc::Channel> channel);
 
   // Allocates sharded buffers on the remote transfer worker asynchronously.
-  tsl::Future<proto::CreateBuffersResponse> CreateBuffers(
-      const proto::CreateBuffersRequest& request);
+  tsl::Future<::tpu_sync::proto::CreateBuffersResponse> CreateBuffers(
+      const ::tpu_sync::proto::CreateBuffersRequest& request);
 
   // Deallocates sharded buffers on the remote transfer worker asynchronously.
-  tsl::Future<proto::DeleteBuffersResponse> DeleteBuffers(
-      const proto::DeleteBuffersRequest& request);
+  tsl::Future<::tpu_sync::proto::DeleteBuffersResponse> DeleteBuffers(
+      const ::tpu_sync::proto::DeleteBuffersRequest& request);
 
   // Transfers (copies) disjoint memory regions across memory spaces on the
   // remote transfer worker asynchronously. The transfer specification applies
   // uniformly across all buffers, i.e., all shards and major dimensions
   // (layers or blocks).
-  tsl::Future<> TransferBuffers(const proto::TransferBuffersRequest& request);
+  tsl::Future<> TransferBuffers(
+      const ::tpu_sync::proto::TransferBuffersRequest& request);
 
   // Submits a transfer program and resolves with the full response. The
   // reshard coordinator needs success + message verbatim for its
   // abandon-claim contract, so admission verdicts are not collapsed into a
   // bare Status here. Transport/dispatch failures, including unsupported
   // completion contracts, surface as error statuses.
-  tsl::Future<proto::TransferProgramResponse> SubmitTransferProgram(
-      const proto::TransferProgramRequest& request);
+  tsl::Future<::tpu_sync::proto::TransferProgramResponse> SubmitTransferProgram(
+      const ::tpu_sync::proto::TransferProgramRequest& request);
 
  private:
-  std::unique_ptr<proto::WorkerService::Stub> stub_;
+  std::unique_ptr<::tpu_sync::proto::WorkerService::Stub> stub_;
 };
 
 }  // namespace controller

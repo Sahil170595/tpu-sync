@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef THIRD_PARTY_TPU_RAIDEN_RPC_COORDINATION_CLIENT_H_
-#define THIRD_PARTY_TPU_RAIDEN_RPC_COORDINATION_CLIENT_H_
+#ifndef THIRD_PARTY_TPU_RAIDEN_TPU_SYNC_RPC_COORDINATION_CLIENT_H_
+#define THIRD_PARTY_TPU_RAIDEN_TPU_SYNC_RPC_COORDINATION_CLIENT_H_
 
 #include <cstdint>
 #include <memory>
@@ -25,7 +25,7 @@
 #include "tpu_sync/rpc/coordination.grpc.pb.h"
 #include "tpu_sync/rpc/coordination.pb.h"
 
-namespace tpu_raiden {
+namespace tpu_sync {
 namespace rpc {
 
 class CoordinationClient {
@@ -41,6 +41,6 @@ class CoordinationClient {
 };
 
 }  // namespace rpc
-}  // namespace tpu_raiden
+}  // namespace tpu_sync
 
-#endif  // THIRD_PARTY_TPU_RAIDEN_RPC_COORDINATION_CLIENT_H_
+#endif  // THIRD_PARTY_TPU_RAIDEN_TPU_SYNC_RPC_COORDINATION_CLIENT_H_

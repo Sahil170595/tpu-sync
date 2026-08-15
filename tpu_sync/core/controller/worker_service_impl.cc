@@ -40,23 +40,27 @@
 
 namespace tpu_raiden {
 namespace controller {
+
 namespace {
 
-bool IsD2H(rpc::MemoryType src_mem_type, rpc::MemoryType dst_mem_type) {
-  return src_mem_type == rpc::MEMORY_TYPE_HBM &&
-         (dst_mem_type == rpc::MEMORY_TYPE_DRAM ||
-          dst_mem_type == rpc::MEMORY_TYPE_UNSPECIFIED);
+bool IsD2H(::tpu_sync::rpc::MemoryType src_mem_type,
+           ::tpu_sync::rpc::MemoryType dst_mem_type) {
+  return src_mem_type == ::tpu_sync::rpc::MEMORY_TYPE_HBM &&
+         (dst_mem_type == ::tpu_sync::rpc::MEMORY_TYPE_DRAM ||
+          dst_mem_type == ::tpu_sync::rpc::MEMORY_TYPE_UNSPECIFIED);
 }
 
-bool IsH2D(rpc::MemoryType src_mem_type, rpc::MemoryType dst_mem_type) {
-  return (src_mem_type == rpc::MEMORY_TYPE_DRAM ||
-          src_mem_type == rpc::MEMORY_TYPE_UNSPECIFIED) &&
-         dst_mem_type == rpc::MEMORY_TYPE_HBM;
+bool IsH2D(::tpu_sync::rpc::MemoryType src_mem_type,
+           ::tpu_sync::rpc::MemoryType dst_mem_type) {
+  return (src_mem_type == ::tpu_sync::rpc::MEMORY_TYPE_DRAM ||
+          src_mem_type == ::tpu_sync::rpc::MEMORY_TYPE_UNSPECIFIED) &&
+         dst_mem_type == ::tpu_sync::rpc::MEMORY_TYPE_HBM;
 }
 
-bool IsH2H(rpc::MemoryType src_mem_type, rpc::MemoryType dst_mem_type) {
-  return src_mem_type == rpc::MEMORY_TYPE_DRAM &&
-         dst_mem_type == rpc::MEMORY_TYPE_DRAM;
+bool IsH2H(::tpu_sync::rpc::MemoryType src_mem_type,
+           ::tpu_sync::rpc::MemoryType dst_mem_type) {
+  return src_mem_type == ::tpu_sync::rpc::MEMORY_TYPE_DRAM &&
+         dst_mem_type == ::tpu_sync::rpc::MEMORY_TYPE_DRAM;
 }
 
 }  // namespace
@@ -69,8 +73,9 @@ WorkerServiceImpl::WorkerServiceImpl(
       transfer_manager_(std::move(transfer_manager)) {}
 
 grpc::Status WorkerServiceImpl::CreateBuffers(
-    grpc::ServerContext* context, const proto::CreateBuffersRequest* request,
-    proto::CreateBuffersResponse* response) {
+    grpc::ServerContext* context,
+    const ::tpu_sync::proto::CreateBuffersRequest* request,
+    ::tpu_sync::proto::CreateBuffersResponse* response) {
   absl::MutexLock lock(mutex_);
   for (const auto& spec : request->buffers()) {
     if (spec.num_shards() <= 0 || spec.size_bytes() <= 0) {
@@ -78,7 +83,7 @@ grpc::Status WorkerServiceImpl::CreateBuffers(
       response->set_message("num_shards and size_bytes must be positive");
       return grpc::Status::OK;
     }
-    proto::BufferProto sharded_buf;
+    ::tpu_sync::proto::BufferProto sharded_buf;
     for (int32_t s = 0; s < spec.num_shards(); ++s) {
       auto alloc_or = allocator_->Allocate(spec.size_bytes());
       if (!alloc_or.ok()) {
@@ -99,8 +104,9 @@ grpc::Status WorkerServiceImpl::CreateBuffers(
 }
 
 grpc::Status WorkerServiceImpl::DeleteBuffers(
-    grpc::ServerContext* context, const proto::DeleteBuffersRequest* request,
-    proto::DeleteBuffersResponse* response) {
+    grpc::ServerContext* context,
+    const ::tpu_sync::proto::DeleteBuffersRequest* request,
+    ::tpu_sync::proto::DeleteBuffersResponse* response) {
   absl::MutexLock lock(mutex_);
   for (const auto& sharded_buffer : request->sharded_buffers()) {
     if (sharded_buffer.buffer_handles().empty()) {
@@ -126,19 +132,20 @@ grpc::Status WorkerServiceImpl::DeleteBuffers(
 }
 
 grpc::Status WorkerServiceImpl::TransferBuffers(
-    grpc::ServerContext* context, const proto::TransferBuffersRequest* request,
-    proto::TransferBuffersResponse* response) {
+    grpc::ServerContext* context,
+    const ::tpu_sync::proto::TransferBuffersRequest* request,
+    ::tpu_sync::proto::TransferBuffersResponse* response) {
   absl::MutexLock lock(mutex_);
   const auto& transfer = request->transfer();
 
-  rpc::MemoryType src_mem_type = transfer.src_mem_type();
-  rpc::MemoryType dst_mem_type = transfer.dst_mem_type();
+  ::tpu_sync::rpc::MemoryType src_mem_type = transfer.src_mem_type();
+  ::tpu_sync::rpc::MemoryType dst_mem_type = transfer.dst_mem_type();
 
-  if (src_mem_type == rpc::MEMORY_TYPE_UNSPECIFIED &&
+  if (src_mem_type == ::tpu_sync::rpc::MEMORY_TYPE_UNSPECIFIED &&
       transfer.src_buffers_size() > 0) {
     src_mem_type = transfer.src_buffers(0).memory_type();
   }
-  if (dst_mem_type == rpc::MEMORY_TYPE_UNSPECIFIED &&
+  if (dst_mem_type == ::tpu_sync::rpc::MEMORY_TYPE_UNSPECIFIED &&
       transfer.dst_buffers_size() > 0) {
     dst_mem_type = transfer.dst_buffers(0).memory_type();
   }
@@ -351,8 +358,9 @@ size_t WorkerServiceImpl::GetBufferCount() const {
 }
 
 grpc::Status WorkerServiceImpl::SubmitTransferProgram(
-    grpc::ServerContext* context, const proto::TransferProgramRequest* request,
-    proto::TransferProgramResponse* response) {
+    grpc::ServerContext* context,
+    const ::tpu_sync::proto::TransferProgramRequest* request,
+    ::tpu_sync::proto::TransferProgramResponse* response) {
   // Class rejection is a dispatch failure, not an admission verdict: the
   // dormant contract classes and malformed programs fail loudly at the gRPC
   // layer so nothing mistakes them for an executed-and-failed transfer.
@@ -367,7 +375,7 @@ grpc::Status WorkerServiceImpl::SubmitTransferProgram(
                         std::string(lowering_class.status().message()));
   }
 
-  absl::StatusOr<rpc::StartTransferRequest> lowered =
+  absl::StatusOr<::tpu_sync::rpc::StartTransferRequest> lowered =
       core::LowerToStartTransfer(*request);
   if (!lowered.ok()) {
     return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
@@ -403,16 +411,18 @@ grpc::Status WorkerServiceImpl::SubmitTransferProgram(
 }
 
 grpc::Status WorkerServiceImpl::PollTransfer(
-    grpc::ServerContext* context, const proto::PollTransferRequest* request,
-    proto::PollTransferResponse* response) {
+    grpc::ServerContext* context,
+    const ::tpu_sync::proto::PollTransferRequest* request,
+    ::tpu_sync::proto::PollTransferResponse* response) {
   return grpc::Status(grpc::StatusCode::UNIMPLEMENTED,
                       "PollTransfer is not implemented; transfer completion "
                       "uses the existing connector polling path");
 }
 
 grpc::Status WorkerServiceImpl::AbortTransfer(
-    grpc::ServerContext* context, const proto::AbortTransferRequest* request,
-    proto::AbortTransferResponse* response) {
+    grpc::ServerContext* context,
+    const ::tpu_sync::proto::AbortTransferRequest* request,
+    ::tpu_sync::proto::AbortTransferResponse* response) {
   return grpc::Status(grpc::StatusCode::UNIMPLEMENTED,
                       "AbortTransfer is not implemented");
 }

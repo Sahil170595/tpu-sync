@@ -36,6 +36,7 @@
 
 namespace tpu_raiden {
 namespace kv_cache {
+
 namespace {
 
 using ::absl_testing::StatusIs;
@@ -106,7 +107,7 @@ TEST(BackendConfigTest, PropertyGettersAndSetters) {
 }
 
 TEST(KVCacheStoreBackendFactoryTest, BuiltInHostOffload) {
-  rpc::RaidenIdProto unit_proto;
+  ::tpu_sync::rpc::RaidenIdProto unit_proto;
   TF_ASSERT_OK_AND_ASSIGN(auto ctrl, controller::RaidenController::Create(
                                          unit_proto, /*num_blocks=*/100,
                                          /*num_shards=*/1,
@@ -128,7 +129,7 @@ TEST(KVCacheStoreBackendFactoryTest, BuiltInHostOffload) {
 }
 
 TEST(KVCacheStoreBackendFactoryTest, HostOffloadWithGlobalRegistry) {
-  rpc::RaidenIdProto unit_proto;
+  ::tpu_sync::rpc::RaidenIdProto unit_proto;
   TF_ASSERT_OK_AND_ASSIGN(auto ctrl, controller::RaidenController::Create(
                                          unit_proto, /*num_blocks=*/100,
                                          /*num_shards=*/1,

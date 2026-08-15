@@ -157,7 +157,7 @@ struct has_pool_reshard_push : std::false_type {};
 template <typename T>
 struct has_pool_reshard_push<
     T, std::void_t<decltype(std::declval<T&>().PoolReshardPush(
-           std::declval<const tpu_raiden::rpc::StartTransferRequest&>(),
+           std::declval<const tpu_sync::rpc::StartTransferRequest&>(),
            std::declval<absl::Span<const int64_t>>(), std::declval<int>()))>>
     : std::true_type {};
 
@@ -171,7 +171,7 @@ struct has_pool_reshard_register_recv : std::false_type {};
 template <typename T>
 struct has_pool_reshard_register_recv<
     T, std::void_t<decltype(std::declval<T&>().PoolReshardRegisterRecv(
-           std::declval<const tpu_raiden::rpc::StartTransferRequest&>(),
+           std::declval<const tpu_sync::rpc::StartTransferRequest&>(),
            std::declval<absl::Span<const int64_t>>()))>> : std::true_type {};
 
 template <typename T>
@@ -238,10 +238,10 @@ class KVManagerHolder {
     // Fail closed with Unimplemented when the wrapped manager lacks the pool
     // executor, matching the KVCacheManagerBase defaults.
     virtual absl::Status PoolReshardPush(
-        const tpu_raiden::rpc::StartTransferRequest& request,
+        const tpu_sync::rpc::StartTransferRequest& request,
         absl::Span<const int64_t> src_block_ids, int parallelism) = 0;
     virtual absl::Status PoolReshardRegisterRecv(
-        const tpu_raiden::rpc::StartTransferRequest& request,
+        const tpu_sync::rpc::StartTransferRequest& request,
         absl::Span<const int64_t> chip_block_ids) = 0;
   };
 
@@ -392,7 +392,7 @@ class KVManagerHolder {
       }
     }
     absl::Status PoolReshardPush(
-        const tpu_raiden::rpc::StartTransferRequest& request,
+        const tpu_sync::rpc::StartTransferRequest& request,
         absl::Span<const int64_t> src_block_ids, int parallelism) override {
       if constexpr (internal::has_pool_reshard_push_v<T>) {
         return impl_->PoolReshardPush(request, src_block_ids, parallelism);
@@ -403,7 +403,7 @@ class KVManagerHolder {
       }
     }
     absl::Status PoolReshardRegisterRecv(
-        const tpu_raiden::rpc::StartTransferRequest& request,
+        const tpu_sync::rpc::StartTransferRequest& request,
         absl::Span<const int64_t> chip_block_ids) override {
       if constexpr (internal::has_pool_reshard_register_recv_v<T>) {
         return impl_->PoolReshardRegisterRecv(request, chip_block_ids);
@@ -558,7 +558,7 @@ class KVManagerHolder {
   }
 
   absl::Status PoolReshardPush(
-      const tpu_raiden::rpc::StartTransferRequest& request,
+      const tpu_sync::rpc::StartTransferRequest& request,
       absl::Span<const int64_t> src_block_ids, int parallelism) const {
     if (!self_) {
       return absl::InternalError("KVManagerHolder is null");
@@ -567,7 +567,7 @@ class KVManagerHolder {
   }
 
   absl::Status PoolReshardRegisterRecv(
-      const tpu_raiden::rpc::StartTransferRequest& request,
+      const tpu_sync::rpc::StartTransferRequest& request,
       absl::Span<const int64_t> chip_block_ids) const {
     if (!self_) {
       return absl::InternalError("KVManagerHolder is null");

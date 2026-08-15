@@ -35,6 +35,8 @@ namespace tpu_raiden {
 namespace kv_cache {
 namespace global_registry {
 
+using namespace ::tpu_raiden::kv_cache::global_registry;  // NOLINT
+
 struct Registration {
   std::string prefix_hash;
   RaidenId raiden_id;

@@ -155,6 +155,7 @@ BAZEL_TARGETS=(
   # C++ control-plane service binaries. These do not depend on JAX or Torch,
   # so they are always built.
   "//tpu_sync/kv_cache/global_registry:global_registry_server"
+  "//tpu_sync/store_node:kv_cache_host_store_node_main"
 )
 DEFINE_FLAGS=""
 BAZEL_MODULE_FLAGS=()
@@ -335,6 +336,7 @@ link_service_binary() {
   fi
 }
 link_service_binary "tpu_sync/kv_cache/global_registry/global_registry_server"
+link_service_binary "tpu_sync/store_node/kv_cache_host_store_node_main"
 
 echo "=== Copying compiled shared libraries to source directory ==="
 if [ "$BUILD_JAX" = true ]; then
